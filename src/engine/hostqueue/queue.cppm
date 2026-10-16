@@ -159,6 +159,30 @@ export auto enqueue(db::connection& conn, const enqueue_request& request) -> std
 /// `request.parent_seq` is unset; or the SQLite failure.
 export auto insert_nested_entry(db::connection& conn, const enqueue_request& request) -> std::expected<std::int64_t, queue_error>;
 
+/// @brief The days past the end of its claim that a history row naming that
+/// claim is kept beyond the ordinary retention (tech spec 693 component 7,
+/// "Retention"). A row that names a claim is also kept while the claim's plan
+/// is open, but never longer than this after the claim ends.
+export constexpr std::int64_t k_claim_evidence_cap_days = 90;
+
+/// @brief What the planning side knows about the claim a history row names.
+/// The queue module reads no planning table (decision 1219); the caller of the
+/// retention prune answers this question from wherever it keeps claims.
+export struct claim_standing {
+  /// @brief Whether the claim's plan is still open.
+  enum class plan_state : std::uint8_t {
+    unknown, ///< The lookup failed, or the claim or its plan could not be found.
+    open,    ///< The plan is still open.
+    closed,  ///< The plan is done or abandoned.
+  };
+  plan_state                  plan = plan_state::unknown; ///< The state of the claim's plan.
+  std::optional<std::int64_t> claim_ended_ms; ///< When the claim ended (or its lease lapses), ms since the epoch, when known.
+};
+
+/// @brief Answers `claim_standing` for one claim token. An empty function is
+/// the same as one that always answers an unknown standing with no end time.
+export using claim_lookup = std::function<claim_standing(std::string_view token)>;
+
 /// @brief A pruned history row's log file that could not be removed.
 export struct log_removal_failure {
   std::string path;    ///< The log file.
@@ -185,15 +209,18 @@ export struct enqueued {
 /// cannot be removed is listed in `pruned.log_failures` and does not fail
 /// the enqueue, because the entry is already committed and the caller's
 /// command must still run. The queue verbs call this form with the
-/// configured `[queue] history_days`.
+/// configured `[queue] history_days`. Rows that name a claim token are
+/// exempt from the prune as `delete_expired_history` describes.
 /// @param conn An open agent database at or above agent schema version 3.
 /// @param request What to record; `enqueued_at` is the prune's "now".
 /// @param history_days The retention in days; must not be negative.
+/// @param lookup How to find a claim's standing; empty keeps tokened rows for
+/// `k_claim_evidence_cap_days` after their own end.
 /// @return The sequence number and the prune report; `invalid_request` for a
 /// negative retention; or the SQLite failure, after which neither the prune
 /// nor the insert has happened.
-export auto enqueue(db::connection& conn, const enqueue_request& request, std::int64_t history_days)
-    -> std::expected<enqueued, queue_error>;
+export auto enqueue(db::connection& conn, const enqueue_request& request, std::int64_t history_days,
+                    const claim_lookup& lookup = {}) -> std::expected<enqueued, queue_error>;
 
 /// @brief Records the child group of a running entry: the group id and the
 /// start time of its leader (`child_pgid`, `child_started`), which the

@@ -20,7 +20,7 @@
 ///
 /// `handoff-stale` (plan 1132, task 7378; decision 1384): a `pending` or `validated` handoff whose age at the
 /// evaluation instant is strictly beyond `core::stale_handoff_threshold_hours`, the cutoff
-/// `planar health` and `planar report` apply, shared through `planar.core.thresholds` and not
+/// `planar health` applies, shared through `planar.core.thresholds` and not
 /// restated here. The age is the whole milliseconds from the handoff's `created_at` to the
 /// evaluation instant, so a handoff exactly at the cutoff is not stale. The check describes the
 /// state at the evaluation instant and ignores the window start. The plan scope reaches a handoff

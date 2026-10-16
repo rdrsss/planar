@@ -297,8 +297,8 @@ constexpr std::int64_t k_min_renew_interval_ms = 100;
 /// database is retried on the next attempt rather than remembered. A renewal is
 /// `supervised_heartbeat` with no TTL and no status, the very transaction
 /// `planar-agent heartbeat --claim` runs, so the lease keeps the length it has,
-/// no action row is written, and an engine-supervised claim is refused as it is
-/// for any caller. The cadence is half the lease length the claim holds.
+/// no action row is written, and a legacy engine-supervised claim is renewed as
+/// any other claim is. The cadence is half the lease length the claim holds.
 ///
 /// A failed attempt never stops anything: it is reported once per distinct
 /// reason through the submitter's `reporter` as a `warning: queue:` line, and
@@ -1263,7 +1263,7 @@ auto submit(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, 
       }
       now_mono = *fresh;
     }
-    auto enqueued = hq::enqueue(conn, make_request(now_mono), settings.current().history_days);
+    auto enqueued = hq::enqueue(conn, make_request(now_mono), settings.current().history_days, claim_standing_lookup(conn));
     if (!enqueued) {
       return refuse(ctx, enqueued.error().message);
     }

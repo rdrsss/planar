@@ -29,6 +29,16 @@ export struct database_policy {
   static auto open_existing(const std::filesystem::path& path, std::ostream& error_stream, int busy_timeout_ms)
       -> std::expected<db::connection, domain_error>;
 
+  /// @brief Open an EXISTING database strictly read-only (`mode=ro`, `SQLITE_OPEN_READONLY`) with a bounded
+  /// lock wait, under the same schema policy as `open_existing`. The driver refuses any write statement, so a
+  /// read verb opened this way cannot write whatever its code does.
+  /// @param path Database path.
+  /// @param error_stream Destination for nonfatal diagnostics.
+  /// @param busy_timeout_ms The longest any statement waits for a lock.
+  /// @return An open read-only connection or a command error.
+  static auto open_read_only(const std::filesystem::path& path, std::ostream& error_stream, int busy_timeout_ms)
+      -> std::expected<db::connection, domain_error>;
+
 private:
   /// @brief The schema handshake shared by both opens.
   static auto verify(db::connection opened, const std::filesystem::path& path, std::ostream& error_stream, bool strict)

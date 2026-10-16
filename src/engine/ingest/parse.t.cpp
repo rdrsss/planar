@@ -473,3 +473,106 @@ TEST_CASE("a decision bullet's bold run only counts at the START", "[ingest][par
   REQUIRE(decisions.size() == 1);
   CHECK(decisions[0].title_ == "Use **SQLite** here.");
 }
+
+// ---------------------------------------------------------------------------
+// Work-list selection and cross-artifact section collection (task 7480).
+// The anchor's artifacts arrive in ascending id order; the selection and the
+// collection both keep that order.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("select_work_list prefers the roadmap artifact over another work-list candidate", "[ingest][parse][work-list]") {
+  const std::vector<parse::source_artifact> artifacts{
+      {.id_ = 2, .kind_ = "design_note", .title_ = "Notes", .body_ = "## Plan\n\n- Stray bullet\n"},
+      {.id_ = 5, .kind_ = "roadmap", .title_ = "Roadmap", .body_ = "## M1\n\n- Real work [slug: real-work]\n"},
+  };
+  const auto index = parse::select_work_list(artifacts);
+  REQUIRE(index.has_value());
+  CHECK(*index == 1);
+}
+
+TEST_CASE("select_work_list takes the single non-roadmap artifact whose body parses as a work list",
+          "[ingest][parse][work-list]") {
+  const std::vector<parse::source_artifact> artifacts{
+      {.id_ = 3, .kind_ = "product_spec", .title_ = "Product", .body_ = "## Intent\n\nNo bullets here.\n"},
+      {.id_ = 4, .kind_ = "design_note", .title_ = "Plan", .body_ = "## M1\n\n- Ship the thing [slug: ship-thing]\n"},
+  };
+  const auto index = parse::select_work_list(artifacts);
+  REQUIRE(index.has_value());
+  CHECK(*index == 1);
+}
+
+TEST_CASE("select_work_list names the missing input when no artifact holds a work list", "[ingest][parse][work-list]") {
+  const std::vector<parse::source_artifact> artifacts{
+      {.id_ = 3, .kind_ = "tech_spec", .title_ = "Tech", .body_ = "## Decisions\n\n### Use SQLite\n\nbody\n"},
+  };
+  const auto index = parse::select_work_list(artifacts);
+  REQUIRE_FALSE(index.has_value());
+  CHECK(index.error().starts_with("no work list"));
+  CHECK(index.error().contains("roadmap artifact"));
+}
+
+TEST_CASE("select_work_list refuses two non-roadmap work lists and names both", "[ingest][parse][work-list]") {
+  const std::vector<parse::source_artifact> artifacts{
+      {.id_ = 3, .kind_ = "design_note", .title_ = "First", .body_ = "## M1\n\n- Alpha\n"},
+      {.id_ = 7, .kind_ = "other", .title_ = "Second", .body_ = "## M2\n\n- Beta\n"},
+  };
+  const auto index = parse::select_work_list(artifacts);
+  REQUIRE_FALSE(index.has_value());
+  CHECK(index.error().contains("ambiguous work list"));
+  CHECK(index.error().contains("artifact 3 'First'"));
+  CHECK(index.error().contains("artifact 7 'Second'"));
+}
+
+TEST_CASE("reserved spec headings never make a body a work list", "[ingest][parse][work-list]") {
+  // Bullets under `## Decisions`, `## Open Questions` or `## Scenarios` are
+  // spec content, not tasks, so a tech spec written with bulleted decisions
+  // is not mistaken for a roadmap.
+  CHECK_FALSE(parse::parses_as_work_list("## Decisions\n\n- **Use SQLite.** body\n"));
+  CHECK_FALSE(parse::parses_as_work_list("## Open Questions\n\n- Should we vendor curl?\n"));
+  CHECK_FALSE(parse::parses_as_work_list("## Scenarios\n\n- A bullet\n"));
+  CHECK(parse::parses_as_work_list("## M1\n\n- Ship it\n"));
+}
+
+TEST_CASE("collect_spec_sections reads decisions from every artifact in id order", "[ingest][parse][sections]") {
+  const std::vector<parse::source_artifact> artifacts{
+      {.id_ = 1, .kind_ = "product_spec", .title_ = "Product", .body_ = "## Decisions\n\n### Ship in M1\n\nbody\n"},
+      {.id_ = 2, .kind_ = "design_note", .title_ = "Notes", .body_ = "## Decisions\n\n### Use SQLite\n\nWe chose SQLite.\n"},
+      {.id_    = 3,
+       .kind_  = "tech_spec",
+       .title_ = "Tech",
+       .body_  = "## Decisions\n\n### Vendor curl\n\nbody\n\n## Open Questions\n\n### Which region?\n\nResolution: eu\n"},
+  };
+  const auto sections = parse::collect_spec_sections(artifacts);
+  REQUIRE(sections.has_value());
+  REQUIRE(sections->decisions_.size() == 3);
+  CHECK(sections->decisions_[0].title_ == "Ship in M1");
+  CHECK(sections->decisions_[1].title_ == "Use SQLite");
+  CHECK(sections->decisions_[2].title_ == "Vendor curl");
+  REQUIRE(sections->questions_.size() == 1);
+  CHECK(sections->questions_[0].title_ == "Which region?");
+  CHECK(sections->questions_[0].resolution_ == "eu");
+}
+
+TEST_CASE("collect_spec_sections refuses a decision title held by two artifacts and names both", "[ingest][parse][sections]") {
+  const std::vector<parse::source_artifact> artifacts{
+      {.id_ = 4, .kind_ = "product_spec", .title_ = "Product", .body_ = "## Decisions\n\n### Use SQLite\n\nbody a\n"},
+      {.id_ = 9, .kind_ = "tech_spec", .title_ = "Tech", .body_ = "## Decisions\n\n### use sqlite \n\nbody b\n"},
+  };
+  const auto sections = parse::collect_spec_sections(artifacts);
+  REQUIRE_FALSE(sections.has_value());
+  CHECK(sections.error().contains("duplicate decision"));
+  CHECK(sections.error().contains("artifact 4"));
+  CHECK(sections.error().contains("artifact 9"));
+}
+
+TEST_CASE("collect_spec_sections keeps a repeat inside one artifact for the diff to handle", "[ingest][parse][sections]") {
+  // The cross-artifact check is deliberately narrower than the per-document
+  // behaviour: a single artifact that repeats a title is passed through as it
+  // always was, so existing four-document plans parse unchanged.
+  const std::vector<parse::source_artifact> artifacts{
+      {.id_ = 4, .kind_ = "tech_spec", .title_ = "Tech", .body_ = "## Decisions\n\n### Same\n\nfirst\n\n### Same\n\nsecond\n"},
+  };
+  const auto sections = parse::collect_spec_sections(artifacts);
+  REQUIRE(sections.has_value());
+  CHECK(sections->decisions_.size() == 2);
+}

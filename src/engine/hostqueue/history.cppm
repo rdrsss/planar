@@ -138,12 +138,15 @@ export struct history_row {
   std::optional<std::int64_t> ran_ms;        ///< Time from start to the end, when it started.
   std::optional<std::int64_t> run_limit_ms;  ///< The run limit it ran under, copied from the entry, when it started.
   std::optional<std::int64_t> wait_limit_ms; ///< The wait limit it was submitted with, copied from the entry, when limited.
+  std::optional<std::string>  claim_token;   ///< The claim token its `queue run --claim` named, verbatim, when any.
 };
 
 /// @brief Ends an entry: deletes it from `queue_entries` and inserts its
 /// `queue_history` row in one write transaction (`BEGIN IMMEDIATE`, or a
 /// savepoint when `conn` is already in a transaction). The row copies the
-/// entry's command columns and its `run_limit_ms` and `wait_limit_ms`, sets
+/// entry's command columns, its `claim_token` verbatim (an opaque string,
+/// never checked against any claim; absent when the run named none) and its
+/// `run_limit_ms` and `wait_limit_ms`, sets
 /// `nested` and `parent_seq` from the entry's
 /// `parent_seq`, and computes `waited_ms` as start (or `ended_at` when the
 /// entry never started) minus `enqueued_at` and `ran_ms` as `ended_at` minus
@@ -228,6 +231,17 @@ export auto find_history(db::connection& conn, std::int64_t seq) -> std::expecte
 export auto list_history(db::connection& conn, std::optional<std::int64_t> ended_since = std::nullopt)
     -> std::expected<std::vector<history_row>, queue_error>;
 
+/// @brief Reads the history rows whose `claim_token` is exactly `claim_token`, oldest first.
+///
+/// This is how a gate check finds the queued runs a claim recorded with `queue run --claim`. The
+/// token is compared verbatim (never folded, trimmed or prefix-matched), and a token no row carries
+/// yields an empty list. Uses the `claim_token` index.
+/// @param conn An open `planar.db` that passed `check_queue_schema`; a read-only connection is enough.
+/// @param claim_token The token to match.
+/// @return The rows ordered by `ended_at`, then sequence number; empty when none; or the failure.
+export auto history_for_claim(db::connection& conn, std::string_view claim_token)
+    -> std::expected<std::vector<history_row>, queue_error>;
+
 /// @brief The milliseconds in one retention day.
 export constexpr std::int64_t k_ms_per_day = 86'400'000;
 
@@ -244,14 +258,26 @@ export struct expired_history {
 /// touched: pass the returned paths to `remove_log_files` after the
 /// enclosing transaction commits, so a rollback never leaves a kept row
 /// without its log.
+///
+/// Claim evidence. A row with a `claim_token` is exempt from the prune while
+/// its claim's plan is open, but only until `k_claim_evidence_cap_days` days
+/// after the claim ends: it is deleted once its plan is closed, or once `now`
+/// is more than the cap past the claim's end. `lookup` answers both questions
+/// per distinct token (the queue reads no planning table itself). Uncertainty
+/// never prunes evidence early and never keeps it forever: a token whose
+/// standing is unknown (the lookup is empty, or it could not find the claim or
+/// its plan, or it failed) is kept until the cap, counted from the row's own
+/// `ended_at` when the claim's end is unknown. Rows without a token follow the
+/// retention alone.
 /// @param conn An open `planar.db`.
 /// @param retention_days How many days rows are kept; zero keeps nothing
 /// older than `now`. Must not be negative.
 /// @param now The current wall clock, ms since the epoch.
+/// @param lookup The claim standing lookup; empty means every token is unknown.
 /// @return The deleted count and log paths; `invalid_request` for a negative
 /// retention; or the SQLite failure.
-export auto delete_expired_history(db::connection& conn, std::int64_t retention_days, std::int64_t now)
-    -> std::expected<expired_history, queue_error>;
+export auto delete_expired_history(db::connection& conn, std::int64_t retention_days, std::int64_t now,
+                                   const claim_lookup& lookup = {}) -> std::expected<expired_history, queue_error>;
 
 /// @brief Removes each file in `paths`. A path that no longer exists is
 /// already removed and is not a failure; any other filesystem error is

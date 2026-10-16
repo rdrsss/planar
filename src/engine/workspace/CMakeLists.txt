@@ -4,8 +4,7 @@
 #
 # DEPENDS db + json_text (both layer 1). No sideways `engine_*` edge: the
 # workspace leaves read `associations` / `projects` directly rather than
-# reaching into `engine_identity`, the same call `engine_grouping` already makes
-# to read `closures` without depending on `engine_closure`.
+# reaching into `engine_identity`.
 #
 # Behavior-preserving port (D2) of zig/src/engine/identity/workspace.zig and
 # zig/src/cmd/planar/handlers/workspace/doctor.zig -- ONE of the five
@@ -17,8 +16,7 @@
 #
 # `identity::planar_home` takes an explicit env-lookup callable rather than
 # reading `std::getenv`, so this module cannot find a real `~/.planar` on its
-# own -- the same structural mechanism `engine_workflows` and `engine_local`
-# use.
+# own -- the same structural mechanism `engine_local` uses.
 #
 # But for THIS bucket that is not sufficient, and the difference was established
 # by probing rather than assumed: `workspace doctor` writes to the association's
@@ -167,6 +165,6 @@ target_link_libraries(planar_engine_workspace PRIVATE glaze::glaze)
 
 if(TARGET planar_engine_workspace_tests)
   # The test binary opens real on-disk scratch databases through
-  # planar.db.migrate, exactly as engine/models' and engine/runs' suites do.
+  # planar.db.migrate, exactly as engine/planning's suites do.
   target_link_libraries(planar_engine_workspace_tests PRIVATE SQLite::SQLite3 glaze::glaze)
 endif()

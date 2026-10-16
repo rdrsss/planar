@@ -184,19 +184,11 @@ Companion verbs share the same shape:
 
 ```
 planar <entity> view <id>     # exec $PAGER on the workbench file
-planar <entity> diff <id>     # unified diff: DB-rendered vs FS contents
+planar task diff <id>         # unified diff: DB-rendered vs FS contents (also artifact)
 planar workbench edit <plan>  # bulk: push, exec $EDITOR on the feature dir, pull on save
 ```
 
-Bulk-review flows for sweeping through open questions or in-flight tasks:
-
-```
-planar question review [<plan>]   # REVIEW.md with every open question + originating artifact
-planar task review     [<plan>]   # TASKS.md with editable Status/Priority/Next-action per task
-```
-
-Save the focal file (`REVIEW.md` / `TASKS.md`); each populated block
-applies via the appropriate per-entity verb. Blank blocks skip.
+`planar task review <id> --approve` reports a verdict on that diff; the verdict is not persisted.
 
 Conflict surface: each `edit` verb auto-pulls the latest DB state
 into the workbench before opening `$EDITOR`. Pass `--no-pull` to skip

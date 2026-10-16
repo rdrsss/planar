@@ -1,2 +1,0 @@
-exit: 1
-planar-execute: execute.engine must be embedded or centurion, got: zig (config file)

@@ -9,7 +9,7 @@
 // The list is spelled out here rather than read from the module, so a change
 // to it has to change the test too.
 //
-// Include-before-import is deliberate (see core/version.t.cpp / db.t.cpp).
+// Include-before-import is deliberate (see db.t.cpp).
 #include <catch2/catch_test_macros.hpp>
 
 import std;

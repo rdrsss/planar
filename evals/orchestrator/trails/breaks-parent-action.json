@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "id": "breaks-parent-action",
+  "description": "Rule 4 in a partial protocol: one coder is dispatched under a parent action, the other is not.",
+  "tasks": [
+    {
+      "title": "dispatched",
+      "final": "done"
+    },
+    {
+      "title": "orphan",
+      "final": "done"
+    }
+  ],
+  "claims": [
+    {
+      "task": 1,
+      "status": "completed",
+      "role": "coder",
+      "model": "m",
+      "session": "coder-1",
+      "parent_action": true
+    },
+    {
+      "task": 2,
+      "status": "completed",
+      "role": "coder",
+      "model": "m",
+      "session": "coder-2",
+      "parent_action": false
+    }
+  ],
+  "expected": {
+    "conforms": false,
+    "violations": [
+      {
+        "rule": 4,
+        "entity": "claim:2"
+      }
+    ]
+  }
+}

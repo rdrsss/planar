@@ -1,25 +1,14 @@
-## Builds and tests go through the host queue
+## Using the host queue
 
-Every build and every test run on this machine goes through one host-wide
-queue, so that agents in different projects do not build at the same time.
-Submit the command to the queue and collect its recorded outcome. Do not run
-it yourself.
+The host queue is one line, shared by every project on this machine, for
+commands that are expensive to run: builds and test suites. Submit a command
+to it, and it runs the command at its turn and records the outcome, so agents
+in different projects do not build at the same time.
 
-### What counts as a build or test command
-
-A command goes through the queue when it does any of these:
-
-- compiles or links code;
-- runs a test suite, or any part of one;
-- uses more than one core for more than a minute.
-
-Examples: `make`, `make test`, `cmake --build`, `ninja`, `ctest`, `cargo build`, `cargo test`, `go build`, `go test`, `npm test`, `pytest`, `tox`, `gradle build`, and linters and static analysers that build first.
-
-Not queued: reading files, searching, version control, formatting a single file, a program's `--help`, and the Planar commands themselves.
-
-When a command is not on the list and you are unsure, queue it. Queuing a
-cheap command costs a short wait. Not queuing an expensive one costs every
-other agent on the host.
+Whether an agent must use the queue is the operator's policy, `use_queue` in
+`config.toml`. This text describes how to use it. `planar-agent queue rule`
+adds the instruction to send every build and test through the queue, and names
+its source, only when the policy of the caller's scope requires it.
 
 ### Before the first submission
 
@@ -31,7 +20,7 @@ planar-agent queue rule >/dev/null
 
 Exit 0 establishes that the queue exists. For a nonzero exit, inspect the
 diagnostic and installed command catalog; only a verified absence of the
-`queue` verb permits the no-queue path below. A queue that exists but cannot
+`queue` verb means the installed Planar has no queue. A queue that exists but cannot
 be read has refused. Do not use general `--help` alone as an absence test:
 older Planar versions can answer unknown-command help with general help and
 exit 0. If the queue exists, discover the `wait` leaf once using the compact
@@ -51,7 +40,7 @@ planar-agent queue run --detach --timeout 2h --vendor <vendor> --role <role> --c
 Run it from the directory the command needs. The command runs there, with
 your environment.
 
-Pass `--claim` only when holding a caller-supervised claim. Always pass
+Pass `--claim` only when holding a claim. Always pass
 `--vendor` and `--role`. Give your own vendor (`claude`,
 `codex`, `copilot`, `gemini`) and your own role (`coder`, `test-coder`,
 `reviewer`, `janitor`, `orchestrator`). The operator reads them in the
@@ -95,7 +84,7 @@ observation stopped. `stalled`, `history_unavailable`, and `error` leave the
 job outcome unknown; inspect the ticket and queue health and report the gap.
 An empty log, absent `status`, or empty active queue proves no result.
 `queue wait` is read-only and never renews a claim. `queue run --claim`
-renews a caller-supervised claim while the submitter waits and runs; a failed
+renews a claim while the submitter waits and runs; a failed
 renewal appears in the output file without stopping the command. Heartbeat
 separately when that renewal is unavailable.
 
@@ -192,31 +181,9 @@ timeout, stalled observation, or observer error. Inspect `wait_reason` and
 with `queue status <seq> --json`.
 
 When a submit exits 125, or the queue cannot be used (its store cannot be
-opened, or it failed inside), stop. Report the `error:` line to the operator,
-word for word, and say which command you were trying to run. The command must
-not be run directly. Do not retry in a loop, and do not look for another way
-to run the build. The operator decided that an unreachable queue is refused,
-not bypassed.
+opened, or it failed inside), the command did not run and nothing was
+recorded. Stop. Report the `error:` line to the operator, word for word, and
+say which command you were trying to run. Do not retry in a loop.
 
 An entry that ended `cancelled` or `wait_timeout` is not this case. It is an
-outcome of a ticket you hold, and the table above says what to do. The
-command is still never run directly.
-
-### If Planar has no queue: run directly and say so
-
-Use this only after verifying the installed Planar lacks the `queue` verb.
-Nonzero `queue rule` alone does not establish absence. An older install with
-`queue` but without `wait` uses the finite compatibility path above.
-
-Run the build or test command directly. Then tell the operator that Planar
-needs upgrading so that builds and tests can go through the queue.
-
-### Do not confuse the two
-
-| What you see | What it means | What to do |
-|---|---|---|
-| Installed catalog confirms no `queue` verb | No queue exists | Run the command directly and tell the operator Planar needs upgrading |
-| Queue exists but `wait` is unsupported | Older queue-capable install | Use foreground for short/script work or finite JSON status observation of a detached ticket |
-| Queue refuses or its store is unreadable | No valid gate result | Stop and report. Do not run the command directly |
-
-Discover the capability once; never treat a refused queue as an absent one.
+outcome of a ticket you hold, and the table above says what to do.

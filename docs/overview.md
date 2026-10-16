@@ -176,14 +176,6 @@ contains the task state, recent session entries, open questions, decisions made,
 and the next action. A blocked task must carry a next action; otherwise
 validation refuses to produce a resume packet for it.
 
-Within one multi-stage workflow, the same idea applies at a smaller scale.
-Workers add structured *context records* (findings, risks, follow-ups, and
-summaries) tagged by stage, and a later stage reads them back. At the end of a
-stage the records are compiled into a single summary record and are marked
-consumed or superseded; they are never deleted. Session entries are a narrative
-record of what happened, and context records are working memory for passing
-information between stages. The two are distinct on purpose.
-
 ## 5. Long-haul workflows
 
 Planar's bundled agent roles compose these mechanisms into a delivery loop for a
@@ -233,11 +225,8 @@ exposes tools, and executes the model's tool calls. Planar sits beside it.
 
 A harness needs only to run commands and read their output. Planar provides
 rendered skills and slash commands for Claude Code, Codex, Copilot, and Gemini,
-and vendor-neutral role specifications for any other. Planar also includes a
-deterministic workflow engine, `planar-execute`. It runs a scripted workflow
-over a fixed set of host functions, holds no database handle, and exposes no
-function that starts a model; it is invoked by a caller and is not itself a
-harness.
+and vendor-neutral role specifications for any other. Planar starts
+no model and is not itself a harness.
 
 ## 7. Where to read next
 

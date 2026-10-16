@@ -20,13 +20,11 @@ MAKEFLAGS += --no-builtin-rules
 BINARY        := planar
 AGENT_BINARY  := planar-agent
 WATCH_BINARY  := planar-watch
-EXECUTE_BINARY := planar-execute
 EXT_BINARY    := planar-ext
 BIN_DIR       := bin
 BIN           := $(BIN_DIR)/$(BINARY)
 AGENT_BIN     := $(BIN_DIR)/$(AGENT_BINARY)
 WATCH_BIN     := $(BIN_DIR)/$(WATCH_BINARY)
-EXECUTE_BIN   := $(BIN_DIR)/$(EXECUTE_BINARY)
 EXT_BIN       := $(BIN_DIR)/$(EXT_BINARY)
 
 # CMake build output — binaries land under `build/<preset>/bin` per
@@ -67,14 +65,13 @@ help:
 	@awk 'BEGIN {FS = ":.*##"; printf "Targets:\n"} /^[a-zA-Z0-9_.-]+:.*##/ {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 .PHONY: build
-build: ## Build the five Planar binaries into ./bin/
+build: ## Build the four Planar binaries into ./bin/
 	@mkdir -p $(BIN_DIR)
 	cmake --preset release -DPLANAR_VERSION_META=OFF
 	cmake --build build/release $(ARGS)
 	@cp -f $(CPP_RELEASE_BIN_DIR)/$(BINARY) $(BIN)
 	@cp -f $(CPP_RELEASE_BIN_DIR)/$(AGENT_BINARY) $(AGENT_BIN)
 	@cp -f $(CPP_RELEASE_BIN_DIR)/$(WATCH_BINARY) $(WATCH_BIN)
-	@cp -f $(CPP_RELEASE_BIN_DIR)/$(EXECUTE_BINARY) $(EXECUTE_BIN)
 	@cp -f $(CPP_RELEASE_BIN_DIR)/$(EXT_BINARY) $(EXT_BIN)
 
 # Scratch database for hand-run smoke tests, kept in the build dir.
@@ -396,8 +393,8 @@ ctest-registry-check: ## Prove ctest runs every case the test binaries contain (
 .PHONY: cli-usage-check
 cli-usage-check: ## Validate authored surfaces and catalog docs.examples against the live CLI schema and semantic contracts
 	$(configure_debug)
-	cmake --build $(CPP_BUILD_DIR) --target cli_usage_lint cli_docs_coverage surface_lint planar_cmd_planar planar_cmd_planar_agent planar_cmd_planar_watch planar_cmd_planar_ext planar_cmd_planar_execute
-	$(CLI_USAGE_LINT) $(CURDIR) $(CPP_BIN_ABS)/$(BINARY) $(CPP_BIN_ABS)/$(AGENT_BINARY) $(CPP_BIN_ABS)/$(WATCH_BINARY) $(CPP_BIN_ABS)/$(EXT_BINARY) $(CPP_BIN_ABS)/$(EXECUTE_BINARY)
+	cmake --build $(CPP_BUILD_DIR) --target cli_usage_lint cli_docs_coverage surface_lint planar_cmd_planar planar_cmd_planar_agent planar_cmd_planar_watch planar_cmd_planar_ext
+	$(CLI_USAGE_LINT) $(CURDIR) $(CPP_BIN_ABS)/$(BINARY) $(CPP_BIN_ABS)/$(AGENT_BINARY) $(CPP_BIN_ABS)/$(WATCH_BINARY) $(CPP_BIN_ABS)/$(EXT_BINARY)
 	$(CLI_DOCS_COVERAGE) $(CURDIR) $(CPP_BIN_ABS)/$(BINARY)
 	$(SURFACE_LINT) $(CURDIR) --enable-pending-retired
 	python3 scripts/check-md-anchors.py --self-test
@@ -503,7 +500,7 @@ clean: ## Remove build artifacts
 #    invoke a model host and are opt-in.
 
 .PHONY: eval
-eval: eval-orchestrator-unit eval-orchestrator eval-orchestrator-fixtures ## Deterministic contract, negative-control, and lifecycle-fixture checks
+eval: eval-orchestrator-unit eval-orchestrator eval-orchestrator-trails eval-orchestrator-fixtures ## Deterministic contract, negative-control, and lifecycle-fixture checks
 
 .PHONY: eval-orchestrator
 eval-orchestrator: ## Orchestrator contract evals
@@ -540,7 +537,7 @@ eval-queue-observation-integration: ## Exercise one live scratch queue ticket th
 	PYTHONDONTWRITEBYTECODE=1 python3 evals/orchestrator/integration_queue_observation.py
 
 .PHONY: eval-contracts
-eval-contracts: eval-orchestrator-unit eval-orchestrator-fast eval-orchestrator-fixtures ## The PROVIDER-FREE eval lanes, composed into test-all
+eval-contracts: eval-orchestrator-unit eval-orchestrator-fast eval-orchestrator-trails eval-orchestrator-fixtures ## The PROVIDER-FREE eval lanes, composed into test-all
 
 # Why this exists separately from `make eval`, and why test-all uses it:
 #
@@ -559,6 +556,17 @@ eval-contracts: eval-orchestrator-unit eval-orchestrator-fast eval-orchestrator-
 .PHONY: eval-orchestrator-contract
 eval-orchestrator-contract: ## Backward-compatible alias for the contract lane
 	./scripts/eval-orchestrator.sh --contract-only
+
+# Recorded trails graded by the checker `planar health conformance` runs: three
+# conforming trails in different orchestrator styles, one trail per broken rule,
+# an operator override, history before the floor and a descendant plan. The
+# harness copies each trail's database to scratch and grades it with the built
+# `planar`, so the lane needs the debug build of that one binary.
+.PHONY: eval-orchestrator-trails
+eval-orchestrator-trails: ## Recorded trails graded through planar health conformance (needs the built planar; no model host)
+	$(configure_debug)
+	cmake --build $(CPP_BUILD_DIR) --target planar_cmd_planar
+	PYTHONDONTWRITEBYTECODE=1 PLANAR_EVAL_PLANAR=$(CPP_BIN_ABS)/$(BINARY) python3 evals/orchestrator/harness.py --trails
 
 .PHONY: eval-orchestrator-fixtures
 eval-orchestrator-fixtures: ## Lifecycle fixture replay without a model host
@@ -609,21 +617,3 @@ eval-planning: ## Live planning-surface eval: make eval-planning CASE=<case> [AR
 .PHONY: eval-planning-unit
 eval-planning-unit: ## Planning harness unit tests
 	python3 evals/planning/test_harness.py
-
-# Verifies every candidate in agents/models.md §Candidate Presets actually
-# spawns on its host. DELIBERATELY NOT part of `make eval`: it costs one live
-# invocation per candidate. Detection only — repair is an operator edit.
-.PHONY: eval-candidate-spawn
-eval-candidate-spawn: ## Verify every Tier Table candidate spawns (opt-in, live)
-	python3 evals/candidate-spawn/verify.py $(ARGS)
-
-# Offline rollout report for the adaptive routing plane (plan 949). Invokes NO
-# model — reads Planar's own read verbs and reports class separation, cohort
-# isolation, exclusions with reasons, rollback availability.
-.PHONY: rollout-report
-rollout-report: ## Offline adaptive-routing rollout report
-	python3 evals/rollout/report.py $(ARGS)
-
-.PHONY: rollout-report-unit
-rollout-report-unit: ## Rollout report unit tests
-	python3 evals/rollout/test_report.py

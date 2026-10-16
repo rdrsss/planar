@@ -20,8 +20,6 @@ import planar.cmd.planar.handlers.atvalue;
 import planar.cmd.planar.handlers.question.add;
 import planar.cmd.planar.handlers.question.edit;
 import planar.cmd.planar.handlers.question.view;
-import planar.cmd.planar.handlers.question.diff;
-import planar.cmd.planar.handlers.question.review;
 import planar.cmd.planar.handlers.question.answer;
 import planar.cmd.planar.handlers.question.wontfix;
 import planar.cmd.planar.handlers.question.list;
@@ -447,10 +445,6 @@ auto declare_question_children(CLI::App& question) -> void {
   question_cli::attach_edit(question);
 
   question_cli::attach_view(question);
-
-  question_cli::attach_diff(question);
-
-  question_cli::attach_review(question);
 
   question_cli::attach_answer(question);
 

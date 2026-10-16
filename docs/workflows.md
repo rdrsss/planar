@@ -1,6 +1,6 @@
 # Planar Workflows
 
-End-to-end recipes for common Planar operations. Role work (drafting, ingesting, orchestrating, reviewing, syncing) is done by dispatching the named `planar-<role>` agent; everything verb-shaped is a CLI command, and `planar <verb> --help` is the reference for its flags. One skill, `planar`, carries the rules that cross verbs, and the recipes name its references where one applies; see [skill-reference.md](skill-reference.md). These assume you have run `planar init`, followed its printed `planar assoc create` / `planar assoc add` next steps to establish a project association, and understand the core concepts (see `docs/concepts.md`). `planar plan create` refuses to infer global ownership from an initialized but unassociated project; use `--scope global` only when that ownership is intentional.
+End-to-end recipes for common Planar operations. Where a recipe names a role (drafting, ingesting, orchestrating, reviewing, syncing), the example `planar-<role>` agents are one way to do that work; everything verb-shaped is a CLI command, and `planar <verb> --help` is the reference for its flags. One skill, `planar`, is a short reference for what Planar does, and the recipes name its references where one applies; see [skill-reference.md](skill-reference.md). These assume you have run `planar init`, followed its printed `planar assoc create` / `planar assoc add` next steps to establish a project association, and understand the core concepts (see `docs/concepts.md`). `planar plan create` refuses to infer global ownership from an initialized but unassociated project; use `--scope global` only when that ownership is intentional.
 
 ---
 
@@ -26,7 +26,7 @@ planar-ext ext propagate 7 --system my-gh
 planar workbench archive 7
 ```
 
-Steps 1 and 3 are agent dispatches; the others are verbs. The `planar-orchestrator` agent runs explicit phases (planning / spec review / ingestion / execution / finalization / propagation / archive) with user gates after drafting, before ingestion `--apply`, and before dispatch. The agents are listed in [skill-reference.md](skill-reference.md#the-role-agents).
+Steps 1 and 3 are agent dispatches; the others are verbs. The example `planar-orchestrator` agent runs explicit phases (planning / spec review / ingestion / execution / finalization / propagation / archive) with user gates after drafting, before ingestion `--apply`, and before dispatch; Planar does not require those gates. The agents are listed in [skill-reference.md](skill-reference.md#the-role-agents).
 
 ---
 
@@ -62,7 +62,7 @@ artifacts: product-spec.md, tech-spec.md, roadmap.md, test-spec.md
 ### Step 2 — Review and edit
 
 <!-- surface-lint-ignore surface-path-missing: illustrative touches-annotation syntax, not a real path -->
-Open the workbench directory. Read all four documents. Edit the `roadmap.md` section headers and bullet points — these become plan and task rows. **Annotate every testable bullet with a `[slug: foo-bar]` tag** so the test-spec can cite it by stable name even before ids are assigned. **Also annotate the files each bullet will touch** — `[touches: src/engine/x.cpp]`, or `[touches: <repo-slug>:src/engine/x.cpp]` in a polyrepo association. This is the cheapest moment to record it: you are holding the spec and already know the target files, whereas inferring them later from prose recovers only 20–44% of tasks. Touch declarations are what parallel-eligibility rule 2 reads and what closure extraction seeds from; a task with none is treated as touching everything and never runs in parallel. Edit the `## Decisions` section in `tech-spec.md` — these become decision rows. Edit acceptance criteria in `product-spec.md` — these become scenario rows. Edit the `## Scenarios` section in `test-spec.md` — each `### Scenario:` H3 becomes a `test_scenarios` row with `verifies` edges to the cited tasks. Cite tasks via `**Verifies:** task:<slug>` referencing the `[slug: …]` annotations on the roadmap bullets. The test-spec's four return-path buckets (happy / empty-null / error / edge) are a **coverage-reasoning lens** — name the bucket in each scenario title (e.g. `### Scenario: Error return — export fails on missing header`), not as `### <bucket>` group headers; the coverage-gap checklist at the bottom is the reviewer's compliance pass.
+Open the workbench directory. Read all four documents. Edit the `roadmap.md` section headers and bullet points — these become plan and task rows. **Annotate every testable bullet with a `[slug: foo-bar]` tag** so the test-spec can cite it by stable name even before ids are assigned. **Also annotate the files each bullet will touch** — `[touches: src/engine/x.cpp]`, or `[touches: <repo-slug>:src/engine/x.cpp]` in a polyrepo association. This is the cheapest moment to record it: you are holding the spec and already know the target files, whereas inferring them later from prose recovers only 20–44% of tasks. Touch declarations are what parallel-eligibility rule 2 reads; a task with none is treated as touching everything and never runs in parallel. Edit the `## Decisions` section in `tech-spec.md` — these become decision rows. Edit acceptance criteria in `product-spec.md` — these become scenario rows. Edit the `## Scenarios` section in `test-spec.md` — each `### Scenario:` H3 becomes a `test_scenarios` row with `verifies` edges to the cited tasks. Cite tasks via `**Verifies:** task:<slug>` referencing the `[slug: …]` annotations on the roadmap bullets. The test-spec's four return-path buckets (happy / empty-null / error / edge) are a **coverage-reasoning lens** — name the bucket in each scenario title (e.g. `### Scenario: Error return — export fails on missing header`), not as `### <bucket>` group headers; the coverage-gap checklist at the bottom is the reviewer's compliance pass.
 
 When satisfied, signal readiness to ingest.
 
@@ -89,7 +89,7 @@ project:my-app/billing-export-csv/
 coverage: 5 tasks (5 with slug, 0 without); 0 uncovered
 ```
 
-The `coverage:` line follows the totals. It reports how many of the tasks have a `[slug:]` annotation and how many of those slugs are cited by at least one scenario in `test-spec.md`. Uncovered slugs and orphan scenarios (missing `**Verifies:**` line) are listed inline. To turn the gate into a hard refusal, run with `--strict`:
+The `coverage:` line follows the totals. It reports how many of the tasks have a `[slug:]` annotation and how many of those slugs are cited by at least one scenario in `test-spec.md`. Uncovered slugs and orphan scenarios (missing `**Verifies:**` line) are listed inline and reported as warnings; they do not fail the preview. `--strict` adds the slug-collision refusal:
 
 ```
 planar spec ingest 42 --strict
@@ -101,11 +101,14 @@ For the authoritative pre-ingest check, request the machine-readable preview:
 planar spec ingest 42 --strict --json
 ```
 
-The draft is not ready when the command exits non-zero or when
-`coverage.uncovered_task_slugs`, `coverage.orphan_scenarios`, or the top-level
-`slug_collisions` array is non-empty. The first two usually mean adding a
-missing `[slug:]` to a roadmap bullet or filling in a scenario's
-`**Verifies:**` line; collisions require choosing a globally unique task slug.
+The draft is not ready when the command exits non-zero, which `--strict` does
+for a slug collision or a reference that resolves to no task, or when the
+top-level `slug_collisions` array is non-empty. Collisions require choosing a
+globally unique task slug; an unresolved `**Verifies:**` or `[depends:]` slug
+needs fixing in the artifact that names it. `coverage.uncovered_task_slugs` and
+`coverage.orphan_scenarios` are reported and do not block: they usually mean
+adding a missing `[slug:]` to a roadmap bullet or filling in a scenario's
+`**Verifies:**` line, and are worth reading before `--apply`.
 
 After `--apply` has created task, scenario, and verifies rows, use the read-only
 live-row inspector for a per-milestone view with a four-bucket breakdown by
@@ -128,7 +131,7 @@ Review the diff. If it looks correct:
 planar spec ingest 42 --apply
 ```
 
-`--apply` is an operator gate: run it only after you have confirmed the previewed diff. Add `--strict` to the apply call when the test-spec is meant to be complete — the gate will reject the apply if any slug-bearing task is still uncovered.
+`--apply` writes the diff the preview showed. Add `--strict` to the apply call to refuse on a slug collision. Uncovered slug-bearing tasks are reported as warnings, so read the `coverage:` line before you apply.
 
 Tasks, child plans, and decisions are now in the database. A successful apply also activates a `draft` anchor plan (the apply summary ends with `(anchor plan activated)`). Confirm before execution:
 
@@ -143,7 +146,7 @@ planar plan show 42
 
 Use this when an anchor plan is `active` and you want to execute tasks.
 
-**What happens:** Phase 3 runs two gates in order before dispatching any coder. Gate 1 — strategy + isolation — recommends an execution strategy (`classic`, `barrel-deferred`, `barrel-bypass`, or `parallel-fanout`) and isolation mode (`pwd` or `worktree`), then renders a dispatch preview showing each task with its proposed model tier and routed-model candidate. Gate 2 picks the dispatch shape nested under that strategy. Each coder output goes through the test-coder coverage gate when needed and then the reviewer unless the confirmed mode bypasses or defers review. The reviewer loop cap is 5 iterations per dispatch cycle.
+**What happens:** Phase 3 runs two gates in order before dispatching any coder. Gate 1 — strategy + isolation — recommends an execution strategy (`classic`, `barrel-deferred`, `barrel-bypass`, or `parallel-fanout`) and isolation mode (`pwd` or `worktree`), then lists the tasks by wave. Gate 2 picks the dispatch shape nested under that strategy. Each coder output goes through the test-coder coverage gate when needed and then the reviewer unless the confirmed mode bypasses or defers review. The reviewer loop cap is 5 iterations per dispatch cycle.
 
 ### Invoke
 
@@ -158,15 +161,15 @@ The orchestrator reads claim-aware task state, then opens Gate 1:
 ```
 Plan 42 "billing-export-csv" — 5 todo tasks
 
-Phase 3 dispatch preview:
+Phase 3 plan:
 
   wave 1
-    #43  add-export-jobs-table     blocks: 45        tier: large   model: claude-opus-5-5    (schema)
-    #44  add-billing-exports-table —                 tier: large   model: claude-opus-5-5    (schema)
+    #43  add-export-jobs-table     blocks: 45
+    #44  add-billing-exports-table —
   wave 2 — unblocks when #43 is done
-    #45  write-migration-0008      blocked_by: 43    tier: large   model: claude-opus-5-5    (schema)
-    #46  implement-csv-serialiser  —                 tier: medium  model: claude-sonnet-5-5  (feature)
-    #47  wire-up-export-endpoint   —                 tier: medium  model: claude-sonnet-5-5  (feature)
+    #45  write-migration-0008      blocked_by: 43
+    #46  implement-csv-serialiser  —
+    #47  wire-up-export-endpoint   —
 
 Recommended strategy: classic  pwd
 Rationale: 5-task plan, sequential migration dependencies across 2 waves
@@ -178,7 +181,7 @@ Rationale: 5-task plan, sequential migration dependencies across 2 waves
   parallel-fanout   — staged worktree fan-out; N coders concurrently.
 
 Confirm strategy and isolation? [classic pwd / classic worktree / barrel-deferred pwd /
-  barrel-deferred worktree / barrel-bypass / parallel-fanout / task <id> -> <tier>]
+  barrel-deferred worktree / barrel-bypass / parallel-fanout]
 ```
 
 After confirming the strategy, Gate 2 opens:
@@ -190,8 +193,8 @@ Proposed dispatch shape: grouped
   Group A: tasks 43, 44, 45  (all touch migrations/ — one coder cycle)
   Group B: tasks 46, 47      (independent of Group A)
 
-Accept this shape, the tier assignments, and the routed candidates?
-[yes / edit / strict / single / task <id> -> <tier> / task <id> -> <candidate>]
+Accept this shape?
+[yes / edit / strict / single]
 ```
 
 Confirm (`yes`) or adjust. The orchestrator then dispatches Group A to a freshly spawned coder subagent, routes the output through Phase 3.5 when needed, and either dispatches the reviewer or records the confirmed reviewer disposition. On `approve`, tasks flip to `done` through `planar-agent complete` and Group B is dispatched.
@@ -337,7 +340,7 @@ tasks: [44, 45, 46]
 
 **Phase 3.5 still fires across all three barrel modes** when uncovered slugs intersect the cycle. Barrel-bypass bypasses the reviewer, not the coverage gate. The test-coder's `failure-surfaced` outcome halts the cycle and escalates to the operator regardless of mode.
 
-For the canonical contract see `agents/methodology.md` § Barrel modes; for the dispatch-shape concept see [`docs/concepts.md` §Dispatch shapes](concepts.md#dispatch-shapes).
+The barrel modes are a feature of the example orchestrator, not a Planar requirement; for the dispatch-shape concept see [`docs/concepts.md` §Dispatch shapes](concepts.md#dispatch-shapes).
 
 ---
 
@@ -575,265 +578,7 @@ The restored tree is byte-identical to the pre-archive state. All workbench sync
 
 ---
 
-## Recipe 7 — Adopt an Existing Repo into Planar
-
-Use this when you have months or years of accumulated work (specs, ADRs, roadmap files, TODO lists, backlog Markdown, git history) and want to import it into Planar without starting from scratch.
-
-**What happens:** `planar import` (driven by the `planar-importer` agent) walks the repo filesystem, reads planning artefacts, infers task completion status from checkbox state and git history, and produces an ImportPlan. The user reviews the preview, then applies it. Idempotency ensures re-runs after new commits are safe.
-
-### Step 1 — Install Planar and initialize
-
-```
-planar init
-```
-
-Run once per machine. Creates `~/.planar/planar.db` and applies all migrations.
-
-### Step 2 — Set scope (optional)
-
-By default `import` resolves scope from cwd: run it from inside the repo you want to adopt and Planar uses the cwd-derived project association. To import directly under the repository's own scope, pass `--scope repo:<that-repo>`. To import under a different association, pass `--scope` on the `planar import` invocation:
-
-```
-planar import . --scope assoc:project:my-app
-```
-
-To import under global scope, run from outside any registered scope and pass `--scope global` explicitly.
-
-### Step 3 — Preview the import
-
-```
-planar import .
-```
-
-The importer discovers artefacts from the current directory, infers task statuses, and prints a tree-shaped diff without writing anything:
-
-```
-./
-  + plan       M1 — Schema                  (3 tasks)
-  +   task     Add foundation migration      [done — git-log match]
-  +   task     Add planning tables           [done — git-log match]
-  +   task     Add work-item tables          [todo]
-  + artifact   docs/tech-spec.md            [kind=tech_spec]
-  + decision   Vendor SQLite amalgamation   [from: docs/adrs.md#adr-0009]
-
-5 additions, 0 skipped.
-Run with --apply to commit.
-```
-
-Review the tree. Check that:
-- Milestone headings mapped to the right child plans.
-- Task statuses (`done` / `todo`) look correct.
-- Artifacts and decisions were discovered.
-
-### Step 4 — Optionally include GitHub issues
-
-If the repo has open GitHub issues you want to import as tasks:
-
-```
-planar import . --from-github
-```
-
-Requires the `gh` CLI on PATH and a GitHub remote at `origin`. Previews without writing.
-
-### Step 5 — Apply
-
-```
-planar import . --apply
-```
-
-Commits the import. Expected output:
-
-```
-applied: 4 plans, 18 tasks, 3 artifacts, 5 decisions, 2 skipped
-anchor plan id: 87
-```
-
-To include GitHub issues in the same apply run:
-
-```
-planar import . --from-github --apply
-```
-
-### Step 6 — Review the imported tree
-
-```
-planar tree
-planar plan list
-planar task list
-```
-
-The anchor plan (id 87 in the example above) is the entry point. Child plans correspond to milestones. Tasks carry inferred statuses.
-
-### Step 7 — Propagate to an external system (optional)
-
-If you want the imported tree mirrored to GitHub Issues or Jira:
-
-```
-planar-ext ext propagate 87 --system my-gh
-```
-
-See Recipe 3 for the full propagation walkthrough.
-
-### Step 8 — Re-run incrementally
-
-After new commits land, re-run the preview to see what new work can be imported:
-
-```
-planar import .
-```
-
-Items already in the database are reported as **Skipped**. Only new items appear as additions. Apply when satisfied:
-
-```
-planar import . --apply
-```
-
----
-
-## Recipe 7a — Greenfield Onboard with synthesize
-
-Use this when the repo is docs-only or has no implementation yet — a freshly cut roadmap, a planning sandbox, or a project where the code tree is intentionally empty. `import` would treat every roadmap-adding commit as evidence that the work is done; `synthesize` reads the source tree and refuses to mark anything done when there is no source to back the claim.
-
-**What happens:** the synthesizer's deterministic floor probes the source tree, sees zero meaningful evidence, and sets `greenfield=true` on the staged `request`. The synthesizer's contract forbids `status != "todo"` under greenfield; `validate_result()` in `src/engine/synthesize/synthesize.cpp` enforces it. Every task lands as todo regardless of what the docs claim.
-
-### Step 1 — Run synthesize against the greenfield repo
-
-```
-planar synthesize ~/projects/holdfast
-```
-
-Auto-detection sets greenfield mode because codeprobe reports no source-file evidence (no `Sources/`, no `src/`, no `internal/`, no `cmd/` — just `docs/` and `README.md`). The preview annotates the mode:
-
-```
-greenfield mode: yes (auto-detected — no source-file evidence)
-synthesis-request written to ~/.planar/cache/bootstrap-synthesis/holdfast/_pending.json
-Awaiting LLM synthesis. Re-run `planar synthesize ~/projects/holdfast` after the Result is written.
-```
-
-### Step 2 — The synthesizer produces a Result
-
-The `planar-synthesizer` agent picks up the pending request, runs the LLM at temperature 0, and writes a Result whose every task has `status=todo`. `validate_result()` rejects any Result that violates the greenfield invariant.
-
-### Step 3 — Re-run synthesize to merge and preview
-
-```
-planar synthesize ~/projects/holdfast
-```
-
-Preview shows every roadmap milestone as a child plan with `status=draft` and every extracted task at `status=todo`. Compare to what `import` would have produced: the roadmap-adding commit ("docs: phase 1 roadmap") matches git-log to dozens of phase-1 task titles via fuzzy correlation, so without the >25% auto-done refusal `import` would have marked them done. The greenfield mode of `synthesize` makes the false-done problem structurally impossible.
-
-### Step 4 — Apply
-
-```
-planar synthesize ~/projects/holdfast --apply
-```
-
-Reference artifacts (the original `docs/product-roadmap.md` etc.) are preserved on the anchor plan as `kind=research`; the synthesized `product_spec` / `tech_spec` / `roadmap` are the primary planning material.
-
-**When to escape greenfield auto-detection.** If the repo has a non-conventional code layout that codeprobe under-detects (e.g. monorepo with code only under `vendor/`), pass `--treat-as-nongreenfield` to bypass auto-detection.
-
-See [Recipe 7](#recipe-7--adopt-an-existing-repo-into-planar) for the sibling transcription path.
-
----
-
-## Recipe 7b — Docs-with-Code Onboard with synthesize
-
-Use this when the repo has both clean planning material and a working source tree, and you want the LLM to assess what's actually there rather than transcribe the docs verbatim.
-
-**What happens:** the synthesizer probes the source tree, builds a per-FeatureArea EvidenceMap (source / test / CI / commit signals with `SignalStrength` scores), and hands both the docs and the EvidenceMap to the LLM. Tasks with `status != "todo"` must cite a `code_evidence` path that exists in the EvidenceMap; the validator rejects anything claiming completion without code to back it.
-
-### Step 1 — Run synthesize against the repo
-
-```
-planar synthesize ~/projects/lectio
-```
-
-Auto-detection: code is present (`Sources/Lectio/`, `Tests/LectioTests/`), so greenfield mode is OFF. Layout auto-detection picks `swift` from `Package.swift`.
-
-```
-greenfield mode: no
-code-layout: swift (from Package.swift)
-feature areas: 7 (Reader, Annotations, Sync, ...)
-synthesis-request written to ~/.planar/cache/bootstrap-synthesis/lectio/_pending.json
-```
-
-### Step 2 — Re-run after the Result is written
-
-```
-planar synthesize ~/projects/lectio
-```
-
-Preview shows tasks with code-evidence citations annotated:
-
-```
-+ task     Wire annotations storage          [done — cited: Sources/Lectio/Annotations/Store.swift]
-+ task     Add sync conflict resolution      [todo]
-+ task     Implement Reader pagination       [doing — cited: Sources/Lectio/Reader/Pager.swift]
-```
-
-The "code wins" rule: if the docs claim a task is done but no source file backs the claim, the LLM is contractually forbidden from marking it done — `validate_result()` rejects the Result.
-
-### Step 3 — Compare with import
-
-For the same fixture, `planar import ~/projects/lectio` would produce a similar plan tree — but with statuses driven by git-log correlation (commit titles vs. task titles) rather than code-presence. Both verbs land in the same downstream pipeline; `import` preserves the original doc structure exactly, while `synthesize` produces an LLM-curated reorganization grounded in what the code actually shows.
-
-### Step 4 — Apply
-
-```
-planar synthesize ~/projects/lectio --apply
-```
-
-See [Transcription vs Synthesis](./concepts.md#transcription-vs-synthesis) for the conceptual split.
-
----
-
-## Recipe 7c — Mid-Evolution Onboard with synthesize
-
-The most interesting case: the docs claim more than the code shows. A roadmap declares Phase 2 complete; the source tree shows Phase 2's directory is empty. `import` would faithfully transcribe the docs' claim (or git-log-correlate it to done); `synthesize` reads the source and refuses to mark a phase done without code evidence.
-
-### Step 1 — Run synthesize against the mid-evolution repo
-
-```
-planar synthesize ~/projects/midevo
-```
-
-The deterministic floor probes the tree:
-
-```
-greenfield mode: no
-code-layout: go (from go.mod)
-feature areas: 4 (sessions, transport, auth, telemetry)
-  sessions: source=none, tests=none, ci=none, commits=2 (docs only)
-  transport: source=strong, tests=present, ci=present, commits=14
-  auth: source=present, tests=none, ci=none, commits=5
-  telemetry: source=none, tests=none, ci=none, commits=1 (docs only)
-synthesis-request written to ~/.planar/cache/bootstrap-synthesis/midevo/_pending.json
-```
-
-### Step 2 — Re-run after the Result is written
-
-```
-planar synthesize ~/projects/midevo
-```
-
-Phase 2 (sessions) lands as `status=active` (or todo) despite the roadmap claiming `done`, because the EvidenceMap shows `source=none, tests=none`. Phase 3 (transport) lands as `done` with a code-evidence citation. The original Phase 2 done-claim survives as a `kind=research` reference artifact on the anchor plan, so the operator can see both narratives:
-
-- Synthesized roadmap (primary): Phase 2 active, Phase 3 done.
-- Reference artifact (the original `docs/product-roadmap.md`): Phase 2 marked done.
-
-### Step 3 — When to use `--treat-as-nongreenfield`
-
-For repos where codeprobe under-detects code (non-conventional layouts, code under `vendor/`, generated code only, etc.), pass `--treat-as-nongreenfield` to force the synthesizer out of greenfield mode. This is rare; reach for it only after the preview shows `greenfield mode: yes` despite obvious source files being present.
-
-### Step 4 — Apply
-
-```
-planar synthesize ~/projects/midevo --apply
-```
-
-The audit trail preserves the original doc-claims; operators reviewing the imported tree see the synthesized version as primary and the original docs as research-grade reference.
-
-See [Recipe 7](#recipe-7--adopt-an-existing-repo-into-planar) for the sibling transcription path and [Recipe 7a](#recipe-7a--greenfield-onboard-with-synthesize) / [Recipe 7b](#recipe-7b--docs-with-code-onboard-with-synthesize) for the other synthesis shapes.
+Onboarding an existing repo was removed with `planar import` and `planar synthesize` (plan 1142, task 7471); the recipes are preserved at tag `archive/import-synthesize`.
 
 ---
 
@@ -944,7 +689,7 @@ planar task update 142 --next-action "rerun make test"
 # … coder works, then returns; the orchestrator owns the terminal verb …
 ```
 
-No `--scope` flag is needed. The resolver sees that `cwd` is inside the registered `project:repo-a` root, ranks `project` above the org association `project:repo-a` belongs to, and resolves to `project:repo-a`. The success line shows `[from cwd]`. Note what the guard does and does not cover here: `task update` is one of the ten verbs that run the cross-scope guard, so if the dispatcher accidentally `cd`-ed into `repo-b` for a task owned by `repo-a`, `task update` refuses with a multi-line error naming both scopes and pointing at `--scope` (or `cd` into the correct repo) as the remediation — there is no flag-based bypass. A verb outside the guarded set writes from any cwd. The guarded set is listed in [`docs/cli-reference.md § Guarded verbs`](cli-reference.md#guarded-verbs); everything else writes without comparing scopes.
+No `--scope` flag is needed. The resolver sees that `cwd` is inside the registered `project:repo-a` root, ranks `project` above the org association `project:repo-a` belongs to, and resolves to `project:repo-a`. The success line shows `[from cwd]`. Note what the guard does and does not cover here: `task update` is one of the seven verbs that run the cross-scope guard, so if the dispatcher accidentally `cd`-ed into `repo-b` for a task owned by `repo-a`, `task update` refuses with a multi-line error naming both scopes and pointing at `--scope` (or `cd` into the correct repo) as the remediation — there is no flag-based bypass. A verb outside the guarded set writes from any cwd. The guarded set is listed in [`docs/cli-reference.md § Guarded verbs`](cli-reference.md#guarded-verbs); everything else writes without comparing scopes.
 
 This is the dominant pattern. Every coder, ingestor, and planner skill that runs against a known repo cwd works without scope plumbing.
 
@@ -973,7 +718,7 @@ planar decision add "Adopt strict resolver for writes" \
   --scope assoc:project:repo-b
 ```
 
-`decision add` is a create verb, so the guard does not fire — the new decision's scope is whatever `--scope` resolves to. The guard fires on subsequent `decision accept`, `decision withdraw`, and `audit publish-decision` calls; `decision edit` and `decision supersede` run no scope guard.
+`decision add` is a create verb, so the guard does not fire — the new decision's scope is whatever `--scope` resolves to. The guard fires on subsequent `decision accept` and `decision withdraw` calls; `decision edit` and `decision supersede` run no scope guard.
 
 ### Inspecting the resolved scope
 
@@ -1098,7 +843,7 @@ Use this when your daily working tree is a workspace directory (`~/work/`, `~/pr
 
 **What happens:** `planar workspace init` builds the org + project rows in one transaction, creates the state directory under `~/.planar/workspaces/<org_id>/`, scans the member repos to produce a structured routing table, regenerates `AGENTS.md` from that table, and installs symlinks at the workspace root (`AGENTS.md`, `CLAUDE.md`) that point at the canonical content. Subsequent shape changes (new repo, new plans, dependencies shifting) are absorbed by re-running the routing build and regenerate verbs; the symlinks stay valid.
 
-**Scope discipline in a workspace.** The [cross-scope guard](concepts.md#cross-scope-guard) fires on ten verbs, not only on `spec ingest` (the original lectio incident). The comparison is membership-aware: when you are working from the workspace root (`~/work/`), cwd resolves to `org:work`, which covers entities scoped to any member repo, so a `planar task update 142` against a task that belongs to repo A is accepted. The reverse direction is refused with exit 5: from inside `~/work/repo-a`, a write against an entity stored at `org:work` (or at an unrelated repo) needs `--scope` naming the entity's scope, or a `cd` into it. The same rule applies to `spec ingest --apply`, `feedback triage set`, `audit publish-decision`, `decision accept`, `decision withdraw`, `closure compute`, and single-target `planar-ext sync push`/`sync pull`/`sync resolve`. Every other mutating verb — including `plan update`, `decision edit`, `decision supersede`, `artifact update`, `ext create --from`, `ext propagate`, and `link`/`unlink` — writes without comparing scopes (see [`docs/cli-reference.md § Guarded verbs`](cli-reference.md#guarded-verbs)). Create verbs (`task add`, `decision add`, etc.) and entity-link verbs (`task link`, `links add`, `task touches add`) are not guarded — they are designed to cross scopes.
+**Scope discipline in a workspace.** The [cross-scope guard](concepts.md#cross-scope-guard) fires on seven verbs, not only on `spec ingest` (the original lectio incident). The comparison is membership-aware: when you are working from the workspace root (`~/work/`), cwd resolves to `org:work`, which covers entities scoped to any member repo, so a `planar task update 142` against a task that belongs to repo A is accepted. The reverse direction is refused with exit 5: from inside `~/work/repo-a`, a write against an entity stored at `org:work` (or at an unrelated repo) needs `--scope` naming the entity's scope, or a `cd` into it. The same rule applies to `spec ingest --apply`, `decision accept`, `decision withdraw`, and single-target `planar-ext sync push`/`sync pull`/`sync resolve`. Every other mutating verb — including `plan update`, `decision edit`, `decision supersede`, `artifact update`, `ext create --from`, `ext propagate`, and `link`/`unlink` — writes without comparing scopes (see [`docs/cli-reference.md § Guarded verbs`](cli-reference.md#guarded-verbs)). Create verbs (`task add`, `decision add`, etc.) and entity-link verbs (`task link`, `links add`, `task touches add`) are not guarded — they are designed to cross scopes.
 
 ### Step 1 — Initialize the workspace
 
@@ -1354,7 +1099,6 @@ planar-ext sync resolve 7 --keep local \
 
 # Audit trail from either direction.
 planar audit trail --link 1                   # everything for link 1
-planar audit publish-decision 5               # post decision 5 to all linked remotes
 planar audit handoff-readiness --threshold 90 # CI gate
 ```
 
@@ -1462,8 +1206,8 @@ There is no `planar local promote` shortcut, deliberately. Making a local skill 
 
 ## Recipe 14A — Inspect installed skill and agent placements
 
-`install.sh` stages `skills/planar/` and the agents under `~/.planar` and places
-them into each vendor found on the host. Planar's own `install-manifest.json`
+`install.sh` stages `skills/planar/` under `~/.planar` and places it into each
+vendor found on the host; it places no role agents. Planar's own `install-manifest.json`
 records every placement. Run these inspections from the repository root:
 
 ```bash
@@ -1476,7 +1220,7 @@ skill as a directory, every file) and reports `projection_freshness`:
 `fresh`, `stale` (drifted) or `missing` rows, and a `legacy` manifest left by an
 older installer. `scripts/check-self-installed.sh` exits non-zero unless the
 manifest is current with no stale or missing row. To repair a managed
-placement, run `./install.sh --prefix ~/.planar`. The nine targets and the
+placement, run `./install.sh --prefix ~/.planar`. The three skill targets and the
 drift rules are in [skill-reference.md § What installs where](skill-reference.md#what-installs-where).
 Personal `planar local` extensions remain outside this install manifest.
 
@@ -1498,7 +1242,7 @@ The verb opens the workbench file for artifact 42 in `$EDITOR`. On save:
 - Allowed frontmatter mutations (title, status, priority on tasks, etc.) are applied through the M5 mutation validator.
 - Disallowed mutations (identity fields, anchor moves without `--allow-replan`) are rejected; the workbench file is preserved so the operator can fix and retry.
 
-Same shape across kinds: `task edit`, `question edit`, `decision edit`, `scenario edit`.
+Same shape across kinds: `task edit`, `question edit`, `decision edit`, `scenario edit`. `plan` has `view` only.
 
 ### Step 2 — View or diff without editing
 
@@ -1507,7 +1251,7 @@ planar artifact view 42      # exec $PAGER on the workbench file
 planar artifact diff 42      # unified diff between DB and FS
 ```
 
-`view` is the read path; `diff` shows where the FS file has diverged from what the DB would render. Both auto-push if the file is missing.
+`view` is the read path; `diff` shows where the FS file has diverged from what the DB would render. Both auto-push if the file is missing. `diff` exists on `task` and `artifact` only.
 
 ### Step 3 — Resolve a concurrent-change conflict
 
@@ -1528,21 +1272,13 @@ and settle the conflict with `planar workbench resolve <event-id>
 update path itself (rather than the editor flow), `planar task
 update <id> --force --reason "<why>"` is the escape hatch.
 
-### Step 4 — Bulk-review across many entities
-
-For sweeping through every open question (or every open task) tied to a plan:
+### Step 4 — Report a verdict on a pending diff
 
 ```
-planar question review 226
-planar task review     226
+planar task review 226 --approve
 ```
 
-Each verb builds a focal file (`REVIEW.md` or `TASKS.md`) in a temp session directory, copies the originating artifact alongside as context, and execs `$EDITOR` on the directory. On save, populated blocks become per-entity verb invocations:
-
-- Question review: a non-blank `### Answer` block → `planar question answer <id> "<body>"`; a single line `WONTFIX` (case-sensitive) → `planar question wontfix <id>`; blank → skip.
-- Task review: each task block has editable `Status:`, `Priority:`, `Next-action:` lines; non-empty changes apply via `planar task update`.
-
-The session directory is removed on success; preserved on save failure so unsaved work survives. Add `--editor-hints` to drop a `.code-workspace` (VS Code) and `.vimrc-local` (Vim) in the session dir.
+`task review` computes the same workbench diff as `task diff` and reports an `--approve` or `--request-changes` verdict on it. The verdict is printed (or emitted with `--json`); it is not persisted. `artifact`, `decision` and `scenario` have the same `review` verb; `plan` and `question` do not.
 
 ### Step 5 — Bulk-edit the whole feature
 
@@ -1556,8 +1292,8 @@ Push the plan's entities to the workbench, exec `$EDITOR` on the feature directo
 
 - One file, one entity: `<entity> edit`.
 - Read-only inspection: `<entity> view`.
-- "Is the FS file in sync with the DB?": `<entity> diff`.
-- Sweep through open questions or tasks on a plan: `<entity> review`.
+- "Is the FS file in sync with the DB?": `task diff` or `artifact diff`.
+- Report a verdict on that diff: `<entity> review` (`task`, `artifact`, `decision`, `scenario`).
 - "I want to edit 4 files at once on one plan": `workbench edit`.
 - Old `push → edit → pull` rhythm: still works; it's just no longer the default.
 
@@ -1572,10 +1308,10 @@ By design, the `planar` binary has **no `planar agent` subcommand**. Agent obser
 | Binary | Role | Verbs |
 |--------|------|-------|
 | `planar` (this binary) | Operator reads of agent state, folded into existing verbs. | `dashboard --agents`, `plan next`, `tree`, `audit trail`, `health` |
-| `planar-agent` | Agent ritual + operator-recovery writes. Owns every write to `agent_work_claims` / `agent_actions`. | `pull`, `peek`, `claim`, `heartbeat`, `complete`, `fail`, `release`, `block`, `action start`/`end`, `ingest`, `reconcile`, `abort` |
-| `planar-watch` | Live streaming viewer. Pure read. | `feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `run list`/`show`, `sync-events`, `queue`, `queue history` |
+| `planar-agent` | Agent ritual + operator-recovery writes. Owns every write to `agent_work_claims` / `agent_actions`. | `pull`, `peek`, `claim`, `heartbeat`, `complete`, `fail`, `release`, `block`, `action start`/`end`, `review`, `ingest`, `reconcile`, `abort` |
+| `planar-watch` | Live streaming viewer. Pure read. | `feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `sync-events`, `queue`, `queue history` |
 
-This recipe covers the **planar** binary's read surface. The claim ritual for `planar-agent` is in `agents/methodology.md` § Coordination claims; the streaming-viewer recipe for `planar-watch` is [Recipe 19](#recipe-19--live-agent-cockpit-with-planar-watch).
+This recipe covers the **planar** binary's read surface. The claim ritual for `planar-agent` is in `skills/planar/references/claim-ritual.md`; the streaming-viewer recipe for `planar-watch` is [Recipe 19](#recipe-19--live-agent-cockpit-with-planar-watch).
 
 ### Step 1 — Survey what's in flight
 
@@ -1880,7 +1616,7 @@ Both error paths are atomic — the surrounding `BEGIN IMMEDIATE` transaction ro
 
 ## Recipe 19 — Live agent cockpit with `planar-watch`
 
-`planar-watch` is the third binary in the five-binary architecture — the **human-facing read-only viewer**. It opens the database in strict read-only mode (`SQLITE_OPEN_READONLY`); the SQLite driver itself refuses every write SQL string, which is the second line of defense behind the binary's "no write verbs registered" capability boundary. The first defense is the verb tree itself: it contains exactly nine read verbs — `feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `run`, `sync-events` — plus the conventional `version`, `completion` and `schema` helpers, and zero anything that mutates state.
+`planar-watch` is the **human-facing read-only viewer**. It opens the database in strict read-only mode (`SQLITE_OPEN_READONLY`); the SQLite driver itself refuses every write SQL string, which is the second line of defense behind the binary's "no write verbs registered" capability boundary. The first defense is the verb tree itself: it contains only read verbs — `feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `sync-events`, `queue` and `diagnose` — plus the conventional `version`, `completion` and `schema` helpers, and zero anything that mutates state.
 
 This recipe walks the streaming-cockpit workflow. The companion recipe for the operator's read-fold-ins on the `planar` binary lives in Recipe 16.
 
@@ -2064,7 +1800,7 @@ that runs cleanup as part of the next push.
 
 ## Recipe 21 — Pick an orchestration strategy for a plan
 
-Use this when you dispatch `planar-orchestrator` on an `active` plan and want to understand the strategy gate (Phase 3's first sub-step). The strategy answers "what is the overall methodology for this plan?" — the dispatch-shape gate (nested under it) answers "within that strategy, how do I batch this cycle's work?" For the concept overview see [`docs/concepts.md §Orchestration strategy`](concepts.md#orchestration-strategy); for the canonical contract see `agents/methodology.md` § Orchestration strategies.
+Use this when you dispatch `planar-orchestrator` on an `active` plan and want to understand the strategy gate (Phase 3's first sub-step). The strategy answers "what is the overall methodology for this plan?" — the dispatch-shape gate (nested under it) answers "within that strategy, how do I batch this cycle's work?" For the concept overview see [`docs/concepts.md §Orchestration strategy`](concepts.md#orchestration-strategy); the strategies are the example orchestrator's choices, and Planar records only the metadata a dispatcher attaches.
 
 ### Step 1 — Invoke the orchestrator
 
@@ -2082,9 +1818,7 @@ Alternatives:
   classic                Sequential cycles, reviewer per cycle. Isolation: pwd or worktree.
                          [continuity guarantee — today's behavior bit-for-bit]
   parallel-fanout        Fan out to N coders on the parallel-eligible subset, staged by the
-                         `blocks` graph; reviewer at fan-in. workflows/parallel-dispatch.lua
-                         is an optional deterministic helper; the orchestrator, a host-native
-                         workflow, or a background agent may run this path.
+                         `blocks` graph; reviewer at fan-in.
                          [throughput + integrated review]                                 ← recommended
   barrel-deferred        Back-to-back coder cycles; reviewer at boundary on union diff.
                          Isolation: pwd or worktree.
@@ -2123,7 +1857,7 @@ The strategy gate is skipped; for sequential strategies isolation defaults to `p
 
 ### Custom axis escape hatch
 
-For shapes outside the named menu, name `--strategy custom` in the brief together with the per-axis options: `--isolation worktree`, `--branch-model epic-child`, `--concurrency sequential`, `--reviewer-cadence at-boundary` and `--test-coder-cadence at-boundary`. The orchestrator refuses invalid axis combinations (e.g. `concurrency=fan-out` with `isolation=in-pwd` — parallel coders would clobber pwd) with a diagnostic before any dispatch runs. See `agents/methodology.md` § Invalid combinations for the full list.
+For shapes outside the named menu, name `--strategy custom` in the brief together with the per-axis options: `--isolation worktree`, `--branch-model epic-child`, `--concurrency sequential`, `--reviewer-cadence at-boundary` and `--test-coder-cadence at-boundary`. The example orchestrator refuses invalid axis combinations (e.g. `concurrency=fan-out` with `isolation=in-pwd` — parallel coders would clobber pwd) with a diagnostic before any dispatch runs.
 
 ### Worked example — a 4-task plan accepts `parallel-fanout`
 
@@ -2144,7 +1878,7 @@ The orchestrator records the choice and moves on to the parallel-fanout per-cycl
 
 ## Recipe 22 — Orchestrate a multi-task plan with parallel coders
 
-> **Ownership note.** The worktree lifecycle — epic-branch cut, per-lane worktree creation, fan-in merge, failed-lane retention, and full teardown — is **model-runnable via the spawn-free `workflows/parallel-dispatch.lua` seam** (plan 760): `cycle_plan` computes one sequential lane, while `plan`/`waves` compute parallel lanes. The seam computes worktree paths, branch names, merge order, and teardown lists and HANDS BACK; the runner that acts on that output — running the git worktree/branch/merge ops and spawning coders — may be the model orchestrator through the host's subagent dispatch surface, a host-native workflow, or a background agent (decision 1007, plan 1033). The seam is an optional deterministic helper, not the only permitted path. The six eligibility rules are the engine's (`recommend-strategy`, `src/engine/planning/strategy.cpp`), consumed by the fan-out phases and never re-derived. They apply to `parallel-fanout`, not to a single sequential worktree lane. For the staged-wave (dependency-respecting) variant — proto lands first, then identity + web in parallel — see [Step 11 — Staged waves](#step-11--staged-waves-contract-lane-first) below. In-flight worktree execution is watched through `planar-watch ps --plan <id>` (claims + each claim's `worktree_path`) — there is no separate wave/barrier view.
+> **Ownership note.** The worktree lifecycle — epic-branch cut, per-lane worktree creation, fan-in merge, failed-lane retention, and full teardown — is run by the orchestrator through the host's subagent dispatch surface, a host-native workflow, or a background agent. The six eligibility rules are the engine's (`recommend-strategy`, `src/engine/planning/strategy.cpp`), consumed by the fan-out phases and never re-derived. They apply to `parallel-fanout`, not to a single sequential worktree lane. For the staged-wave (dependency-respecting) variant — proto lands first, then identity + web in parallel — see [Step 11 — Staged waves](#step-11--staged-waves-contract-lane-first) below. In-flight worktree execution is watched through `planar-watch ps --plan <id>` (claims + each claim's `worktree_path`) — there is no separate wave/barrier view.
 
 The full `parallel-fanout` lifecycle, from strategy confirmation through fan-in and reviewer to cleanup. Use this when you have a plan in `active` status with ≥3 tasks, at least 2 of which are parallel-eligible (disjoint `task_touches`, no migration, no singleton-file touch, no blocking open question or proposed-decision dependency).
 
@@ -2266,7 +2000,7 @@ Reviewer dispatched against epic/worktree-management
 Verdict: approve
 ```
 
-On `approve` → cleanup proceeds. On `request-changes` → see `agents/methodology.md` § Reviewer Decisions. On `open-question` or `abort` → escalates without cleanup.
+On `approve` → cleanup proceeds. On `request-changes` → another coder round, as the dispatcher decides. On `open-question` or `abort` → escalates without cleanup.
 
 ### Step 9 — Cleanup (post-success only)
 
@@ -2303,31 +2037,17 @@ git -C /repo branch -D epic/worktree-management
 
 ### Step 11 — Staged waves (contract lane first)
 
-The steps above fan out a **single wave** of mutually-disjoint lanes. When the plan's lanes have `blocks` dependencies — the plan-753 shape, where a `proto` contract lane must land before `identity` and `web` build against its generated stubs — the orchestrator drives **staged waves** so downstream lanes never build against a moving API. Eligibility gating stays the engine's (`recommend-strategy`); the seam walks the `blocks` graph only to ORDER and LABEL the waves.
+The steps above fan out a **single wave** of mutually-disjoint lanes. When the plan's lanes have `blocks` dependencies — the plan-753 shape, where a `proto` contract lane must land before `identity` and `web` build against its generated stubs — the orchestrator drives **staged waves** so downstream lanes never build against a moving API. Eligibility gating stays the engine's (`recommend-strategy`); the `blocks` graph only orders and labels the waves.
 
-1. **Present the ordered wave plan at the gate.** Run the seam's `waves` phase:
+1. **Present the ordered wave plan at the gate.** On the plan-753 shape, `proto` is wave 1; `identity` + `web` are wave 2 (each `blocked_by: [proto]`); and a terminal **cross-lane integration pass** is the last wave. A task the engine serialized for a non-blocks reason (migration / singleton / empty-touches / open-question / proposed-decision) is never placed in a wave. Present the full ordered picture to the operator and wait for confirmation before creating any worktree.
 
-   ```bash
-   planar-execute run workflows/parallel-dispatch.lua --phase waves \
-       --args '{"plan_id":753}'
-   ```
+2. **Drive one barrier at a time.** For the current wave, take the lanes `recommend-strategy` reports as eligible, create their worktrees, and fan out their coders (Steps 4–6 above).
 
-   It emits byte-stable JSON: `{ epic_branch, wave_count, integration_pass_wave, waves:[…], serialized:[…] }`. Each wave carries `{ wave, lane_count, lanes:[{task_id, slug, branch, worktree, blocked_by:[…]}], integration_pass }`. On the plan-753 shape, `proto` is wave 1; `identity` + `web` are wave 2 (each labeled `blocked_by: [proto]`); and a terminal **cross-lane integration pass** is the last wave (`integration_pass: true`, no lanes, named by `integration_pass_wave`). A task the engine serialized for a NON-blocks reason (migration / singleton / empty-touches / open-question / proposed-decision) is carried in `serialized` and NEVER placed in a wave. Present the full ordered picture to the operator and wait for confirmation before creating any worktree.
+3. **Enforce the wave barrier before the next wave.** The barrier is on fan-in completion, not coder completion: a lane whose coder reported done but whose branch has not been merged does not satisfy it. Create no wave-N+1 worktree until every wave-N lane has fanned in. Once it has, re-run `recommend-strategy` — the just-landed lanes have dropped out and their dependents are now eligible — and repeat for the next wave.
 
-2. **Drive one barrier at a time.** The `waves` output is the projection for the gate, not a schedule. For the CURRENT wave, run the `plan` phase (it returns exactly the currently-eligible lanes), create its worktrees, and fan out its coders (Steps 4–6 above).
+4. **Fan-in retention and resume.** A succeeded lane's worktree is torn down at fan-in; a failed lane's worktree is retained for inspection. On a mid-wave failure, a `failed_clean` lane needs no reconcile (it is available on the next recompute); an `abandoned` lane is reclaimed immediately with `planar-agent reconcile --stale-after 0`. Then recompute and re-fan only the remainder (never restart from wave 1). On plan completion, remove every lane worktree and branch; keep the epic branch until its PR merges.
 
-3. **Enforce the wave barrier before the next wave.** After fanning the current wave in, run the `barrier_check` phase:
-
-   ```bash
-   planar-execute run workflows/parallel-dispatch.lua --phase barrier_check \
-       --args '{"plan_id":753,"lanes":[{"task_id":…,"landed":true,"fanned_in":true}]}'
-   ```
-
-   It emits `{ proceed, blocking:[{task_id, reason}] }`. Do NOT create any wave-N+1 worktree until `proceed:true`. The barrier is on FAN-IN completion, not coder completion: a lane whose coder reported done (`landed:true`) but whose branch has not been merged (`fanned_in:false`) does NOT satisfy the barrier (`reason: not_fanned_in`). Once `proceed:true`, re-run `plan` — the just-landed lanes have dropped out of `recommend-strategy` and their dependents are now eligible — and repeat for the next wave.
-
-4. **Fan-in retention + resume.** At each wave's `fan_in`, a lane may carry `"outcome":"succeeded"|"failed"`: a succeeded lane's worktree is torn down eagerly (in `teardown_worktrees`); a **failed lane's worktree is RETAINED** for inspection (in `retained_worktrees`). On a mid-wave failure, resume via the `reconcile_plan` phase — a `failed_clean` lane needs no reconcile (available on the next recompute); an `abandoned` lane is reclaimed immediately with `planar-agent reconcile --stale-after 0` — then recompute and re-fan only the remainder (never restart from wave 1). On plan completion, the `teardown` phase computes the full sweep (every lane worktree + branch removed; the epic branch retained until its PR merges).
-
-For the per-step orchestrator behavior under `parallel-fanout` and sequential worktree isolation, see `agents/planar-orchestrator.md` and `agents/methodology.md`.
+For the per-step orchestrator behavior under `parallel-fanout` and sequential worktree isolation, see `agents/planar-orchestrator.md`.
 
 ---
 
@@ -2369,7 +2089,7 @@ Shows what reconciliation would do without writing:
 
 ```
 reconcile (dry-run):
-  would mark stale: claim:9f2c1e44... task:2931 (last heartbeat 47m ago, TTL 10m)
+  would mark stale: claim:9f2c1e44... task:2931 (last heartbeat 2h47m ago, TTL 2h)
   would mark stale: 0 actions
 ```
 
@@ -2439,172 +2159,7 @@ The task is now back in the pickable pool. You can either dispatch a fresh coder
 
 The persisted `worktree_path` on the (now stale or aborted) claim is the recovery key. Without it you'd be left scanning `/repo/.worktrees/` and guessing which directory belonged to which dead coder. With it, every operator-side recovery verb (`planar-watch claims`, `planar-agent reconcile`, `planar-agent abort`) surfaces or operates against the path deterministically, and a fresh `planar-agent claim --worktree <path>` reuses the on-disk checkout instead of creating a new one.
 
-For the persistence-on-claim contract see [`docs/concepts.md §Worktree`](concepts.md#worktree); for the canonical claim ritual see `agents/methodology.md` § Coordination claims.
-
----
-
-## Recipe 25 — Inspect model routing evidence and resolve a role's tier
-
-Inspect which tier an agent role resolves to, which opaque candidates are
-registered and eligible on this host, and what the recorded routing evidence
-says — then, if a change is warranted, edit the preset in `agents/models.md`.
-Planar stores candidate ids as opaque strings, records evidence, and resolves
-a role to a *tier* from the task's own packet; it never decides which models
-exist. The tier→model presets are hand-maintained in `agents/models.md` (the
-Tier Table); there is no `[models]` / `[roles]` scaffold verb and no
-`planar models apply` — that family (`list`, `refresh`, `routing`,
-`candidates`, `apply`) was removed with the curated catalog.
-
-**1. Inspect the candidate registry.**
-
-```bash
-planar models registry list --json
-```
-
-Each row is one exact candidate id with its role/tier bindings and the
-latest host observation. A candidate whose id has not been verified
-spawn-safe on this host is ineligible for routing, not merely unproven;
-`planar models registry eligibility --candidate <id> --host <host> --role <r> --tier <t> --now <rfc3339>`
-reports every gate and the named exclusion reason.
-
-**2. Resolve a role's tier — with provenance.**
-
-```bash
-planar models resolve --role coder --task 142 --json
-#   {"source":"packet","tier":"medium","work_type":"engine","complexity":"standard", ...}
-planar models resolve --role planner --plan 42 --json
-#   {"source":"static_fallback","tier":"medium","reason":"packet_not_ready","work_type":null, ...}
-```
-
-Task-bound roles (`coder`, `test-coder`, `reviewer`, `research`, `janitor`)
-take `--task`; pre-task roles (`planner`, `spec-reviewer`, `ingestor`,
-`orchestrator`) take `--plan`. `source: packet` means the tier came from the
-task's compiled profile; `static_fallback` names why it did not
-(`no_packet`, `packet_not_ready`, `policy_not_ready`) and reports work type
-and complexity as null. Report a fallback with its reason, never as a derived
-tier. `--fallback-tier` overrides the configured static fallback (default
-`medium`).
-
-**3. Review the evidence.**
-
-```bash
-planar models experiments --json    # declared experiments: recorded vs counted samples
-planar models outcomes --json       # terminal outcomes, INCLUDING excluded rows and why
-```
-
-The two totals in `experiments` differ whenever a run was recorded but
-excluded from the evidence boundary; `outcomes` shows each excluded row with
-its reason so a thin-looking cohort can be traced to the rows behind it.
-
-**4. Rank candidates in one exact cohort.**
-
-```bash
-planar models evals --vendor claude --role coder --tier medium --work-type engine \
-  --complexity standard --project 3 --validation-policy v1 --routing-policy v1 \
-  --min-samples 5 --quality-floor 0.5 --json
-```
-
-Ranking is by the 95% Wilson lower bound over declared-experiment terminal
-samples in that cohort and is read-only. Candidates under `--min-samples`
-report `insufficient_data` and are never ranked; candidates below
-`--quality-floor` are excluded before any iteration or cost ordering. "No
-recommendation" is a valid outcome and means keep the configured default.
-Without `--vendor` the command falls back to the legacy note-convention
-scorecard, which is inspectable but not evidence-backed.
-
-**5. Change a preset (operator-gated).**
-
-Presets live in the orchestration layer's `agents/models.md`, not in the
-database or `~/.planar/config.toml`. Guide the operator to edit that file; a
-`Use when` cell must rest on a product fact or recorded dispatch evidence
-(vendor capability claims, benchmark scores and release ordering are not
-admissible). Nothing in `planar models` writes.
-
-**6. Confirm the change took.** Re-run step 2 for the affected role; the
-resolved tier is what the preset table in `agents/models.md` is keyed by.
-
-See [`docs/concepts.md § Model routing`](./concepts.md#model-routing) and
-[`docs/cli-reference.md § Domain: models`](./cli-reference.md#domain-models).
-
-## Recipe 26 — Self-report a usage finding to GitHub Issues
-
-Use the `planar-introspector` agent to identify friction patterns, select a
-finding, review the assembled issue body, and post it to `rdrsss/planar` via
-the operator's existing `gh` auth. The created issue is recorded as a
-record-only external link on the finding so `planar audit trail` can surface it
-later. The report-an-issue procedure is in the planar skill's `external-sync.md`
-reference.
-
-**Prerequisites:** `gh auth status` shows a valid session; `planar report --json`
-is available (requires `[introspection].cli_log = true` in
-`~/.planar/config.toml`, or the always-on bundle sections suffice).
-
-**1. Run the introspection pass to populate the feedback plan.**
-
-Dispatch `planar-introspector`. Its default run is a read-only preview; confirm
-the apply phase to file findings on the planar-feedback plan as questions/tasks.
-
-**2. Review the findings.**
-
-```bash
-planar question list --scope global --plan <feedback-plan-id> --status open --json
-planar task list --scope global --plan <feedback-plan-id> --status todo --json
-```
-
-Pick the finding id you want to surface upstream (e.g. `question:42`).
-
-**3. Ensure a GitHub system is registered (once per database).**
-
-```bash
-planar-ext ext list
-# If planar-upstream is absent:
-planar-ext ext register github planar-upstream --project rdrsss/planar
-```
-
-This writes a local row only — no network contact, no auth required at
-registration time.
-
-**4. Run the report-an-issue procedure with the selected finding.**
-
-An agent session follows `external-sync.md` for the finding `question:42`. It:
-
-- Runs `planar report --json` to obtain the diagnostic bundle.
-- Reads `question:42` summary and its `planar audit trail` history.
-- Assembles the full issue body (header, finding section, bundle block,
-  metadata footer).
-- **Renders the complete body to you for review.** This step is mandatory
-  and cannot be skipped.
-
-**5. Confirm or decline at the preview gate.**
-
-Review every line. The bundle holds counts, categories, statuses, timestamps
-and verb paths the live CLI tree names, with no entity titles or bodies. It is
-not redacted as a whole: transcript-derived signal text and the finding
-section may contain entity names or other free text. This preview is the
-redaction boundary; you personally approve what goes public at this step.
-
-- **Confirm** — the issue is posted via `gh issue create -R rdrsss/planar`.
-- **Decline** — no post, no link, no side effects. Re-run with a different
-  finding or refined problem statement at any time.
-
-**6. On success, record the issue as a record-only external link.**
-
-```bash
-planar link question:42 --to planar-upstream:<issue-number> \
-  --role reference --sync read-only --json
-```
-
-No propagation, no sync subscription. The link makes the upstream issue
-visible to `planar audit trail`:
-
-```bash
-planar audit trail --kind question 42
-# → shows the create event and the external link row
-```
-
-**If `gh` fails:** the procedure surfaces the error, records no link, and
-leaves local state unchanged. Fix the `gh` auth issue (`gh auth login`) and
-re-run.
+For the persistence-on-claim contract see [`docs/concepts.md §Worktree`](concepts.md#worktree); for the claim ritual see `skills/planar/references/claim-ritual.md`.
 
 ---
 
@@ -2700,106 +2255,7 @@ cd /path/to/planar-repo && ./install.sh
 
 **Finalization tasks convention:** The janitor (and orchestrator) create tasks with slug prefixes `finalize-`, `merge-`, or `reconcile-` to track discrete merge/reconciliation work items. `planar plan closeout --json` reports these as `hard_evidence.finalization_tasks` — an advisory count that identifies finalization work in the audit output without changing gate logic.
 
-**Capability boundary reminder:** Coders close tasks via `planar-agent complete`. The janitor is the only agent role that runs `planar plan closeout`. The orchestrator dispatches the janitor; it never calls closeout directly. See `docs/concepts.md § Closeout gate` and `agents/planar-janitor.md` § Capability and hard boundary for the full detail.
-
-## Recipe 28 — Author and graduate a workflow
-
-Use the personal sandbox at `~/.planar/local/workflows/` to draft, test, and iterate on a new Lua workflow before promoting it to the repo's `workflows/` directory. The flow mirrors Recipe 14 (skill sandbox), but the surface is `planar-execute` rather than a vendor CLI.
-
-**When to use:** You want to automate a deterministic multi-step operation (a composed read, a traced propagation, a closeout gate) that fits the `planar-execute` model — spawning a clean process per phase, shelling only allowlisted binaries (`planar`, `planar-agent`, `planar-watch`), and never opening SQLite directly.
-
-### Step 1 — Draft the workflow in the sandbox
-
-```bash
-mkdir -p ~/.planar/local/workflows/
-cat > ~/.planar/local/workflows/my-workflow.lua <<'EOF'
---[[ @meta
-name: my-workflow
-description: Describe what this workflow does.
-phases: run
-seam: planar plan list --json, planar task list --json
---]]
-
--- my-workflow.lua — a personal sandbox workflow.
-
-function run()
-  flow.phase("run")
-  flow.log("my-workflow: starting")
-
-  -- Shell an allowlisted planar verb and parse the result.
-  local plans = cli.planar_json({"plan", "list", "--status", "active", "--json"})
-  flow.log("my-workflow: " .. tostring(#plans) .. " active plan(s)")
-
-  flow.result({ plan_count = #plans })
-end
-EOF
-```
-
-The `@meta` block is optional but strongly recommended — it is what `planar workflow list/show` displays to the operator.
-
-### Step 2 — Verify it appears in the discovery surface
-
-```bash
-planar workflow list --local
-```
-
-Expected output (text):
-```
-name           kind    phases  description
-my-workflow    local   run     Describe what this workflow does.
-```
-
-```bash
-planar workflow show my-workflow
-```
-
-Expected:
-```
-name:        my-workflow
-kind:        local
-path:        /Users/<you>/.planar/local/workflows/my-workflow.lua
-meta:        present
-description: Describe what this workflow does.
-phases:      run
-seam:        planar plan list --json, planar task list --json
-```
-
-### Step 3 — Run it with planar-execute
-
-```bash
-planar-execute run ~/.planar/local/workflows/my-workflow.lua --phase run
-```
-
-The engine runs the `run` phase in the sandbox (no `os`/`io`/`require`; only the D7 host surface). Iterate until the output looks right.
-
-For workflows that need `--args`:
-
-```bash
-planar-execute run ~/.planar/local/workflows/my-workflow.lua \
-    --phase run \
-    --args '{"plan_id": 42}'
-```
-
-### Step 4 — Graduate to the repo (manual)
-
-When the workflow is stable, copy it into the repo's `workflows/` directory:
-
-```bash
-cp ~/.planar/local/workflows/my-workflow.lua /path/to/planar-repo/workflows/my-workflow.lua
-```
-
-Then follow the normal contribution flow: add a `@meta` block if not already present, open a PR, run `make test`. There is no `planar workflow promote` shortcut — graduation is explicit so the operator reviews what ships.
-
-After the next `./install.sh` run, `planar workflow list` will show the workflow as `shipped` rather than `local`.
-
-**Author contract.** A workflow running under `planar-execute` operates in a spawn-free sandbox that Planar enforces by construction:
-
-- **No SQLite handle.** The engine never opens a database; the workflow reaches Planar state exclusively by shelling allowlisted CLI verbs.
-- **No general exec.** `os.execute`, `io.popen`, `load`, `require`, and spawn-shaped host functions (`agent`, `exec`, `spawn`, `parallel`, etc.) are all nil or blocked. The only host reach is the D7 surface (`cli.planar`, `cli.planar_json`, `cli.planar_watch`, `cli.planar_watch_json`, `git.*`, `fs.*`, `flow.*`, `ctx.*`).
-- **Trace by convention.** Tracing (opening a run record via `planar run start`, emitting events, finishing the run) is the workflow's responsibility, not the engine's. The shipped workflows all open trace runs when a `plan_id` is available. Personal sandbox workflows should follow the same pattern for observability.
-- **Scope-checked by the CLI.** Every CLI verb the workflow shells goes through the normal scope resolver. A workflow that passes `--scope` to its inner CLI calls is explicit; one that relies on cwd-derived scope should document that assumption.
-
----
+**Capability boundary reminder:** Coders close tasks via `planar-agent complete`. The janitor is the only agent role that runs `planar plan closeout`. The orchestrator dispatches the janitor; it never calls closeout directly. See `docs/concepts.md § Closeout gate` and `examples/agents/planar-janitor.md` § Capability and hard boundary for the full detail.
 
 ## Recipe 29 — Orient, diagnose, and choose work
 
@@ -2854,32 +2310,6 @@ or inspection command for each failure.
 
 ---
 
-## Recipe 31 — Preview introspection, then triage findings
-
-The intake and triage gates are separate:
-
-1. Dispatch `planar-introspector` for a 7-day window. The default run is a
-   read-only preview: review the normalized proposals and `signal_coverage`;
-   nothing is written.
-2. Ask it to apply. It still pauses for explicit confirmation before filing
-   findings on the feedback plan.
-3. Dispatch `planar-feedback-triager` for the feedback plan. Review severity,
-   disposition, reproduction, duplicate, and entity/link changes.
-4. Ask it to apply a finding such as `question:42`. The initial apply request
-   still does not bypass the row-level confirmation.
-
-Introspection recognizes supported Claude, Codex, Copilot, and opt-in CLI-log
-sources and persists only redacted normalized signal. Missing or malformed
-optional adapters degrade `signal_coverage`; they are not observed zeros.
-Triage writes only confirmed local rows through `planar feedback triage set`.
-If external reporting is recommended, run the report-an-issue procedure
-(`external-sync.md`) and review the complete issue body at a second gate.
-Declining publication posts nothing and does not undo completed local triage.
-Mixed independent results return `outcome=partial` with action counts and
-idempotent per-target recovery.
-
----
-
 ## Recipe 32 — Reconcile a sync conflict safely
 
 Start from current link state and durable audit evidence (the planar skill's
@@ -2913,33 +2343,7 @@ events and reports failed or deferred events with exact recovery commands.
 
 ---
 
-## Recipe 34 — Close a capacity-aware orchestration cycle
-
-### Contain a provider-capacity failure
-
-Start parallel work in an operator-confirmed bounded wave. If a lane reports a
-systemic category, classify the whole supplied wave without mutating it:
-
-```bash
-planar-execute run workflows/parallel-dispatch.lua \
-  --phase capacity_reconcile \
-  --args '{"plan_id":42,"lanes":[
-    {"task_id":101,"provider":"codex","outcome":"landed"},
-    {"task_id":102,"provider":"claude","outcome":"failed_clean","category":"usage_limit"},
-    {"task_id":103,"provider":"claude","outcome":"pending"}
-  ]}'
-```
-
-The result preserves landed and already-running lanes, opens a breaker only for
-the affected provider, and partitions the remainder into retryable,
-provider-blocked, abandoned, and unfinished sets. Run its `planar resume
-<task-id> --json` reads. For an abandoned lane, inspect
-`planar-watch claims --plan 42 --status all --json`, then preview
-`planar-agent reconcile --plan 42 --dry-run --json`. The workflow itself never
-spawns, aborts, reconciles, or resets the provider. Resume that provider only
-after an explicit dispatch decision with a newly confirmed maximum wave size.
-
-### Review recurring design hazards before ingestion
+## Recipe 34 — Review recurring design hazards before ingestion
 
 Dispatch `planar-spec-reviewer` for the plan and inspect all four hazard-lens rows:
 
@@ -2952,20 +2356,3 @@ Each row must be `finding`, `covered`, or `not applicable` with artifact
 evidence. Resolve applicable findings in the draft and rerun the read-only
 review before ingestion; make draft edits only as separately
 operator-approved changes.
-
-### Run a shipped deterministic workflow
-
-Use `planar-execute run <file> --phase <name> [--args <json>]`. The shipped
-workflows are source-controlled seams, not model-spawning harnesses:
-
-| Workflow | Shipped phases / purpose |
-|---|---|
-| `bench_run_ritual.lua` | `setup`, `measure` — clean-slate measurement ritual |
-| `example.lua` | `setup` — minimal host-surface example |
-| `finalize_closeout.lua` | `closeout` — evaluate and apply the non-force closeout gate |
-| `parallel-dispatch.lua` | lane/wave, fan-in, recovery, capacity, and teardown computation |
-
-Read each file's `@meta` block for its exact phase names and argument contract.
-The engine has no SQLite handle or model-spawn function; it reaches state only
-through its allowlisted host calls and hands control back for judgment or
-agent dispatch.

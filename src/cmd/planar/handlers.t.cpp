@@ -8,9 +8,8 @@
 // `context::db_opened()`, i.e. whether a verb touched SQLite.
 //
 // HOME / DB SAFETY. Every case builds its own environment map over a
-// unique scratch root. `PLANAR_HOME` is the only variable the workflow
-// leaves read, and it is always a scratch directory; the database path is
-// passed to the context directly and is always under that same root.
+// unique scratch root. The database path is passed to the context directly
+// and is always under that same root.
 // Nothing here calls std::getenv, so there is no inherited-environment path
 // by which the operator's ~/.planar could be reached — the failure mode
 // commit 3ec6c37 fixed one layer down.
@@ -20,14 +19,8 @@
 // PLANAR_DB/PLANAR_HOME/PLANAR_CONFIG_PATH/PLANAR_LOCAL_HOME, read back
 // through `python3 -c "print(repr(open(f,'rb').read()))"`.
 //
-//   $Z workflow list                (no workflows/ directory at all)
-//     exit 0, stdout b'no shipped + sandbox workflows found\n'
-//   $Z workflow list --json         (same fixture)
-//     exit 0, stdout b''            <-- ZERO BYTES, not '[]', not '\n'
-//   $Z workflow show nope
-//     exit 1, stdout b'', stderr b"error: workflow 'nope' not found\n"
 //   $Z annotate list --json         (empty database)
-//     exit 0, stdout b'[]\n'        <-- terminated, unlike workflow's
+//     exit 0, stdout b'[]\n'
 //   $Z annotate list                (empty database)
 //     exit 0, stdout b'(no annotations)\n'
 //   $Z annotate add --anchor-path src/foo.zig --line-start 3 --line-end 7 \
@@ -75,7 +68,6 @@
 //   $Z workspace doctor --json   (same)
 //     b'{"orgs":[{"slug":"acme","org_id":1,"issues_found":0,
 //       "issues_repaired":[]}]}\n'
-//   $Z skills   -> exit 0, its own help page on stdout (see the case below)
 //
 // Timestamps are the only fields not asserted literally — they are wall
 // clock. Everything around them is.
@@ -159,55 +151,6 @@ auto dispatch(const fixture& fx, std::vector<std::string> args) -> invocation {
   return invocation{.code = code, .out = out.str(), .err = err.str(), .db_open = ctx.db().opened()};
 }
 
-/// @brief Write a shipped workflow file into the fixture's PLANAR_HOME.
-/// @param fx The fixture.
-/// @param filename The file's base name.
-/// @param content The file's bytes.
-auto write_shipped_workflow(const fixture& fx, std::string_view filename, std::string_view content) -> void {
-  std::error_code ec;
-  std::filesystem::create_directories(fx.root / "home" / "workflows", ec);
-  std::ofstream file(fx.root / "home" / "workflows" / std::string{filename}, std::ios::binary);
-  file << content;
-}
-
-/// @brief A string appearing NOWHERE else in `src/`, so its presence in a
-/// witness file proves the `workflow run` stub actually executed. A handler
-/// that faked success cannot invent it. Deliberately not derived from any
-/// constant under test.
-constexpr std::string_view k_run_sentinel = "zqEXECUTE-PROV-4c81-plan996-6272-xqz";
-
-/// @brief Write the `planar-execute` stub used by the `workflow run` cases.
-///
-/// Records the sentinel and then one line per received argument to
-/// `witness`, then exits with `code`. Those are witnesses 1-3 from the
-/// block comment above the `workflow run` cases.
-/// @param path Where to write the script.
-/// @param witness The file the stub records its argv into.
-/// @param code The exit status the stub should report.
-auto write_run_stub(const std::filesystem::path& path, const std::filesystem::path& witness, int code) -> void {
-  {
-    std::ofstream out(path, std::ios::binary);
-    out << std::format("#!/bin/sh\n"
-                       "printf '%s\\n' '{}' > '{}'\n"
-                       "for a in \"$@\"; do printf '%s\\n' \"$a\" >> '{}'; done\n"
-                       "exit {}\n",
-                       k_run_sentinel, witness.string(), witness.string(), code);
-  }
-  std::filesystem::permissions(path, std::filesystem::perms::owner_all | std::filesystem::perms::group_read |
-                                         std::filesystem::perms::group_exec);
-}
-
-/// @brief Read a witness file whole, or the empty string when absent.
-/// @param path The witness path.
-/// @return Its bytes.
-auto slurp_witness(const std::filesystem::path& path) -> std::string {
-  std::ifstream in(path, std::ios::binary);
-  if (!in) {
-    return {};
-  }
-  return std::string{std::istreambuf_iterator<char>{in}, std::istreambuf_iterator<char>{}};
-}
-
 } // namespace
 
 TEST_CASE("version writes the build line and exits 0 without opening the database", "[cmd][handlers]") {
@@ -225,201 +168,6 @@ TEST_CASE("version writes the build line and exits 0 without opening the databas
   auto const tokens = std::ranges::count(got.out, ' ') + 1;
   CHECK(tokens == 6);
   CHECK(got.out.ends_with(" dev\n"));
-}
-
-TEST_CASE("workflow list on an empty catalog names the sources it searched", "[cmd][handlers][parity]") {
-  auto const fx  = make_fixture("wlempty");
-  auto const got = dispatch(fx, {"workflow", "list"});
-  CHECK(got.code == 0);
-  CHECK(got.out == "no shipped + sandbox workflows found\n");
-  CHECK(got.err.empty());
-  CHECK_FALSE(got.db_open);
-}
-
-TEST_CASE("workflow list --json on an empty catalog emits ZERO BYTES", "[cmd][handlers][parity][terminator]") {
-  // The sharpest edge of the terminator contract. A handler that appended
-  // a newline to renderer output — the obvious, tidy-looking thing — emits
-  // one byte here and breaks parity in a way no renderer change can fix.
-  // Contrast with `annotate list --json` below, which emits '[]\n'.
-  auto const fx  = make_fixture("wljson");
-  auto const got = dispatch(fx, {"workflow", "list", "--json"});
-  CHECK(got.code == 0);
-  CHECK(got.out.empty());
-  CHECK(got.out.size() == 0);
-  CHECK(got.err.empty());
-}
-
-TEST_CASE("workflow list renders the discovered catalog", "[cmd][handlers][parity]") {
-  auto const fx = make_fixture("wlfull");
-  write_shipped_workflow(fx, "finalize_closeout.lua",
-                         "--[[ @meta\n"
-                         "name: finalize-closeout\n"
-                         "description: Deterministic closeout gate.\n"
-                         "phases: closeout\n"
-                         "--]]\n");
-  write_shipped_workflow(fx, "bare.lua", "-- no meta here\n");
-
-  auto const got = dispatch(fx, {"workflow", "list"});
-  CHECK(got.code == 0);
-  CHECK(got.out == "name                      kind      phases                description\n"
-                   "bare                      shipped                         \n"
-                   "finalize-closeout         shipped   closeout              Deterministic closeout gate.\n");
-  CHECK_FALSE(got.db_open);
-}
-
-TEST_CASE("workflow show renders a hit and exits 0", "[cmd][handlers][parity]") {
-  auto const fx = make_fixture("wsok");
-  write_shipped_workflow(fx, "finalize_closeout.lua",
-                         "--[[ @meta\n"
-                         "name: finalize-closeout\n"
-                         "description: Deterministic closeout gate.\n"
-                         "phases: closeout\n"
-                         "--]]\n");
-  auto const got = dispatch(fx, {"workflow", "show", "finalize-closeout"});
-  CHECK(got.code == 0);
-  CHECK(got.err.empty());
-  CHECK(got.out == std::format("name:        finalize-closeout\n"
-                               "kind:        shipped\n"
-                               "path:        {}\n"
-                               "meta:        present\n"
-                               "description: Deterministic closeout gate.\n"
-                               "phases:      closeout\n",
-                               (fx.root / "home" / "workflows" / "finalize_closeout.lua").string()));
-}
-
-TEST_CASE("workflow show on a miss exits 1 with the complete error line on stderr", "[cmd][handlers][parity]") {
-  auto const fx  = make_fixture("wsmiss");
-  auto const got = dispatch(fx, {"workflow", "show", "nope"});
-  CHECK(got.code == 1);
-  CHECK(got.out.empty());
-  // Exactly one `error: ` prefix — the engine renderer supplies it, so this
-  // travels as a rendered payload rather than a message body.
-  CHECK(got.err == "error: workflow 'nope' not found\n");
-  CHECK_FALSE(got.db_open);
-}
-
-// --- `workflow run` (task 6272) -------------------------------------------
-//
-// The spawn is REAL in every case below: `$PLANAR_EXECUTE_BIN` points at a
-// stub script written into the fixture root, reached through the fixture's
-// env map, so nothing here mutates the test process's environment and no
-// real `planar-execute` need exist on the machine.
-//
-// Three independent witnesses, the shape the editflow cycle established:
-//   1. argv       — the stub records `"$@"` to a witness file.
-//   2. provenance — `k_run_sentinel` appears NOWHERE in `src/`, so its
-//                   presence proves the stub actually ran.
-//   3. exit code  — the stub exits with a code these cases chose.
-// Break-probing `process::run_inherited`'s fork/execv kills every one of
-// them by name; see src/lib/process/process.t.cpp's header.
-
-TEST_CASE("workflow run on a miss exits 1 with the SAME line workflow show emits", "[cmd][handlers][parity]") {
-  auto const fx = make_fixture("wrunmiss");
-  // No PLANAR_EXECUTE_BIN is set: resolution must fail BEFORE any spawn is
-  // attempted, so a missing workflow can never be reported as a spawn
-  // failure.
-  auto const got = dispatch(fx, {"workflow", "run", "nope", "--phase", "x"});
-  CHECK(got.code == 1);
-  CHECK(got.out.empty());
-  // Byte-identical to `workflow show nope`, single quotes included — one
-  // renderer serving both leaves.
-  CHECK(got.err == "error: workflow 'nope' not found\n");
-  CHECK_FALSE(got.db_open);
-}
-
-TEST_CASE("workflow run execs planar-execute with the exact argv the oracle builds", "[cmd][handlers][spawn]") {
-  auto fx = make_fixture("wrunargv");
-  // The `@meta` name differs from the FILENAME on purpose: it proves the
-  // spawn receives the resolved PATH, not the name the operator typed.
-  write_shipped_workflow(fx, "finalize_closeout.lua",
-                         "--[[ @meta\n"
-                         "name: finalize-closeout\n"
-                         "phases: closeout\n"
-                         "--]]\n");
-
-  auto const witness = fx.root / "argv.txt";
-  auto const stub    = fx.root / "stub-execute.sh";
-  write_run_stub(stub, witness, 0);
-  fx.vars["PLANAR_EXECUTE_BIN"] = stub.string();
-
-  auto const got = dispatch(fx, {"workflow", "run", "finalize-closeout", "--phase", "closeout", "--args", R"({"k":1})"});
-  CHECK(got.code == 0);
-  CHECK_FALSE(got.db_open);
-
-  auto const recorded = slurp_witness(witness);
-  // Non-emptiness FIRST: a witness that silently stayed empty would let
-  // every assertion below pass vacuously.
-  REQUIRE_FALSE(recorded.empty());
-  CHECK(recorded.contains(k_run_sentinel));
-
-  auto const workflow_path = (fx.root / "home" / "workflows" / "finalize_closeout.lua").string();
-  // `run <resolved-path> --phase <phase> --args <json>` — the oracle's
-  // order, and the resolved PATH rather than the name the operator typed.
-  CHECK(recorded == std::format("{}\nrun\n{}\n--phase\ncloseout\n--args\n{{\"k\":1}}\n", k_run_sentinel, workflow_path));
-}
-
-TEST_CASE("workflow run omits an absent optional flag rather than passing it empty", "[cmd][handlers][spawn]") {
-  auto fx = make_fixture("wrunopt");
-  write_shipped_workflow(fx, "wf.lua", "-- @meta name: wf\n");
-
-  auto const witness = fx.root / "argv.txt";
-  auto const stub    = fx.root / "stub-execute.sh";
-  write_run_stub(stub, witness, 0);
-  fx.vars["PLANAR_EXECUTE_BIN"] = stub.string();
-
-  auto const got = dispatch(fx, {"workflow", "run", "wf", "--phase", "build"});
-  CHECK(got.code == 0);
-
-  auto const recorded = slurp_witness(witness);
-  REQUIRE_FALSE(recorded.empty());
-  // The three optional flags are ABSENT, not present-and-empty: `--args ""`
-  // is a different invocation from no `--args` at all.
-  CHECK_FALSE(recorded.contains("--args"));
-  CHECK_FALSE(recorded.contains("--worktree"));
-  CHECK_FALSE(recorded.contains("--sandbox-root"));
-  auto const workflow_path = (fx.root / "home" / "workflows" / "wf.lua").string();
-  CHECK(recorded == std::format("{}\nrun\n{}\n--phase\nbuild\n", k_run_sentinel, workflow_path));
-}
-
-TEST_CASE("workflow run propagates planar-execute's exit code EXACTLY", "[cmd][handlers][spawn]") {
-  auto fx = make_fixture("wrunexit");
-  write_shipped_workflow(fx, "wf.lua", "-- @meta name: wf\n");
-
-  auto const witness = fx.root / "argv.txt";
-  auto const stub    = fx.root / "stub-execute.sh";
-  // 23 is this case's own choice and matches no `domain_error_kind` bucket
-  // — which is the point. A handler that routed the failure through the
-  // bucket table would report 1 here.
-  write_run_stub(stub, witness, 23);
-  fx.vars["PLANAR_EXECUTE_BIN"] = stub.string();
-
-  auto const got = dispatch(fx, {"workflow", "run", "wf", "--phase", "build"});
-  CHECK(got.code == 23);
-  // Nothing is added to either stream: the child already spoke in its own
-  // voice, over the INHERITED descriptors this handler never captured.
-  CHECK(got.out.empty());
-  CHECK(got.err.empty());
-
-  // The spawn really happened — otherwise "exit 23" could come from a
-  // handler that never forked.
-  auto const recorded = slurp_witness(witness);
-  REQUIRE_FALSE(recorded.empty());
-  CHECK(recorded.contains(k_run_sentinel));
-}
-
-TEST_CASE("workflow run reports an unspawnable planar-execute distinctly from a non-zero exit", "[cmd][handlers][spawn]") {
-  auto fx = make_fixture("wrunnobin");
-  write_shipped_workflow(fx, "wf.lua", "-- @meta name: wf\n");
-  // An absolute path that does not exist. `resolve_program` refuses before
-  // forking, so this is "never ran" rather than any exit status — the same
-  // distinction `gh binary not on PATH` rests on.
-  auto const absent             = (fx.root / "no-such-execute").string();
-  fx.vars["PLANAR_EXECUTE_BIN"] = absent;
-
-  auto const got = dispatch(fx, {"workflow", "run", "wf", "--phase", "build"});
-  CHECK(got.code == 1);
-  CHECK(got.out.empty());
-  CHECK(got.err == std::format("error: spawning planar-execute: {}\n", absent));
 }
 
 TEST_CASE("annotate add without --anchor-path exits 2 before touching the engine", "[cmd][handlers][parity]") {
@@ -444,7 +192,7 @@ TEST_CASE("annotate list on an empty database renders both wire formats", "[cmd]
 
   auto const json = dispatch(fx, {"annotate", "list", "--json"});
   CHECK(json.code == 0);
-  // Terminated, where `workflow list --json` on an empty catalog is zero
+  // Terminated, where `local list --json` on an empty catalog is zero
   // bytes. Two leaves, two empty-output conventions, both correct — the
   // rule is each renderer's own @return, not a blanket policy.
   CHECK(json.out == "[]\n");
@@ -801,60 +549,6 @@ TEST_CASE("unlink attributes the audit row to $PLANAR_VENDOR", "[cmd][handlers][
     CHECK(stmt->column_text(0) == "claude");
     CHECK(stmt->column_text(1) == "abc123");
   }
-}
-
-TEST_CASE("skills renders its own help page and exits 0 without a database", "[cmd][handlers][parity]") {
-  // A childless node is a LEAF here (`cliapp::leaf_keys`), so without a handler
-  // this verb would answer `error: not implemented yet` and exit 64. The
-  // oracle answers exit 0 and a help page; these bytes are that page.
-  auto const fx  = make_fixture("skills");
-  auto const got = dispatch(fx, {"skills"});
-  CHECK(got.code == 0);
-  CHECK(got.err.empty());
-  CHECK_FALSE(got.db_open);
-  // Re-baselined onto CLI11's formatter by task 6123 and pinned exactly.
-  // The prose is the operator's only pointer to where the skill lives now
-  // and to `planar health`, and losing it would silently strand anyone who
-  // runs the retired verb.
-  CHECK(got.out ==
-        "The skill tree is skills/planar/, installed by install.sh. `planar health`\n"
-        "reports install drift. This verb is retired and will be removed next release.\n"
-        "\n"
-        "\n"
-        "skills [OPTIONS]\n"
-        "\n"
-        "\n"
-        "OPTIONS:\n"
-        "  -h,     --help              Print this help message and exit\n"
-        "\n"
-        "Examples:\n"
-        "  planar skills\n"
-        "\n"
-        "Exit codes:\n"
-        "  0  Success.\n"
-        "  1  Generic failure: entity not found, an unmapped error, or a busy source.\n"
-        "  2  Bad input: an invalid value or entity ref, or a parse failure such as an unknown flag or a missing argument.\n");
-
-  // `planar skills --help` renders the SAME page through dispatch's help
-  // path rather than the handler. Both routes must agree — if they did not,
-  // the handler would be rendering something the tree does not say.
-  auto const helped = dispatch(fx, {"skills", "--help"});
-  CHECK(helped.code == 0);
-  CHECK(helped.out == got.out);
-}
-
-TEST_CASE("skills rejects a positional the way a flagless leaf must", "[cmd][handlers][parity]") {
-  auto const fx  = make_fixture("skillsx");
-  auto const got = dispatch(fx, {"skills", "extra"});
-  // The EXIT CODE is the contract and did not move: 2 on the operator
-  // binary, where planar-agent and planar-watch would say 1. Task 6123
-  // re-baselined the wording — CLI11 reports a rejected extra token as
-  // `ExtrasError` where etcli distinguished `TooManyPositionals`. Decision
-  // 1004 (task 6271) then moved the formatted message to stderr alone and
-  // dropped the CamelCase tag — the new bytes are pinned exactly.
-  CHECK(got.code == 2);
-  CHECK(got.out.empty());
-  CHECK(got.err == "error: skills: The following argument was not expected: extra\n");
 }
 
 TEST_CASE("workspace doctor on an empty database: zero bytes vs {\"orgs\":[]}", "[cmd][handlers][parity][terminator]") {
@@ -2968,8 +2662,7 @@ TEST_CASE("resume packet populates all eight sections from a fully-linked fixtur
   // single-task fixture and the assertions below cannot tell the
   // difference — confirmed as live SURVIVORS by break-probing the
   // decisions/questions/recent-activity filters against an earlier,
-  // single-task version of this fixture (see
-  // scripts/break-probe-logs/6455-resume-packet.jsonl).
+  // single-task version of this fixture.
   auto const other_task = seed_task(fx, "OTHER_TASK", "unrelated");
   REQUIRE(
       dispatch(fx, {"capture", "session", "--task", std::to_string(other_task), "--vendor-session-id", "other", "--json"}).code ==
@@ -3459,7 +3152,7 @@ TEST_CASE("init creates the database, applies every migration, and registers cwd
   // --- the DATABASE, which is the contract stdout only summarises ---
   REQUIRE(std::filesystem::exists(fx.db_path));
   auto const version = read_schema_version(fx);
-  CHECK(version == 41);
+  CHECK(version == 43);
   // Not just "some migrations ran": the real schema carries ~90 tables, so a
   // partially-applied chain cannot pass this by having written a
   // `schema_migrations` row.
@@ -3549,7 +3242,7 @@ TEST_CASE("init --skip-project migrates the database and registers nothing", "[c
 
   // Migrated — but no row. Both halves matter: a handler that skipped the
   // whole verb would also leave `projects` empty.
-  CHECK(read_schema_version(fx) == 41);
+  CHECK(read_schema_version(fx) == 43);
   CHECK(read_table_count(fx) > 80);
   CHECK_FALSE(read_project(fx).has_value());
 }
@@ -5185,9 +4878,8 @@ TEST_CASE("an active work claim refuses every operator status flip until --force
                 .has_value());
   }
 
-  auto const two_line = std::string{"error: task 1 has an active work claim — operator status flip refused.\n"
-                                    "Release or complete the claim via the agent path, or re-run with --force to "
-                                    "override.\n"};
+  auto const two_line = std::string{"error: task 1 is claimed (token tok6141); finish it with: planar-agent complete "
+                                    "--claim tok6141 (or fail|release|block), or pass --force to override\n"};
 
   auto const done = dispatch(fx, {"task", "done", "1"});
   CHECK(done.code == 1);
@@ -5198,10 +4890,11 @@ TEST_CASE("an active work claim refuses every operator status flip until --force
   CHECK(dispatch(fx, {"task", "reopen", "1", "--reason", "r"}).err == two_line);
   CHECK(dispatch(fx, {"task", "update", "1", "--status", "blocked"}).err == two_line);
 
-  // `task cancel` has no --force and renders the GENERIC shape instead.
+  // `task cancel` has no --force, so its refusal names the terminal verb and offers no override.
   auto const cancelled = dispatch(fx, {"task", "cancel", "1"});
   CHECK(cancelled.code == 1);
-  CHECK(cancelled.err == "error: task cancel: TaskClaimed\n");
+  CHECK(cancelled.err == "error: task 1 is claimed (token tok6141); finish it with: planar-agent complete "
+                         "--claim tok6141 (or fail|release|block)\n");
 
   // A NON-status patch is allowed on a claimed task — the guard is gated on
   // a status change. Gating it unconditionally would refuse a write the

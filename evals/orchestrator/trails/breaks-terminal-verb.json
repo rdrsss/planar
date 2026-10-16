@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "id": "breaks-terminal-verb",
+  "description": "Rule 2: a claim ended stale, with no terminal verb.",
+  "tasks": [
+    {
+      "title": "abandoned",
+      "final": "doing"
+    }
+  ],
+  "claims": [
+    {
+      "task": 1,
+      "status": "stale",
+      "role": "coder",
+      "model": "m",
+      "session": "coder",
+      "parent_action": true
+    }
+  ],
+  "expected": {
+    "conforms": false,
+    "violations": [
+      {
+        "rule": 2,
+        "entity": "claim:1"
+      }
+    ]
+  }
+}

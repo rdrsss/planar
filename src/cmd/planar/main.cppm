@@ -7,7 +7,6 @@ import cli11;
 import planar.cliapp.schema;
 import planar.cliapp.surface;
 import planar.cmd.planar.docs;
-import planar.cmd.planar.handlers.explore.command;
 import planar.cmd.planar.handlers.help.command;
 import planar.cmd.planar.handlers.annotate;
 import planar.cmd.planar.handlers.artifact;
@@ -17,34 +16,24 @@ import planar.cmd.planar.handlers.audit;
 import planar.cmd.planar.handlers.capture;
 import planar.cmd.planar.handlers.completion.command;
 import planar.cmd.planar.handlers.schema.command;
-import planar.cmd.planar.handlers.closure;
 import planar.cmd.planar.handlers.config;
 import planar.cmd.planar.handlers.dashboard;
 import planar.cmd.planar.handlers.decision;
-import planar.cmd.planar.handlers.feedback;
-import planar.cmd.planar.handlers.groups;
 import planar.cmd.planar.handlers.handoff;
 import planar.cmd.planar.handlers.health;
-import planar.cmd.planar.handlers.importer;
 import planar.cmd.planar.handlers.init;
 import planar.cmd.planar.handlers.link;
 import planar.cmd.planar.handlers.links;
 import planar.cmd.planar.handlers.local;
-import planar.cmd.planar.handlers.models;
 import planar.cmd.planar.handlers.plan;
 import planar.cmd.planar.handlers.promote.command;
 import planar.cmd.planar.handlers.demote.command;
 import planar.cmd.planar.handlers.question;
-import planar.cmd.planar.handlers.report;
 import planar.cmd.planar.handlers.resume;
-import planar.cmd.planar.handlers.bench.command;
-import planar.cmd.planar.handlers.run.command;
 import planar.cmd.planar.handlers.scenario;
 import planar.cmd.planar.handlers.scope;
 import planar.cmd.planar.handlers.search;
-import planar.cmd.planar.handlers.skills;
 import planar.cmd.planar.handlers.spec_ingest;
-import planar.cmd.planar.handlers.synthesize;
 import planar.cmd.planar.handlers.task;
 import planar.cmd.planar.handlers.templates;
 import planar.cmd.planar.handlers.test_spec;
@@ -53,7 +42,6 @@ import planar.cmd.planar.handlers.unlink;
 import planar.cmd.planar.handlers.update;
 import planar.cmd.planar.handlers.version;
 import planar.cmd.planar.handlers.workbench;
-import planar.cmd.planar.handlers.workflow;
 import planar.cmd.planar.handlers.workspace;
 
 namespace planar::cmd {
@@ -71,7 +59,7 @@ auto root_app() -> std::unique_ptr<CLI::App> {
                                         "  This binary writes planning entities (plans, tasks, decisions,\n"
                                         "  questions, artifacts, annotations) and makes manual tasks.status\n"
                                         "  transitions. The agent-coordination tables (agent_actions,\n"
-                                        "  agent_work_claims, routing_dispatch_*, and the host-queue tables) are\n"
+                                        "  agent_work_claims, and the host-queue tables) are\n"
                                         "  written by planar-agent; the external-link tables are written by\n"
                                         "  planar-ext.",
                                         "planar");
@@ -103,7 +91,6 @@ auto root_app() -> std::unique_ptr<CLI::App> {
   handlers::declare_capture(*app);    // 21
   handlers::declare_audit(*app);      // 22
   handlers::declare_health(*app);     // 23
-  handlers::declare_models(*app);     // 24
   handlers::declare_dashboard(*app);  // 25
   handlers::declare_spec(*app);       // 26
   handlers::declare_test_spec(*app);  // 27
@@ -112,21 +99,10 @@ auto root_app() -> std::unique_ptr<CLI::App> {
   handlers::declare_tree(*app);       // 30
   handlers::declare_search(*app);     // 31
   handlers::declare_local(*app);      // 32
-  handlers::declare_skills(*app);     // 33
-  handlers::declare_import(*app);     // 34
-  handlers::declare_synthesize(*app); // 35
   handlers::declare_version(*app);    // 36
   handlers::declare_update(*app);     // 36a: plan 1122 M3 (task 7319)
   handlers::declare_completion(*app); // 37
   handlers::declare_schema(*app);     // 38
-  handlers::declare_report(*app);     // 39
-  handlers::declare_bench(*app);      // 40
-  handlers::declare_closure(*app);    // 41
-  handlers::declare_run(*app);        // 42
-  handlers::declare_groups(*app);     // 43
-  handlers::declare_explore(*app);    // 44
-  handlers::declare_workflow(*app);   // 45
-  handlers::declare_feedback(*app);   // 46
   handlers::declare_help(*app);       // 47
 
   // Help renders the same page it rendered before every bool flag gained

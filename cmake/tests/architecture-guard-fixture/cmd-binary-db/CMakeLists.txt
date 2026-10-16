@@ -1,44 +1,35 @@
 # Fixture (c): add_executable() coverage. Plan 996 task 6050 (M2
-# pre-work), deliverable 2. `planar_check_architecture()` only ever walked
-# `PLANAR_MODULE_TARGETS`; before this task's `planar_binary()` helper
-# (cmake/module.cmake) existed, a raw add_executable() cmd binary (planar,
-# planar-agent, planar-watch, planar-execute) sat outside that property
-# entirely, so the tech-spec's claim that architecture.cmake turns an
-# accidental `planar-execute` -> `planar_db` link into a configure/link
-# failure was true only for the `engine_execute` *module*, never for the
-# `cmd_planar_execute` *binary* — nothing registered it.
+# pre-work), deliverable 2. `planar_check_architecture()` only ever walks
+# `PLANAR_MODULE_TARGETS`, so a raw add_executable() cmd binary sits outside
+# that walk unless something registers it. Every cmd binary is required to use
+# planar_binary() (cmake/module.cmake), which performs that registration; this
+# fixture proves the walk itself reaches a registered add_executable() target,
+# so a cmd executable is checked at all.
 #
-# This fixture proves the fix at the architecture.cmake level: once an
-# add_executable() target is registered into PLANAR_MODULE_TARGETS (which
-# is exactly what the real planar_binary() helper does — see
-# cmake/module.cmake — and is what every future src/cmd/*/CMakeLists.txt
-# is required to use instead of a naked add_executable()),
-# planar_check_architecture() walks and rejects it identically to an
-# add_library() module. Deliberately plain add_executable() + manual
-# registration here rather than calling the real planar_binary(): that
-# function also sets CXX_MODULE_STD ON (matching planar_module()), which
-# needs the full pinned-libc++ toolchain setup CMakePresets.json supplies
-# (isystem paths, CMAKE_CXX_STDLIB_MODULES_JSON) — wiring that into this
-# standalone, preset-free fixture would make it fail the generate step for
-# an unrelated reason under a weakened guard, defeating the discrimination
-# this file exists to prove. What's under test here is
+# Deliberately plain add_executable() + manual registration here rather than
+# calling the real planar_binary(): that function also sets CXX_MODULE_STD ON,
+# which needs the full pinned-libc++ toolchain setup. The real helper is
+# exercised by ../planar-binary-real/. What is under test here is
 # architecture.cmake's walk, not module.cmake's target-property setup.
+#
+# The induced violation is a layer-3 binary depending on another layer-3
+# target (the same-layer prohibition, D18). It is not a layer-3 -> layer-1
+# edge: a cmd binary may depend downward on planar_db.
 cmake_minimum_required(VERSION 4.3)
 project(planar_architecture_guard_fixture_cmd_binary_db CXX)
 
-add_library(planar_db STATIC db.cpp)             # layer 1
-add_executable(planar_cmd_planar_execute main.cpp)  # layer 3 (^cmd_ prefix)
+add_library(planar_cmd_sibling STATIC db.cpp)       # layer 3 (^cmd_ prefix)
+add_executable(planar_cmd_probe main.cpp)           # layer 3 (^cmd_ prefix)
 
-# The induced violation: the planar-execute binary reaching for planar_db —
-# forbidden by the named no-SQLite-handle exception, the same rule fixture
-# (b) proves for the engine_execute module.
-target_link_libraries(planar_cmd_planar_execute PRIVATE planar_db)
+# The induced violation: a cmd binary reaching a sibling cmd target, which
+# the same-layer prohibition forbids.
+target_link_libraries(planar_cmd_probe PRIVATE planar_cmd_sibling)
 
 # Mirrors planar_binary()'s registration (cmake/module.cmake) — this is the
-# fix under test: an add_executable() target must be registered here to be
-# walked at all.
+# property under test: an add_executable() target must be registered here to
+# be walked at all, and both ends of the edge must be registered.
 set_property(GLOBAL APPEND PROPERTY PLANAR_MODULE_TARGETS
-  planar_db planar_cmd_planar_execute)
+  planar_cmd_sibling planar_cmd_probe)
 
 include("${CMAKE_CURRENT_LIST_DIR}/../../../architecture.cmake")
 planar_check_architecture()  # expected to FATAL_ERROR — that failure is the pass condition

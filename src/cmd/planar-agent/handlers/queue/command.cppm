@@ -39,7 +39,8 @@ export auto add(CLI::App& root) -> void {
   run->add_option("--role")->description(
       "The submitting agent's role, recorded with the queue entry; default $PLANAR_ROLE, empty when neither is set");
   run->add_option("--claim")->description(
-      "Renew this claim at half its lease interval while the entry waits and while the command runs; a renewal that "
+      "Renew this claim at half its lease interval while the entry waits and while the command runs, and record the "
+      "token on the entry's history row; a renewal that "
       "fails is reported on standard error (or in the output file) and never stops the command");
   run->add_flag("--notices")
       ->description(
@@ -83,8 +84,9 @@ export auto add(CLI::App& root) -> void {
       ->description("Observer budget from before store open: positive integer with ms, s, m or h; default 30m, maximum 24h");
   wait->add_flag("--json")->description("Print one result object with wait_reason, recorded status and error fields");
   // --- queue rule ---------------------------------------------------------
-  // Prints the embedded agent rule text; opens no database, takes no flag.
-  queue->add_subcommand("rule", "Print the rule text that tells an agent to send builds and tests through the queue, for pasting "
-                                "into a project's own agent guide. Opens no database.");
+  // Prints how to use the queue, and the mandate when the caller's policy sets use_queue; takes no flag.
+  queue->add_subcommand("rule",
+                        "Print how to use the host queue, and the instruction to send builds and tests through it when the "
+                        "operator's policy sets use_queue for the caller's scope. Reads config.toml; never fails on it.");
 }
 } // namespace planar::cmd::agent::handlers::queue_cli

@@ -28,6 +28,7 @@ from typing import Any, Callable, Iterable, Sequence
 
 import arena
 import queue_observation
+import trail
 import vendors
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -402,6 +403,11 @@ class Options:
     # lifecycle case. 1 (the default) preserves the pre-6859 single-run
     # behavior exactly.
     trials: int = 1
+    # Any orchestrator under test: a prompt file staged as the lifecycle
+    # orchestrator in place of the checkout's `agents/planar-orchestrator.md`.
+    # The grade does not depend on it -- the trail the run leaves is graded the
+    # same whichever prompt produced it (see `trail.py`).
+    orchestrator_prompt: Path | None = None
 
 
 @dataclass
@@ -1176,6 +1182,135 @@ def validate_case(path: Path, case: Any) -> None:
             or claim_rows < 0
         ):
             invalid("expected.post_state.claim_rows must be a non-negative integer")
+        validate_conformance_expectation(expected.get("conformance"), invalid)
+        policy = case["lifecycle"].get("policy")
+        if policy is not None:
+            try:
+                trail.policy_toml(policy)
+            except trail.TrailError as exc:
+                invalid(f"lifecycle.policy: {exc}")
+            unknown = sorted(set(policy) - trail._POLICY_KEYS)
+            if unknown:
+                invalid("lifecycle.policy names unknown key(s): " + ", ".join(unknown))
+
+
+def validate_conformance_expectation(
+    declared: Any, invalid: Callable[[str], Any]
+) -> None:
+    """`expected.conformance`, when a lifecycle case declares it, says what the
+    conformance check must report for the trail the orchestrator leaves:
+    `conforms` (required) and, when it does not conform, `rules`, the exact set
+    of rule numbers (1-6) it must report as broken."""
+    if declared is None:
+        return
+    if not isinstance(declared, dict) or not isinstance(declared.get("conforms"), bool):
+        invalid("expected.conformance must be an object with a boolean conforms")
+    extra = sorted(set(declared) - {"conforms", "rules"})
+    if extra:
+        invalid("expected.conformance names unknown key(s): " + ", ".join(extra))
+    rules = declared.get("rules")
+    if rules is not None:
+        if (
+            not isinstance(rules, list)
+            or not rules
+            or any(isinstance(r, bool) or r not in trail.RULES for r in rules)
+            or len(set(rules)) != len(rules)
+        ):
+            invalid("expected.conformance.rules must be a non-empty set of rule numbers 1-6")
+        if declared["conforms"]:
+            invalid("expected.conformance.rules is only meaningful when conforms is false")
+    elif not declared["conforms"]:
+        invalid("expected.conformance with conforms false must name the broken rules")
+
+
+TRAIL_SNAPSHOT = "trail.sqlite"
+TRAIL_CONFIG = "trail.config.toml"
+
+
+def snapshot_arena_trail(context: "LifecycleContext") -> None:
+    """Keep the trail the run's orchestrator left, and the policy it ran under,
+    so the conformance check can be run again by a regrade."""
+    trail.snapshot_database(
+        Path(context.env["PLANAR_DB"]), context.artifacts / TRAIL_SNAPSHOT
+    )
+    config = Path(context.env["PLANAR_CONFIG_PATH"])
+    write_text(
+        context.artifacts / TRAIL_CONFIG,
+        config.read_text(encoding="utf-8") if config.is_file() else "",
+    )
+
+
+def conformance_expectation_failures(
+    grade: "trail.TrailGrade", declared: dict[str, Any]
+) -> list[str]:
+    """How `grade` differs from a case's `expected.conformance` (empty when it matches)."""
+    problems: list[str] = []
+    if grade.conforms != declared["conforms"]:
+        problems.append(f"conforms was {grade.conforms}, expected {declared['conforms']}")
+    if "rules" in declared:
+        broken = sorted({violation["rule"] for violation in grade.violations})
+        if broken != sorted(declared["rules"]):
+            problems.append(f"broken rules were {broken}, expected {sorted(declared['rules'])}")
+    return problems
+
+
+def grade_artifact_trail(
+    case: dict[str, Any], artifact_dir: Path, options: Options
+) -> None:
+    """Run the conformance check over the trail a host run left.
+
+    Whichever orchestrator produced it, the same report is recorded in
+    `conformance.json`. The case fails only on what it declares in
+    `expected.conformance`; with nothing declared the report is evidence, not
+    a verdict. Artifact sets from before the snapshot existed are skipped
+    unless their `run.json` promises one.
+    """
+    case_id = case["id"]
+    snapshot = artifact_dir / TRAIL_SNAPSHOT
+    run_json = artifact_dir / "run.json"
+    run_meta = read_json(run_json) if run_json.is_file() else {}
+    if not snapshot.is_file():
+        if run_meta.get("artifact_format", 0) >= ARTIFACT_FORMAT_TRAIL:
+            raise live_failure(
+                artifact_dir,
+                case_id,
+                options,
+                f"trail-missing: run.json declares artifact_format "
+                f"{run_meta['artifact_format']} but {TRAIL_SNAPSHOT} is absent",
+            )
+        return
+    declared = case.get("expected", {}).get("conformance")
+    config_path = artifact_dir / TRAIL_CONFIG
+    try:
+        grade = trail.grade_database(
+            snapshot,
+            run_meta["plan_id"],
+            floor=1,
+            config_text=config_path.read_text(encoding="utf-8")
+            if config_path.is_file()
+            else "",
+        )
+    except trail.TrailUnavailable as exc:
+        write_json(artifact_dir / "conformance.json", {"status": "unavailable", "reason": str(exc)})
+        if declared is not None:
+            raise live_failure(artifact_dir, case_id, options, f"conformance unavailable: {exc}")
+        print(f"WARN: {case_id}: conformance not graded: {exc}", flush=True)
+        return
+    except trail.TrailError as exc:
+        raise live_failure(artifact_dir, case_id, options, f"conformance check failed: {exc}")
+    write_json(
+        artifact_dir / "conformance.json", {"status": "graded", "report": grade.report}
+    )
+    if declared is None:
+        return
+    problems = conformance_expectation_failures(grade, declared)
+    if problems:
+        raise live_failure(
+            artifact_dir,
+            case_id,
+            options,
+            "conformance: " + "; ".join(problems) + "\n" + trail.describe(grade),
+        )
 
 
 def select_cases(
@@ -1250,60 +1385,116 @@ SKILL_RELS = ["skills/planar/SKILL.md"] + [
     f"skills/planar/references/{name}.md"
     for name in (
         "claim-ritual",
+        "dispatch",
         "external-sync",
-        "feedback-contract",
         "knowledge",
         "local",
+        "preparation",
+        "queue",
         "recovery",
         "resume-handoff",
-        "spec-pipeline",
         "status",
     )
 ]
+
+# The references SKILL.md must route to: how to dispatch, prepare, queue and
+# claim. The skill is a short reference, so it carries at most this many lines.
+SKILL_ROUTED_REFERENCES = (
+    "references/dispatch.md",
+    "references/preparation.md",
+    "references/queue.md",
+    "references/claim-ritual.md",
+)
+SKILL_MAX_LINES = 80
+
+# An orchestrator phase or a role agent: the shipped skill names neither, since
+# roles and phases are one workflow's choices and the role agents are examples.
+SKILL_FORBIDDEN_WORKFLOW = (
+    r"\bPhase [0-9]|\bplanar-(orchestrator|coder|test-coder|reviewer|janitor|research|"
+    r"planner|spec-reviewer|ingestor|ext-sync|sync-reconciler)\b|"
+    r"\b(orchestrator|coder|reviewer|janitor|planner|ingestor)s?\b"
+)
 
 # The retired slash-command prefix, split so this file does not itself carry it.
 LEGACY_COMMAND_PREFIX = "/" + "pl-"
 
 SKILL_INVARIANT_LEADS = [
     "Claim, heartbeat, one terminal verb.",
-    "Never split the terminal verb.",
+    "Choose next work with the claim-aware verbs.",
     "Write through the owning binary.",
-    "Cross-scope guard: ten verbs.",
-    "`--scope` means four things.",
-    "Read back every mutation.",
-    "Planning verbs refuse in worktrees.",
-    "Next work is claim-aware.",
-    "Plan status follows its tasks.",
-    "Operator gates are never automatic.",
-    "Sync pull writes no planning entity.",
-    "Announce cross-scope writes exactly.",
+    "Cross-scope guard.",
+    "Planning writes refuse in a git worktree",
+    "Task writes and terminal verbs recompute the owning plan's status",
     "Isolate from-source binaries.",
 ]
 
 _SPLIT_NEGATION = re.compile(
     r"\b(do not|don't|never|must not|forbidden|refuse[sd]?|not)\b", re.IGNORECASE
 )
+# The hazard stated as the consequence of the split, after the mention in the
+# same sentence: "... strands the claim", "... can leave a claim stranded". A
+# hazard word before the mention ("Split the ending: run ...", "To avoid a
+# stranded claim, run ...") does not exempt it, and neither does a hazard that
+# is negated before it ("so nothing strands the claim", "never leaves a claim
+# stranded") or one that names no process death ("strands the claim if you are
+# lucky").
+_SPLIT_HAZARD = re.compile(
+    r"\bstrands?\s+the\s+claim\b|\bleaves?\s+(a|the)\s+claim\s+stranded\b",
+    re.IGNORECASE,
+)
+_HAZARD_NEGATION = re.compile(
+    r"\b(nothing|never|no|not|without|won't|cannot)\b|n't\b", re.IGNORECASE
+)
+_HAZARD_DEATH = re.compile(r"\b(dies|die|death|crash(es)?|killed)\b", re.IGNORECASE)
+_TASK_DONE = re.compile(r"planar\s+task\s+done")
+_RELEASE = re.compile(r"planar-agent\s+release")
+
+
+def _states_split_hazard(sentence_before: str, rest_of_sentence: str) -> bool:
+    """True when the sentence warns about the split: after the mention it
+    states the stranding hazard, un-negated, and the sentence names the
+    process death that causes it."""
+    hazard = _SPLIT_HAZARD.search(rest_of_sentence)
+    if hazard is None:
+        return False
+    if _HAZARD_NEGATION.search(rest_of_sentence[: hazard.start()]):
+        return False
+    return _HAZARD_DEATH.search(sentence_before + rest_of_sentence) is not None
 
 
 def split_terminal_verb_instructions(text: str) -> list[str]:
     """Return each `planar task done` mention not governed by a prohibition.
 
     The skill legitimately NAMES the split in order to forbid it ("Do not run
-    `planar task done` and then `planar-agent release`"). A mention is exempt
-    only when a negation appears in the same list item or paragraph before it
-    (the preceding text up to a blank line or list-item start); a mention that
-    instructs the split has no such negation and is returned.
+    `planar task done` and then `planar-agent release`") or to warn about it
+    ("`planar task done` followed by `planar-agent release` splits that, and
+    a death between them strands the claim"). A mention, which may wrap
+    across lines, is a candidate only when its sentence also names
+    `planar-agent release`. A candidate is exempt when a negation appears in
+    the same list item or paragraph before it (the preceding text up to a
+    blank line or list-item start), or when its sentence states the hazard
+    (`_states_split_hazard`); a candidate that instructs the split has
+    neither and is returned, as the line the mention starts on.
     """
     hits: list[str] = []
-    for match in re.finditer(r"planar task done", text):
+    for match in _TASK_DONE.finditer(text):
         before = text[max(0, match.start() - 240) : match.start()]
         for boundary in ("\n\n", "\n- ", "\n1. ", "\n2. ", "\n3. "):
             index = before.rfind(boundary)
             if index != -1:
                 before = before[index + len(boundary) :]
-        if not _SPLIT_NEGATION.search(before):
-            line_start = text.rfind("\n", 0, match.start()) + 1
-            hits.append(text[line_start : text.find("\n", match.end())])
+        sentence_start = max(before.rfind(". "), before.rfind(".\n"))
+        sentence_before = before[sentence_start + 1 :] if sentence_start != -1 else before
+        after = text[match.end() : match.end() + 240]
+        end = re.search(r"\.(\s|$)|\n\n", after)
+        rest_of_sentence = after[: end.start() if end else len(after)]
+        if not _RELEASE.search(sentence_before + rest_of_sentence):
+            continue
+        if _SPLIT_NEGATION.search(before) or _states_split_hazard(sentence_before, rest_of_sentence):
+            continue
+        line_start = text.rfind("\n", 0, match.start()) + 1
+        line_end = text.find("\n", match.start())
+        hits.append(text[line_start : line_end if line_end != -1 else len(text)])
     return hits
 
 
@@ -1312,10 +1503,10 @@ def grade_coherence(root: Path = ROOT) -> None:
         "agents/planar-orchestrator.md",
         "agents/methodology.md",
         "agents/doctrine.md",
-        "agents/planar-coder.md",
-        "agents/planar-reviewer.md",
+        "examples/agents/planar-coder.md",
+        "examples/agents/planar-reviewer.md",
         "agents/planar-test-coder.md",
-        "agents/planar-janitor.md",
+        "examples/agents/planar-janitor.md",
     ] + SKILL_RELS
     for relative in core_rel:
         if not (root / relative).is_file():
@@ -1368,27 +1559,27 @@ def grade_coherence(root: Path = ROOT) -> None:
         r"recommended for:.*(mechanical|docs-polish|single-verb)",
         ["agents/planar-orchestrator.md", "agents/methodology.md"],
     )
-    forbid(r"planar task done", ["agents/planar-coder.md"])
+    forbid(r"planar task done", ["examples/agents/planar-coder.md"])
 
     must(
         r"Planar-managed Git repositor",
-        ["agents/planar-orchestrator.md", "agents/planar-janitor.md"],
+        ["agents/planar-orchestrator.md", "examples/agents/planar-janitor.md"],
     )
     must(
         r"validation profile",
         [
             "agents/planar-orchestrator.md",
             "agents/methodology.md",
-            "agents/planar-coder.md",
-            "agents/planar-reviewer.md",
+            "examples/agents/planar-coder.md",
+            "examples/agents/planar-reviewer.md",
             "agents/planar-test-coder.md",
         ],
     )
     must(
         r"structured.*evidence|evidence row",
         [
-            "agents/planar-coder.md",
-            "agents/planar-reviewer.md",
+            "examples/agents/planar-coder.md",
+            "examples/agents/planar-reviewer.md",
             "agents/planar-test-coder.md",
         ],
     )
@@ -1400,21 +1591,23 @@ def grade_coherence(root: Path = ROOT) -> None:
     must(
         r"in-pwd.*barrel-bypass|barrel-bypass.*in-pwd",
         [
-            "agents/planar-coder.md",
+            "examples/agents/planar-coder.md",
             "agents/planar-orchestrator.md",
         ],
     )
     must(
         r"github-pr.*external-pr.*local-ref.*already-integrated",
-        ["agents/planar-janitor.md"],
+        ["examples/agents/planar-janitor.md"],
     )
     must(
         r"coder.*(narrative )?report|coder's report",
-        ["agents/planar-reviewer.md", "agents/methodology.md"],
+        ["examples/agents/planar-reviewer.md", "agents/methodology.md"],
     )
-    # The unified `planar` skill and its nine references (plan 1104 M1): no
-    # legacy pl-* command, no scriptorium, no instruction to split the
-    # terminal verb, and the thirteen invariants present in SKILL.md.
+    # The `planar` skill and its ten references: no legacy pl-* command, no
+    # scriptorium, no instruction to split the terminal verb, the seven
+    # mechanism invariants present in SKILL.md, the brief named as the start,
+    # the four routed references, no orchestrator phase or role, and at most
+    # SKILL_MAX_LINES lines.
     forbid(re.escape(LEGACY_COMMAND_PREFIX), SKILL_RELS, ignore_case=False)
     forbid(r"scriptorium", SKILL_RELS)
     split_hits = [
@@ -1432,8 +1625,19 @@ def grade_coherence(root: Path = ROOT) -> None:
         )
     for lead in SKILL_INVARIANT_LEADS:
         must(re.escape(lead), ["skills/planar/SKILL.md"])
-    must(re.escape("references/feedback-contract.md"), ["skills/planar/SKILL.md"])
-    must(r"Output contract — the findings brief", ["agents/planar-research.md"])
+    must(re.escape("planar-agent brief"), ["skills/planar/SKILL.md"])
+    for reference in SKILL_ROUTED_REFERENCES:
+        must(re.escape(reference), ["skills/planar/SKILL.md"])
+    forbid(SKILL_FORBIDDEN_WORKFLOW, ["skills/planar/SKILL.md"])
+    skill_lines = len(
+        (root / "skills" / "planar" / "SKILL.md").read_text(encoding="utf-8").splitlines()
+    )
+    if skill_lines > SKILL_MAX_LINES:
+        raise EvalFailure(
+            f"orchestrator-coherence: skills/planar/SKILL.md is {skill_lines} lines, "
+            f"over the {SKILL_MAX_LINES}-line limit"
+        )
+    must(r"Output contract — the findings brief", ["examples/agents/planar-research.md"])
     must(r"fork_turns=none", ["evals/orchestrator/harness.py"])
     must(r"complete final response verbatim", ["evals/orchestrator/harness.py"])
 
@@ -1441,7 +1645,7 @@ def grade_coherence(root: Path = ROOT) -> None:
 def grade_coherence_negative_control() -> None:
     with tempfile.TemporaryDirectory(prefix="planar-coherence-negative.") as raw_tmp:
         temp_root = Path(raw_tmp)
-        for directory in ("skills", "agents"):
+        for directory in ("skills", "agents", "examples"):
             shutil.copytree(ROOT / directory, temp_root / directory)
         harness_target = temp_root / "evals" / "orchestrator" / "harness.py"
         harness_target.parent.mkdir(parents=True)
@@ -1463,8 +1667,9 @@ def grade_skill_coherence_negative_control() -> None:
     Every skill file gets each forbidden text injected (a legacy slash command, a
     scriptorium reference, an instruction to run `planar task done` then
     `planar-agent release`) and must be rejected with the phrase named; the
-    SKILL.md copy additionally loses each invariant lead in turn, and the
-    feedback-contract citation, and must be rejected naming it. The seeded
+    SKILL.md copy additionally loses each invariant lead in turn, the brief
+    and each routed reference, gains a role agent's name, an orchestrator
+    phase and lines past the limit, and must be rejected naming it. The seeded
     split instruction is a fresh paragraph, so the prohibition-sentence
     exemption cannot absorb it.
     """
@@ -1475,13 +1680,24 @@ def grade_skill_coherence_negative_control() -> None:
             "Run `planar task done` then `planar-agent release` to finish."
         ),
     }
+    # Instructions to split that carry a hazard word before the mention; the
+    # exemption covers only the hazard stated after it, so both are rejected.
+    split_with_hazard_word = (
+        "Split the ending: run `planar task done`, then `planar-agent release`.",
+        "To avoid a stranded claim, run `planar task done` and then `planar-agent release`.",
+        "Run `planar task done`, then `planar-agent release`; this splits that into two steps.",
+        "Finish with `planar task done` and `planar-agent release` so nothing strands the claim.",
+        "Run `planar task done`, then `planar-agent release`; it never leaves a claim stranded.",
+        "Run `planar task done`, then `planar-agent release`, which strands the claim if you are lucky.",
+        "Run `planar task\ndone`, then `planar-agent release` to finish.",
+    )
     runs = 0
 
     def expect_rejection(relative: str, mutate: Callable[[str], str], phrase: str) -> None:
         nonlocal runs
         with tempfile.TemporaryDirectory(prefix="planar-skill-coherence.") as raw_tmp:
             temp_root = Path(raw_tmp)
-            for directory in ("skills", "agents"):
+            for directory in ("skills", "agents", "examples"):
                 shutil.copytree(ROOT / directory, temp_root / directory)
             harness_target = temp_root / "evals" / "orchestrator" / "harness.py"
             harness_target.parent.mkdir(parents=True)
@@ -1510,10 +1726,34 @@ def grade_skill_coherence_negative_control() -> None:
         expect_rejection(
             "skills/planar/SKILL.md", lambda text, lead=lead: text.replace(lead, ""), lead
         )
+    for seeded in split_with_hazard_word:
+        expect_rejection(
+            "skills/planar/SKILL.md",
+            lambda text, seeded=seeded: text + f"\n\n{seeded}\n",
+            # The hit names the line the mention starts on.
+            seeded.split("\n")[0],
+        )
     expect_rejection(
         "skills/planar/SKILL.md",
-        lambda text: text.replace("references/feedback-contract.md", ""),
-        "references/feedback-contract.md",
+        lambda text: text.replace("planar-agent brief", "planar-agent"),
+        "planar-agent brief",
+    )
+    for reference in SKILL_ROUTED_REFERENCES:
+        expect_rejection(
+            "skills/planar/SKILL.md",
+            lambda text, reference=reference: text.replace(reference, ""),
+            reference,
+        )
+    for seeded in ("Dispatch the planar-coder agent.", "Phase 3 dispatches the test coder."):
+        expect_rejection(
+            "skills/planar/SKILL.md",
+            lambda text, seeded=seeded: text + f"\n{seeded}\n",
+            seeded,
+        )
+    expect_rejection(
+        "skills/planar/SKILL.md",
+        lambda text: text + "\n" * (SKILL_MAX_LINES + 1),
+        "-line limit",
     )
     pass_line(f"orchestrator-coherence/skill-planar: {runs} seeded-violation self-tests")
 
@@ -2412,12 +2652,34 @@ INLINE_ORCHESTRATOR_FIXTURE = (
 )
 
 
-def orchestrator_agent_source(root: Path | None = None) -> str:
+def orchestrator_prompt_source(path: Path) -> str:
+    """The text of an orchestrator prompt file, frontmatter removed.
+
+    Any prompt can be put under test: a stock agent file, a swarm prompt, an
+    operator's own. The harness stages the body under its own orchestrator
+    slot name and never inspects it.
+    """
+    if not path.is_file():
+        raise EvalFailure(f"--orchestrator-prompt is not a file: {path}")
+    text = path.read_text(encoding="utf-8")
+    if text.startswith("---\n"):
+        end = text.find("\n---\n", 4)
+        if end != -1:
+            return text[end + len("\n---\n") :].lstrip("\n")
+    return text
+
+
+def orchestrator_agent_source(
+    root: Path | None = None, prompt: Path | None = None
+) -> str:
     """The orchestrator contract text for the controlled lifecycle fixture.
 
-    Read from `agents/planar-orchestrator.md` in the checkout when it exists;
-    otherwise `INLINE_ORCHESTRATOR_FIXTURE`.
+    `prompt`, when given, is the orchestrator under test. Otherwise it is
+    read from `agents/planar-orchestrator.md` in the checkout when that file
+    exists, else `INLINE_ORCHESTRATOR_FIXTURE`.
     """
+    if prompt is not None:
+        return orchestrator_prompt_source(prompt)
     path = (root or ROOT) / "agents" / f"{vendors.ORCHESTRATOR_AGENT}.md"
     if path.is_file():
         return path.read_text(encoding="utf-8")
@@ -2451,14 +2713,18 @@ def render_codex_agents(root: Path, agents_dir: Path, out_dir: Path) -> None:
 
 
 def write_lifecycle_agents(
-    repo: Path, fixture_root: Path, root: Path | None = None
+    repo: Path,
+    fixture_root: Path,
+    root: Path | None = None,
+    orchestrator_prompt: Path | None = None,
 ) -> None:
     """Stage the lifecycle fixture's Planar surface and controlled agents.
 
     - `.claude/skills/planar/`: the checkout's `skills/planar/` tree;
     - `.claude/agents/planar-orchestrator.md`: the checkout file verbatim
       (`INLINE_ORCHESTRATOR_FIXTURE` wrapped in the shipped frontmatter only
-      when the checkout has no such file);
+      when the checkout has no such file), or `orchestrator_prompt`'s body in
+      the shipped frontmatter when an orchestrator under test is named;
     - `.claude/agents/planar-{coder,reviewer,test-coder}.md`: the fixture
       instructions in the shipped frontmatter contract;
     - `.codex/agents/planar-*.toml`: `scripts/render-codex-agents.py` run
@@ -2475,7 +2741,16 @@ def write_lifecycle_agents(
     claude_dir = repo / ".claude" / "agents"
     claude_dir.mkdir(parents=True, exist_ok=True)
     orchestrator = root / "agents" / f"{vendors.ORCHESTRATOR_AGENT}.md"
-    if orchestrator.is_file():
+    if orchestrator_prompt is not None:
+        write_text(
+            claude_dir / orchestrator.name,
+            controlled_agent_markdown(
+                vendors.ORCHESTRATOR_AGENT,
+                "The orchestrator under test.",
+                orchestrator_agent_source(root, orchestrator_prompt),
+            ),
+        )
+    elif orchestrator.is_file():
         shutil.copyfile(orchestrator, claude_dir / orchestrator.name)
     else:
         write_text(
@@ -2639,9 +2914,12 @@ def prepare_lifecycle_fixture(
             cwd=repo,
             env=env,
         )
+        # `lifecycle.policy` puts the orchestrator under a policy the grade
+        # then holds its trail to (`expected.conformance`).
         write_text(
             Path(env["PLANAR_CONFIG_PATH"]),
-            f'[defaults]\nvendor = "{options.vendor or "codex"}"\n',
+            f'[defaults]\nvendor = "{options.vendor or "codex"}"\n'
+            + trail.policy_toml((case.get("lifecycle") or {}).get("policy")),
         )
         run_command(["planar", "init", "--name", case_id, "--json"], cwd=repo, env=env)
         plan = run_json(
@@ -2776,7 +3054,7 @@ def prepare_lifecycle_fixture(
             "planar-coder, planar-reviewer, and planar-test-coder definitions are the only specialist "
             "contracts for this run.\n\n"
             "Never edit source content in the orchestrator context.\n\n"
-            + orchestrator_agent_source()
+            + orchestrator_agent_source(prompt=options.orchestrator_prompt)
         )
         instructions_path = repo / ".eval" / "orchestrator.instructions.md"
         write_text(instructions_path, instructions)
@@ -2784,13 +3062,18 @@ def prepare_lifecycle_fixture(
             repo / ".codex" / "config.toml",
             "[agents]\nmax_concurrent_threads_per_session = 4\n",
         )
-        write_lifecycle_agents(repo, fixture_root)
-        for support in ("cross-scope-writes", "doctrine", "methodology", "models"):
-            for vendor in ("codex", "claude"):
-                shutil.copy2(
-                    ROOT / "agents" / f"{support}.md",
-                    repo / f".{vendor}" / "agents" / f"{support}.md",
-                )
+        write_lifecycle_agents(
+            repo, fixture_root, orchestrator_prompt=options.orchestrator_prompt
+        )
+        # The stock orchestrator's support documents are staged only for the
+        # stock orchestrator: another prompt brings whatever it needs.
+        if options.orchestrator_prompt is None:
+            for support in ("cross-scope-writes", "doctrine", "methodology"):
+                for vendor in ("codex", "claude"):
+                    shutil.copy2(
+                        ROOT / "agents" / f"{support}.md",
+                        repo / f".{vendor}" / "agents" / f"{support}.md",
+                    )
         env["PATH"] = str(repo / ".eval" / "bin") + os.pathsep + env["PATH"]
         before = run_json(
             ["planar", "plan", "next", plan_id, "--json"], cwd=repo, env=env
@@ -2834,7 +3117,21 @@ def prepare_lifecycle_fixture(
                 # 6876) makes a missing observed/ dir a hard grading
                 # failure rather than a silent legacy skip -- see
                 # grade_lifecycle_artifacts.
-                "artifact_format": ARTIFACT_FORMAT_OBSERVED_LOG,
+                "artifact_format": (
+                    ARTIFACT_FORMAT_TRAIL if options.vendor else ARTIFACT_FORMAT_OBSERVED_LOG
+                ),
+                # The orchestrator under test, recorded for the reader of the
+                # artifacts only; nothing grades from it.
+                "orchestrator_prompt": (
+                    {
+                        "path": str(options.orchestrator_prompt),
+                        "sha256": hashlib.sha256(
+                            options.orchestrator_prompt.read_bytes()
+                        ).hexdigest(),
+                    }
+                    if options.orchestrator_prompt is not None
+                    else None
+                ),
             },
         )
         return LifecycleContext(
@@ -2873,6 +3170,10 @@ def event_objects(path: Path) -> list[dict[str, Any]]:
 # at or above this value with `observed/` missing is a real defect (the
 # collection run failed to produce it) and grading must fail, not skip.
 ARTIFACT_FORMAT_OBSERVED_LOG = 2
+# A host run snapshots the trail its orchestrator left (`trail.sqlite`),
+# so a regrade can run the conformance check again. A run.json at or above this
+# format with the snapshot missing is a grading failure, not a legacy gap.
+ARTIFACT_FORMAT_TRAIL = 3
 
 # The planar-agent wrapper's argv[0] -> legacy lifecycle-event-name mapping.
 # Only a forwarded SUCCESS produces a named lifecycle event: a failed
@@ -3334,6 +3635,10 @@ def collect_lifecycle_artifacts(
         env=env,
     )
     write_json(artifacts / "claims.after.json", claim_state)
+    if options.vendor:
+        # A host run's orchestrator can be any prompt: keep the trail it left
+        # so the conformance check grades it, now and on every regrade.
+        snapshot_arena_trail(context)
     # Task 6858: the fixture's own test-runner argv (see
     # `load_fixture_manifest`), not a hardcoded `make test` -- the
     # foreign-flat fixture runs `./run-tests` instead.
@@ -3644,6 +3949,7 @@ def grade_lifecycle_artifacts(
                 artifact_dir, case_id, options,
                 "fixture ticket lacks an authoritative passing queue outcome",
             )
+    grade_artifact_trail(case, artifact_dir, options)
 
 
 def _lifecycle_pull(
@@ -3742,7 +4048,7 @@ def replay_driver_session_death(
     terminal verb -- emulating a dead agent session (a coder process that
     dies before calling complete/fail/release/block). The lease is given a
     short TTL so `reconcile` can mark it stale immediately rather than the
-    driver having to wait out a real 600s default lease.
+    driver having to wait out a real two-hour default lease.
     `planar-agent reconcile --plan <plan-id>` is the recovery path this
     case exists to grade (agents/methodology.md "Operator recovery";
     docs/lifecycles.md's session-death reset rule).
@@ -5288,6 +5594,10 @@ def parse_args(
     # Task 6859: repeat each selected live/lifecycle case this many times and
     # report a per-case pass rate.
     parser.add_argument("--trials", type=int, default=1)
+    # Any orchestrator under test: a prompt file staged in place of the stock
+    # orchestrator for lifecycle host runs. The trail it leaves is graded the
+    # same whichever prompt it is.
+    parser.add_argument("--orchestrator-prompt", type=Path, dest="orchestrator_prompt")
     args = parser.parse_args(argv)
     if args.live:
         mode = "live"
@@ -5308,6 +5618,9 @@ def parse_args(
         keep=args.keep,
         max_usd=args.max_usd,
         trials=args.trials,
+        orchestrator_prompt=args.orchestrator_prompt.resolve()
+        if args.orchestrator_prompt
+        else None,
     )
     return (
         options,
@@ -5381,8 +5694,134 @@ def run_case_trials(
         raise last_exc
 
 
+def check_trail_corpus(specs: list[tuple[Path, dict[str, Any]]]) -> None:
+    """The recorded trails must cover what the checker promises, so a deleted
+    trail cannot quietly thin the lane: every rule 1-6 broken by some trail, an
+    operator override, history before the floor, a descendant plan, and at
+    least three conforming trails written in different orchestrator styles."""
+    broken: set[int] = set()
+    styles: set[str] = set()
+    has_override = has_before_floor = has_descendant = False
+    for _, spec in specs:
+        expected = spec["expected"]
+        broken.update(item["rule"] for item in expected.get("violations", []))
+        if expected["conforms"] and "style" in spec:
+            styles.add(spec["style"])
+        has_override = has_override or bool(expected.get("overrides"))
+        has_before_floor = has_before_floor or bool(
+            expected.get("before_floor", {}).get("claims")
+            or expected.get("before_floor", {}).get("done_tasks")
+        )
+        has_descendant = has_descendant or bool(spec.get("child_plan"))
+    missing = sorted(set(trail.RULES) - broken)
+    if missing:
+        raise EvalFailure(f"no recorded trail breaks rule(s) {missing}")
+    if len(styles) < 3:
+        raise EvalFailure(
+            f"conforming trails cover {len(styles)} orchestrator style(s), need at least 3"
+        )
+    for covered, what in (
+        (has_override, "an operator override"),
+        (has_before_floor, "history before the floor"),
+        (has_descendant, "a descendant plan"),
+    ):
+        if not covered:
+            raise EvalFailure(f"no recorded trail covers {what}")
+
+
+def run_trail_negative_control(
+    specs: list[tuple[Path, dict[str, Any]]], planar: Path
+) -> None:
+    """Prove the lane can fail: a trail graded against the opposite verdict must
+    be refused, naming the difference."""
+    _, spec = next(entry for entry in specs if entry[1]["expected"]["conforms"])
+    wrong = json.loads(json.dumps(spec))
+    wrong["expected"] = {
+        "conforms": False,
+        "violations": [{"rule": 1, "entity": "task:1"}],
+    }
+    try:
+        trail.run_trail(wrong, planar)
+    except trail.TrailError:
+        return
+    raise EvalFailure("trail negative control: a wrong expected verdict was accepted")
+
+
+def run_trails(case_filter: str | None) -> int:
+    """Grade every recorded trail through `planar health conformance`.
+
+    Each trail is built into a throwaway database, graded by the checker, and
+    held to the verdict its file records. Nothing here knows which prompt, vendor
+    or role convention a trail's style stands for; the style is a label for the
+    reader.
+    """
+    specs = trail.load_trails()
+    if not specs:
+        raise EvalFailure("no recorded trails found")
+    check_trail_corpus(specs)
+    try:
+        planar = trail.resolve_planar()
+    except trail.TrailUnavailable as exc:
+        raise EvalFailure(str(exc)) from exc
+    selected = [
+        entry for entry in specs if case_filter is None or entry[1]["id"] == case_filter
+    ]
+    if not selected:
+        raise EvalFailure(f"unknown trail id: {case_filter}")
+    run_trail_negative_control(specs, planar)
+    pass_line("trail negative control")
+    outcomes: list[CaseOutcome] = []
+    for _path, spec in selected:
+        try:
+            trail.run_trail(spec, planar)
+        except trail.TrailError as exc:
+            outcomes.append((spec["id"], "fail", str(exc)))
+        else:
+            pass_line(f"{spec['id']}: recorded trail graded")
+    emit_aggregate_report(
+        outcomes,
+        total=len(selected),
+        unit="recorded trails graded through planar health conformance",
+        pass_message=f"{len(selected)} recorded trails graded through planar health conformance",
+    )
+    return batch_exit_code(outcomes)
+
+
+def grade_trail_command(arguments: Sequence[str]) -> int:
+    """`--grade-trail <database> --plan <id>`: grade an existing trail.
+
+    The database is only read (copied to scratch first); the verdict is the
+    checker's. Exit 0 when the trail conforms, 1 when it does not.
+    """
+    parser = argparse.ArgumentParser(prog="harness.py --grade-trail")
+    parser.add_argument("--grade-trail", type=Path, required=True, dest="database")
+    parser.add_argument("--plan", required=True)
+    parser.add_argument("--floor", type=int, default=1)
+    parser.add_argument("--policy", type=Path, help="a config.toml holding the [policy] to grade under")
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args(arguments)
+    try:
+        grade = trail.grade_database(
+            args.database.resolve(),
+            args.plan,
+            floor=args.floor,
+            config_text=args.policy.read_text(encoding="utf-8") if args.policy else "",
+        )
+    except trail.TrailError as exc:
+        raise EvalFailure(str(exc)) from exc
+    print(json.dumps(grade.report, indent=2) if args.json else trail.describe(grade))
+    return grade.exit_code
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(argv or sys.argv[1:])
+    if "--grade-trail" in arguments:
+        return grade_trail_command(arguments)
+    if arguments and arguments[0] == "--trails":
+        parser = argparse.ArgumentParser(prog="harness.py --trails")
+        parser.add_argument("--trails", action="store_true")
+        parser.add_argument("--case", dest="case_filter")
+        return run_trails(parser.parse_args(arguments).case_filter)
     if arguments and arguments[0] == "--resume-queue-ticket":
         if len(arguments) != 2:
             raise EvalFailure("usage: --resume-queue-ticket <retained artifact directory>")

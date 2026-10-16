@@ -54,6 +54,7 @@ import planar.cliapp.args;
 import planar.db;
 import planar.db.migrate;
 import planar.engine.runtime.agentactivity;
+import planar.engine.runtime.agentatomic;
 import planar.cmd.planar_watch.context;
 import planar.cmd.planar_watch.dispatch;
 import planar.cmd.planar_watch.main;
@@ -704,7 +705,7 @@ TEST_CASE("planar-watch: every read verb's JSON arm is exactly one line", "[cmd]
   }
 }
 
-TEST_CASE("planar-watch schema catalogs all TWELVE oracle verbs", "[cmd][watch][handlers]") {
+TEST_CASE("planar-watch schema catalogs the ported verbs and no run verb", "[cmd][watch][handlers]") {
   auto const fx  = make_fixture("schema12");
   auto const got = dispatch(fx, {"schema"});
   REQUIRE(got.code == 0);
@@ -729,13 +730,14 @@ TEST_CASE("planar-watch schema catalogs all TWELVE oracle verbs", "[cmd][watch][
   // of the still-unported ones exits 64 naming itself; parity.t.cpp
   // asserts that directly on the built binary. `feed` is declared here
   // too, but is no longer one of them — task 6039 landed it for real.
-  for (auto const* verb : {"feed", "run", "sync-events"}) {
+  for (auto const* verb : {"feed", "sync-events"}) {
     INFO("declared verb present in the catalog: " << verb);
     CHECK(got.out.contains(std::format("\"planar-watch {}\"", verb)));
   }
-  // And the two nested `run` leaves, which no top-level loop would catch.
-  CHECK(got.out.contains("\"planar-watch run list\""));
-  CHECK(got.out.contains("\"planar-watch run show\""));
+  // Task 7458 removed `run` (and its `list`/`show` leaves) outright.
+  CHECK_FALSE(got.out.contains("\"planar-watch run\""));
+  CHECK_FALSE(got.out.contains("\"planar-watch run list\""));
+  CHECK_FALSE(got.out.contains("\"planar-watch run show\""));
   // Non-vacuous: the catalog does not simply contain every string it is
   // asked about.
   CHECK_FALSE(got.out.contains("\"planar-watch nosuchverb\""));
@@ -828,13 +830,13 @@ TEST_CASE("planar-watch inject_default_verb leaves an unknown verb for the parse
 }
 
 // ===========================================================================
-// Task 6448 — `run list` / `run show` / `sync-events`
+// Task 6448 — `sync-events`
 // ===========================================================================
 
 namespace {
 
-/// @brief Seed one plan (id 1) and nothing else — the minimum `run list` /
-/// `run show` / `sync-events` need as an FK target.
+/// @brief Seed one plan (id 1) and nothing else — the minimum `sync-events`
+/// needs as an FK target.
 /// @param fx The fixture whose `db_path` to populate.
 auto seed_plan_only(const fixture& fx) -> void {
   auto conn = planar::db::connection::open(fx.db_path.string());
@@ -847,176 +849,6 @@ auto seed_plan_only(const fixture& fx) -> void {
 }
 
 } // namespace
-
-TEST_CASE("planar-watch run list --json unions workflow_runs (wf) and runs (op)", "[cmd][watch][handlers][run]") {
-  auto const fx = make_fixture("runlistunion");
-  seed_plan_only(fx);
-  {
-    auto conn = planar::db::connection::open(fx.db_path.string());
-    REQUIRE(conn.has_value());
-    exec(*conn, "insert into workflow_runs (plan_id, workflow_name, run_identifier, pid, repo_root, started_at, status) "
-                "values (1, 'wf-name', 'wf-run-1', 111, '/tmp/wf', '2024-01-01T00:00:00.000Z', 'running')");
-    exec(*conn, "insert into runs (run_uid, plan_id, arm, base_sha, config_hash, started_at, status) "
-                "values ('op-uid-1', 1, 'finalize', '', '', '2024-01-02T00:00:00.000Z', 'running')");
-  }
-
-  auto const got = dispatch(fx, {"run", "list", "--json"});
-  CHECK(got.code == 0);
-  CHECK(got.out.contains("\"generated_at\":"));
-  CHECK(got.out.contains("\"runs\":["));
-  CHECK(got.out.contains("\"source\":\"wf\""));
-  CHECK(got.out.contains("\"source\":\"op\""));
-  CHECK(got.out.contains("\"workflow_name\":\"wf-name\""));
-  CHECK(got.out.contains("\"workflow_name\":\"finalize\""));
-  // op-source sentinels: pid 0, repo_root "".
-  CHECK(got.out.contains("\"pid\":0"));
-  CHECK(got.out.contains("\"repo_root\":\"\""));
-  // Descending by started_at: the op row (started later) sorts first.
-  auto const op_pos = got.out.find("\"source\":\"op\"");
-  auto const wf_pos = got.out.find("\"source\":\"wf\"");
-  REQUIRE(op_pos != std::string::npos);
-  REQUIRE(wf_pos != std::string::npos);
-  CHECK(op_pos < wf_pos);
-}
-
-TEST_CASE("planar-watch run list --arm restricts to one source", "[cmd][watch][handlers][run]") {
-  auto const fx = make_fixture("runlistarm");
-  seed_plan_only(fx);
-  {
-    auto conn = planar::db::connection::open(fx.db_path.string());
-    REQUIRE(conn.has_value());
-    exec(*conn, "insert into workflow_runs (plan_id, workflow_name, run_identifier, pid, repo_root, started_at, status) "
-                "values (1, 'wf-only', 'wf-run-2', 111, '/tmp/wf', '2024-01-01T00:00:00.000Z', 'running')");
-    exec(*conn, "insert into runs (run_uid, plan_id, arm, base_sha, config_hash, started_at, status) "
-                "values ('op-uid-2', 1, 'op-only', '', '', '2024-01-02T00:00:00.000Z', 'running')");
-  }
-
-  auto const wf_only = dispatch(fx, {"run", "list", "--arm", "wf", "--json"});
-  CHECK(wf_only.code == 0);
-  CHECK(wf_only.out.contains("\"source\":\"wf\""));
-  CHECK_FALSE(wf_only.out.contains("\"source\":\"op\""));
-
-  auto const op_only = dispatch(fx, {"run", "list", "--arm", "op", "--json"});
-  CHECK(op_only.code == 0);
-  CHECK(op_only.out.contains("\"source\":\"op\""));
-  CHECK_FALSE(op_only.out.contains("\"source\":\"wf\""));
-}
-
-TEST_CASE("planar-watch run list --status filters both sources", "[cmd][watch][handlers][run]") {
-  auto const fx = make_fixture("runliststatus");
-  seed_plan_only(fx);
-  {
-    auto conn = planar::db::connection::open(fx.db_path.string());
-    REQUIRE(conn.has_value());
-    exec(*conn, "insert into workflow_runs (plan_id, workflow_name, run_identifier, pid, repo_root, started_at, status) "
-                "values (1, 'wf-running', 'wf-run-3', 111, '/tmp/wf', '2024-01-01T00:00:00.000Z', 'running')");
-    exec(*conn,
-         "insert into workflow_runs (plan_id, workflow_name, run_identifier, pid, repo_root, started_at, ended_at, status) "
-         "values (1, 'wf-done', 'wf-run-4', 111, '/tmp/wf', '2024-01-01T00:00:00.000Z', "
-         "'2024-01-01T01:00:00.000Z', 'completed')");
-  }
-
-  auto const running = dispatch(fx, {"run", "list", "--status", "running", "--json"});
-  CHECK(running.code == 0);
-  CHECK(running.out.contains("\"workflow_name\":\"wf-running\""));
-  CHECK_FALSE(running.out.contains("\"workflow_name\":\"wf-done\""));
-
-  auto const completed_status = dispatch(fx, {"run", "list", "--status", "completed", "--json"});
-  CHECK(completed_status.code == 0);
-  CHECK(completed_status.out.contains("\"workflow_name\":\"wf-done\""));
-  CHECK_FALSE(completed_status.out.contains("\"workflow_name\":\"wf-running\""));
-}
-
-TEST_CASE("planar-watch run list --plan restricts to the seeded plan's run only", "[cmd][watch][handlers][run]") {
-  auto const fx = make_fixture("runlistplan");
-  {
-    auto conn = planar::db::connection::open(fx.db_path.string());
-    REQUIRE(conn.has_value());
-    auto applied = planar::db::apply_all(*conn);
-    REQUIRE(applied.has_value());
-    exec(*conn, "insert into associations (slug, name, kind) values ('project:seed','project:seed','project')");
-    exec(*conn, "insert into plans (scope_kind, scope_id, title, slug, status) "
-                "values ('association', 1, 'Plan A', 'plan-a', 'active')");
-    exec(*conn, "insert into plans (scope_kind, scope_id, title, slug, status) "
-                "values ('association', 1, 'Plan B', 'plan-b', 'active')");
-    exec(*conn, "insert into workflow_runs (plan_id, workflow_name, run_identifier, pid, repo_root, started_at, status) "
-                "values (1, 'wf-a', 'wf-run-a', 111, '/tmp/wf', '2024-01-01T00:00:00.000Z', 'running')");
-    exec(*conn, "insert into workflow_runs (plan_id, workflow_name, run_identifier, pid, repo_root, started_at, status) "
-                "values (2, 'wf-b', 'wf-run-b', 111, '/tmp/wf', '2024-01-01T00:00:00.000Z', 'running')");
-  }
-
-  auto const got = dispatch(fx, {"run", "list", "--plan", "1", "--json"});
-  CHECK(got.code == 0);
-  CHECK(got.out.contains("\"wf-a\""));
-  CHECK_FALSE(got.out.contains("\"wf-b\""));
-}
-
-TEST_CASE("planar-watch run list --arm rejects an unrecognized value with exit 1, not 2",
-          "[cmd][watch][handlers][run][exitcode]") {
-  // Reproduced from the oracle's own `error.InvalidValue`, which its
-  // `exit.zig` does NOT map to the 2 an `InvalidInput` gets — it falls
-  // through to the generic `else => 1`.
-  auto const fx = make_fixture("runlistbadarm");
-  seed_empty_database(fx);
-  auto const got = dispatch(fx, {"run", "list", "--arm", "bogus"});
-  CHECK(got.code == 1);
-  CHECK(got.out.empty());
-  CHECK(got.err == "error: run list: --arm must be wf, op, or all (got 'bogus')\n");
-}
-
-TEST_CASE("planar-watch run show groups context_records by stage then created_at, id as tiebreak",
-          "[cmd][watch][handlers][run]") {
-  namespace aa  = planar::engine::runtime::agentactivity;
-  auto const fx = make_fixture("runshowstage");
-  seed_plan_only(fx);
-  {
-    auto conn = planar::db::connection::open(fx.db_path.string());
-    REQUIRE(conn.has_value());
-    exec(*conn, "insert into tasks (scope_kind, scope_id, plan_id, title, status, priority) "
-                "values ('association', 1, 1, 'First', 'todo', 100)");
-    exec(*conn, "insert into sessions (vendor) values ('seedvendor')");
-    auto const claim = aa::acquire_claim(
-        *conn, aa::acquire_args{.session_id = 1, .kind = aa::entity_kind::task, .entity_id = 1, .vendor = "seedvendor"});
-    REQUIRE(claim.has_value());
-    exec(*conn, "insert into workflow_runs (plan_id, workflow_name, run_identifier, pid, repo_root, started_at, status) "
-                "values (1, 'show-wf', 'show-run-1', 111, '/tmp', '2024-01-01T00:00:00.000Z', 'running')");
-    // "plan" stage inserted FIRST (lower id) but sorts AFTER "code"
-    // alphabetically — the ordering the oracle's `ORDER BY stage asc,
-    // created_at asc, id asc` produces, and what a naive "insertion
-    // order" or "id order" implementation would get wrong.
-    exec(*conn, "insert into context_records (run_id, stage, session_id, claim_id, kind, body, created_at) "
-                "values (1, 'plan', 1, 1, 'finding', 'finding from plan stage', '2024-01-01T00:00:01.000Z')");
-    exec(*conn, "insert into context_records (run_id, stage, session_id, claim_id, kind, body, created_at) "
-                "values (1, 'code', 1, 1, 'risk', 'risk from code stage', '2024-01-01T00:00:02.000Z')");
-  }
-
-  auto const got = dispatch(fx, {"run", "show", "1", "--json"});
-  CHECK(got.code == 0);
-  CHECK(got.out.contains("\"run\":"));
-  CHECK(got.out.contains("\"context_records\":["));
-  auto const code_pos = got.out.find("\"stage\":\"code\"");
-  auto const plan_pos = got.out.find("\"stage\":\"plan\"");
-  REQUIRE(code_pos != std::string::npos);
-  REQUIRE(plan_pos != std::string::npos);
-  CHECK(code_pos < plan_pos);
-}
-
-TEST_CASE("planar-watch run show with an unknown id fails with not_found, not a crash", "[cmd][watch][handlers][run]") {
-  auto const fx = make_fixture("runshowmissing");
-  seed_empty_database(fx);
-  auto const got = dispatch(fx, {"run", "show", "999999", "--json"});
-  CHECK(got.code != 0);
-  CHECK(got.err == "error: run show: run 999999 not found\n");
-}
-
-TEST_CASE("planar-watch run show: a non-integer id is a distinct failure from an unknown id",
-          "[cmd][watch][handlers][run][exitcode]") {
-  auto const fx = make_fixture("runshowbadid");
-  seed_empty_database(fx);
-  auto const got = dispatch(fx, {"run", "show", "not-a-number", "--json"});
-  CHECK(got.code == 2);
-  CHECK(got.err == "error: run show: id must be an integer\n");
-}
 
 TEST_CASE("planar-watch sync-events --json on an empty table returns sync_events: []", "[cmd][watch][handlers][syncevents]") {
   auto const fx = make_fixture("synceventsempty");
@@ -1144,37 +976,6 @@ TEST_CASE("planar-watch claims surfaces supervisor and attempt_id, never omittin
   CHECK_FALSE(text.out.contains("vendor:othervendor  supervisor:"));
 }
 
-TEST_CASE("planar-watch run list/show surface engine, and a plan-less run reads null, not plan 0",
-          "[cmd][watch][handlers][6493]") {
-  auto const fx = make_fixture("run_engine");
-  seed_database(fx);
-  {
-    auto conn = planar::db::connection::open(fx.db_path.string());
-    REQUIRE(conn.has_value());
-    // Run 1 is shaped like a pre-00038 row (engine defaulted); run 2 is a
-    // plan-less Centurion run, which only migration 00038 allows.
-    exec(*conn, "insert into workflow_runs (plan_id, workflow_name, run_identifier, pid, repo_root, started_at) "
-                "values (1, 'wf', 'r1', 11, '/r', '2000-01-01T00:00:01.000Z')");
-    exec(*conn, "insert into workflow_runs (plan_id, workflow_name, run_identifier, pid, repo_root, started_at, engine) "
-                "values (null, 'wf', 'r2', 12, '/r', '2000-01-01T00:00:02.000Z', 'centurion')");
-  }
-  auto const shown = dispatch(fx, {"run", "show", "1"});
-  REQUIRE(shown.code == 0);
-  CHECK(shown.out.contains("\n  engine:embedded\n"));
-
-  auto const json = dispatch(fx, {"run", "list", "--arm", "wf", "--json"});
-  REQUIRE(json.code == 0);
-  CHECK(json.out.contains(R"({"id":2,"plan_id":null,)"));
-  CHECK(json.out.contains(R"("source":"wf","engine":"centurion"})"));
-  CHECK(json.out.contains(R"({"id":1,"plan_id":1,)"));
-  CHECK(json.out.contains(R"("source":"wf","engine":"embedded"})"));
-
-  auto const text = dispatch(fx, {"run", "list", "--arm", "wf"});
-  REQUIRE(text.code == 0);
-  CHECK(text.out.contains("  run:2  plan:-  status:running  source:wf  engine:centurion  "));
-  CHECK(text.out.contains("  run:1  plan:1  status:running  source:wf  engine:embedded  "));
-}
-
 TEST_CASE("planar-watch feed names a supervision action kind on its text line", "[cmd][watch][handlers][6493]") {
   auto const fx = make_fixture("feed_supervision");
   seed_database(fx);
@@ -1190,4 +991,122 @@ TEST_CASE("planar-watch feed names a supervision action kind on its text line", 
   auto const json = dispatch(fx, {"feed", "--json"});
   REQUIRE(json.code == 0);
   CHECK(json.out.contains(R"("action_kind":"run_submitted")"));
+}
+
+TEST_CASE("planar-watch tree nests a claim taken with a parent action under that action", "[cmd][watch][handlers][7485]") {
+  // The write half is `planar-agent claim --parent-action <id>`, which passes `parent_action_id` to
+  // `claim_entity`; this drives the same engine entry point and reads the result through `tree`, since
+  // a `cmd` target cannot import its sibling binary.
+  namespace aa     = planar::engine::runtime::agentactivity;
+  namespace atomic = planar::engine::runtime::agentatomic;
+
+  auto const fx = make_fixture("treeparent");
+  seed_database(fx);
+  {
+    auto conn = planar::db::connection::open(fx.db_path.string());
+    REQUIRE(conn.has_value());
+    exec(*conn, "insert into tasks (scope_kind, scope_id, plan_id, title, status, priority) "
+                "values ('association', 1, 1, 'Third', 'todo', 102)");
+    // The orchestrator's own row: the parent the sub-agent's claim hangs from.
+    auto const parent = aa::start_action(*conn, aa::start_action_args{.session_id  = 1,
+                                                                      .kind        = aa::action_kind::orchestrator,
+                                                                      .vendor      = "seedvendor",
+                                                                      .vendor_role = "orchestrator"});
+    REQUIRE(parent.has_value());
+
+    atomic::task_policy const permissive{
+        .check_transition = [](std::string_view, std::string_view) -> std::expected<void, aa::agent_error> { return {}; },
+        .unready_reasons = [](planar::db::connection&, std::int64_t) -> std::expected<std::vector<std::string>, aa::agent_error> {
+          return std::vector<std::string>{};
+        },
+    };
+    auto const claimed = atomic::claim_entity(*conn,
+                                              aa::acquire_args{.session_id       = 1,
+                                                               .kind             = aa::entity_kind::task,
+                                                               .entity_id        = 3,
+                                                               .vendor           = "seedvendor",
+                                                               .role             = "coder",
+                                                               .parent_action_id = *parent},
+                                              true, permissive);
+    REQUIRE(claimed.has_value());
+  }
+
+  auto const tree = dispatch(fx, {"tree"});
+  REQUIRE(tree.code == 0);
+  INFO(tree.out);
+  // One root (the parent action, which holds no claim) with the sub-agent's claim row as its only child.
+  CHECK(tree.out.starts_with("action:1  session:1  (no claim)\n"));
+  CHECK(tree.out.contains("\xe2\x94\x94\xe2\x94\x80\xe2\x94\x80 scope:project:seed"));
+  CHECK(tree.out.find("action:", 1) == std::string::npos);
+}
+
+TEST_CASE("planar-watch renders a review action under the reviewed claim's action, with its verdict",
+          "[cmd][watch][handlers][review]") {
+  // The write half is `planar-agent review`; this drives the same engine entry point and reads the
+  // result back through `tree`, `actions` and `feed`, since a `cmd` target cannot import its sibling.
+  namespace aa     = planar::engine::runtime::agentactivity;
+  namespace atomic = planar::engine::runtime::agentatomic;
+
+  auto const fx = make_fixture("reviewrender");
+  seed_database(fx);
+  std::string  reviewed_token;
+  std::int64_t reviewer_session_row = 0;
+  {
+    auto conn = planar::db::connection::open(fx.db_path.string());
+    REQUIRE(conn.has_value());
+    exec(*conn, "insert into tasks (scope_kind, scope_id, plan_id, title, status, priority) "
+                "values ('association', 1, 1, 'Third', 'todo', 102)");
+    atomic::task_policy const permissive{
+        .check_transition = [](std::string_view, std::string_view) -> std::expected<void, aa::agent_error> { return {}; },
+        .unready_reasons = [](planar::db::connection&, std::int64_t) -> std::expected<std::vector<std::string>, aa::agent_error> {
+          return std::vector<std::string>{};
+        },
+    };
+    auto const claimed = atomic::claim_entity(*conn,
+                                              aa::acquire_args{.session_id        = 1,
+                                                               .kind              = aa::entity_kind::task,
+                                                               .entity_id         = 3,
+                                                               .vendor            = "seedvendor",
+                                                               .vendor_session_id = "coder-session",
+                                                               .role              = "coder"},
+                                              true, permissive);
+    REQUIRE(claimed.has_value());
+    reviewed_token      = claimed->claim_token;
+    auto const reviewed = atomic::record_review(*conn, atomic::review_args{.reviewed_claim_token    = reviewed_token,
+                                                                           .reviewer_vendor_session = "reviewer-session",
+                                                                           .vendor                  = "seedvendor",
+                                                                           .verdict = aa::review_verdict::request_changes,
+                                                                           .summary = "needs a negative test"});
+    REQUIRE(reviewed.has_value());
+    auto stmt = conn->prepare("select id from sessions where vendor_session_id = 'reviewer-session'");
+    REQUIRE(stmt.has_value());
+    REQUIRE(stmt->step().has_value());
+    reviewer_session_row = stmt->column_int64(0);
+  }
+
+  auto const tree = dispatch(fx, {"tree"});
+  REQUIRE(tree.code == 0);
+  INFO(tree.out);
+  // The review is a child of the claim's action and names its verdict and the reviewed claim; it is
+  // not drawn as a second copy of the claim's own status line.
+  CHECK(tree.out.contains(
+      std::format("\xe2\x94\x94\xe2\x94\x80\xe2\x94\x80 review:request-changes  reviewer_session:{}  claim:{}\n",
+                  reviewer_session_row, reviewed_token)));
+
+  auto const actions = dispatch(fx, {"actions", "--kind", "review"});
+  REQUIRE(actions.code == 0);
+  CHECK(actions.out.contains("kind:review"));
+  CHECK(actions.out.contains("verdict:request-changes"));
+  auto const json = dispatch(fx, {"actions", "--json"});
+  REQUIRE(json.code == 0);
+  CHECK(json.out.contains(R"("verdict":"request-changes")"));
+
+  auto const feed = dispatch(fx, {"feed"});
+  REQUIRE(feed.code == 0);
+  CHECK(feed.out.contains("action_started  review request-changes\n"));
+
+  // The coder's claim keeps its own activity: the verdict is not what the coder is doing.
+  auto const ps = dispatch(fx, {"ps"});
+  REQUIRE(ps.code == 0);
+  CHECK_FALSE(ps.out.contains("needs a negative test"));
 }

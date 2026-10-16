@@ -905,9 +905,17 @@ auto update_task(db::connection& conn, std::int64_t id, const task_update_args& 
   // --force` and `update|task|3|<NULL>` from `task update 3 --title ...`.
   // Note this is the ONE status_change on a task with no summary text;
   // `done`/`cancel`/`block`/`reopen` all carry one.
+  //
+  // The one addition: an explicit `--force` that sets `done` records `forced_done_summary`, so the
+  // conformance check can list the operator's override instead of grading the task as unclaimed.
+  std::optional<std::string_view> status_summary;
+  if (patch.force && patch.status.has_value() && *patch.status == task_status::done) {
+    status_summary = forced_done_summary;
+  }
   if (auto a = record_audit(
-          conn, audit::record_args{.verb   = patch.status.has_value() ? audit::verb::status_change : audit::verb::update,
-                                   .entity = {.kind = "task", .id = id}});
+          conn, audit::record_args{.verb    = patch.status.has_value() ? audit::verb::status_change : audit::verb::update,
+                                   .entity  = {.kind = "task", .id = id},
+                                   .summary = status_summary});
       !a) {
     return std::unexpected(a.error());
   }
@@ -979,8 +987,10 @@ auto mark_done(db::connection& conn, std::int64_t id, bool force) -> std::expect
   }
   // ORACLE: the summary is the literal `done` -- the resulting status
   // word, not a sentence.
-  if (auto a = record_audit(
-          conn, audit::record_args{.verb = audit::verb::status_change, .entity = {.kind = "task", .id = id}, .summary = "done"});
+  // `done (--force)` when the operator passed `--force`, so conformance can list the override.
+  if (auto a = record_audit(conn, audit::record_args{.verb    = audit::verb::status_change,
+                                                     .entity  = {.kind = "task", .id = id},
+                                                     .summary = force ? std::string_view{forced_done_summary} : "done"});
       !a) {
     return std::unexpected(a.error());
   }

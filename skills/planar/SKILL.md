@@ -3,9 +3,8 @@ name: planar
 description: >-
   Planar is local agent-operations infrastructure: plans, tasks, work claims, decisions,
   specs, handoffs and Jira or GitHub Issues sync, kept in one SQLite database behind the
-  planar, planar-agent, planar-watch, planar-ext and planar-execute CLIs. Use this skill
-  whenever a session plans, claims, implements, reviews, hands off or syncs work through
-  those CLIs.
+  planar, planar-agent, planar-watch and planar-ext CLIs. Use this skill when the
+  operator mentions Planar, a Planar plan or task id, or one of those CLIs.
 license: MIT
 metadata:
   version: "0.1.0"
@@ -14,108 +13,66 @@ metadata:
 
 # Planar
 
-## What Planar is and who writes what
-
-Planar keeps planning and agent-coordination state in one SQLite database and exposes it
-through five binaries. Each binary has a disjoint write surface. The boundary is each
-binary's verb set, not a runtime ACL, so choosing the right binary is the agent's job.
+Planar keeps planning and agent-coordination state in one SQLite database behind four
+binaries with disjoint write surfaces. The boundary is each binary's verb set, not a
+runtime ACL, so the caller picks the right binary.
 
 | Binary | Role | Writes |
 |--------|------|--------|
 | `planar` | Operator surface | Planning entities, and manual `tasks.status` transitions. |
-| `planar-agent` | Agent-callable | `agent_actions`, `agent_work_claims`, `routing_dispatch_*`, `queue_*`, and `tasks.status` inside a coordinated operation. |
-| `planar-watch` | Read-only viewer | Nothing. Opens the database read-only. |
+| `planar-agent` | Agent-callable | `agent_actions`, `agent_work_claims`, `queue_*`, and `tasks.status` inside a coordinated operation. |
+| `planar-watch` | Read-only viewer | Nothing. |
 | `planar-ext` | Jira and GitHub Issues | `external_links`, `external_systems`, `sync_events`. |
-| `planar-execute` | Workflow entry point | Nothing. No database handle; shells the other CLIs. |
 
-This skill teaches only the rules that cross verbs. Everything verb-shaped (flags,
-arguments, output fields, exit codes) comes from the binaries; see the discovery rule.
+Start with `planar-agent brief <plan-id>`. It is read-only and returns, for one plan, the
+task counts and milestones, live and stale claims, the next parallel wave, per-task
+readiness, the effective policy and its source (including `confirm_before`), and command
+templates for claiming, heartbeating and the terminal verbs. `--json` is for programs.
 
 ## Invariants
 
 1. **Claim, heartbeat, one terminal verb.** Take work with `planar-agent pull` or
-   `planar-agent claim`, renew it with `planar-agent heartbeat` at half the TTL, and end it
-   with exactly one of `planar-agent complete`, `fail`, `release` or `block`. Each terminal
-   verb flips the claim and `tasks.status` in one transaction.
-2. **Never split the terminal verb.** Do not run `planar task done` and then
-   `planar-agent release`: a process death between the two strands the claim. Use the
-   single atomic `planar-agent` terminal verb. In orchestrated work the orchestrator owns
-   it; a dispatched coder heartbeats and returns.
-3. **Write through the owning binary.** Planning entities go through `planar`, claims and
-   agent actions through `planar-agent`, external links through `planar-ext`; `planar-watch`
-   and `planar-execute` never write. The table above is the boundary; it is enforced by
-   each binary's verb set, not by a runtime ACL, so nothing stops a wrong-binary write.
-4. **Cross-scope guard: ten verbs.** Only ten verbs compare scopes (among them
-   `spec ingest --apply`, `task update`, `decision accept` and `planar-ext sync push`).
-   A mismatch exits 5 with no bypass flag. `assoc:<org>` covers an entity at
-   `repo:<member>`; the reverse refuses. Never claim the guard covers every write.
-5. **`--scope` means four things.** It selects the write scope on write verbs; it is a
-   patch field that moves the row on `plan update`, `artifact update` and
-   `annotate update`; it is a read filter on `list`, `search`, `tree`, `dashboard` and
-   `health`; and it is inert where `--help` says it is accepted but not read.
-6. **Read back every mutation.** Exit 0 shows a command ran, not that the state exists.
-   After a write, read the entity back with the matching `show`/`list` verb and report
-   identifiers from that read; if no read is available, say so as a warning.
-7. **Planning verbs refuse in worktrees.** From inside a git worktree, planning-class
-   writes (`plan create`, `task add`, `spec ingest`, `decision add` and the like) exit 8
-   before parsing. `--scope` does not bypass it; run them from the parent checkout.
-   `planar-agent` verbs and every read work from a worktree.
-8. **Next work is claim-aware.** Pick work with `planar plan next` or `planar-agent peek`,
-   which skip tasks under a live claim. Never derive it from `planar task list` filtered
-   to `todo`: a `todo` task can already be claimed by another vendor.
-9. **Plan status follows its tasks.** Every task write and terminal verb recomputes the
-   owning plan's status; do not walk plans through `draft`, `active` and `done` by hand.
-   An anchor plan never auto-completes: its `done` is an operator release decision.
-10. **Operator gates are never automatic.** `planar spec ingest` with `--apply`,
-    `planar plan closeout` and `planar workbench archive` each run only after the operator
-    confirms that invocation. Preview first, show the diff, then wait.
-11. **Sync pull writes no planning entity.** `planar-ext sync pull` emits `remote_title`
-    and `remote_status` and changes no plan or task. The agent verifies those values and
-    writes any change through `planar`.
-12. **Announce cross-scope writes exactly.** Before a write whose target is outside the
-    scope `planar scope show` reports, emit this standalone line just before the command:
-    `[cross-scope write: <normalized-target-label>]`, with a label such as
-    `project:planar`, `association:org:acme` or `global`. The cue grants nothing and
-    bypasses no guard. Same-scope writes carry no cue.
-13. **Isolate from-source binaries.** The runtime opens `$PLANAR_DB`, falls back to
-    `~/.planar/planar.db`, and applies pending migrations on open. Never run `./bin/*` or
-    `build/*/bin/*` against the real database; set `PLANAR_DB` and `HOME` to scratch paths
-    first. Use the `planar` on `$PATH` to exercise documented behaviour.
+   `planar-agent claim`, renew it with `planar-agent heartbeat` before the lease runs out,
+   and end it with exactly one of `planar-agent complete`, `fail`, `release` or `block`.
+   Each flips the claim and `tasks.status` in one transaction. `planar task done` followed
+   by `planar-agent release` splits that, and a death between them strands the claim.
+2. **Choose next work with the claim-aware verbs.** `planar plan next` and
+   `planar-agent peek` skip tasks under a live claim; a `todo` filter on
+   `planar task list` does not.
+3. **Write through the owning binary.** Planning entities through `planar`, claims and
+   agent actions through `planar-agent`, external links through `planar-ext`.
+4. **Cross-scope guard.** Only `spec ingest --apply`, `task update`, `decision accept`,
+   `decision withdraw`, and `planar-ext sync push`, `sync pull` and `sync resolve` compare
+   scopes. A mismatch exits 5 and no flag bypasses it. `assoc:<org>` covers an entity at
+   `repo:<member>`; the reverse refuses. On `plan update`, `artifact update` and
+   `annotate update`, `--scope` moves the entity; on reads it filters.
+5. **Planning writes refuse in a git worktree** (exit 8): `plan create`, `task add`,
+   `spec ingest` and the like. Run them from the parent checkout.
+6. **Task writes and terminal verbs recompute the owning plan's status**; an anchor plan
+   never completes by itself. `planar-ext sync pull` writes no planning entity; it emits
+   `remote_title` and `remote_status` for a write through `planar`.
+7. **Isolate from-source binaries.** The runtime opens `$PLANAR_DB`, falls back to
+   `~/.planar/planar.db`, and applies pending migrations on open. Set `PLANAR_DB` and
+   `HOME` to scratch paths before running any binary built from source.
 
-## Discovery rule
+## Discovery
 
-Before using any verb, read its help. Every flag has a help line, and every leaf verb ends
-with `Examples:` and `Exit codes:` sections. For machine-readable detail, ask the binary's
-schema catalog for one command, or for the compact tree:
+Read a verb's help before using it; each leaf verb ends with `Examples:` and
+`Exit codes:`. For machine-readable detail use `planar schema --command "task update"`,
+or `planar schema --compact` for the command tree. All four binaries have `schema`.
+Avoid the full catalog; it is about 338 KB for `planar`.
 
-```sh
-planar task update --help
-planar schema --command "task update"
-planar schema --compact
-```
+## References
 
-The same works on `planar-agent`, `planar-watch`, `planar-ext` and `planar-execute`.
-Never load the full `schema` catalog; for `planar` it is about 338 KB.
-
-## Routing
-
-| Intent | Go to |
-|--------|-------|
-| Claim, heartbeat and finish a unit of work | `references/claim-ritual.md` |
-| See what needs attention, in what order | `references/status.md` |
-| Degraded health, stale claims, doctor | `references/recovery.md` |
-| Capture a handoff, validate a resume, cd into a worktree | `references/resume-handoff.md` |
-| Draft, review and ingest specs; workbench; closeout | `references/spec-pipeline.md` |
-| Decisions, artifacts, annotations, questions, link endpoints | `references/knowledge.md` |
-| Jira/GitHub: register, create, sync, resolve, propagate | `references/external-sync.md` |
-| Report an issue from a feedback finding | `references/external-sync.md` |
-| Operator-local skills and agents; workspace scan | `references/local.md` |
-
-Report every result with the seven-section envelope in `references/feedback-contract.md`.
-
-Role work goes to agents, dispatched by name and never invoked as skills:
-`planar-orchestrator`, `planar-coder`, `planar-reviewer`, `planar-test-coder`, `planar-janitor`,
-`planar-research`, `planar-planner`, `planar-spec-reviewer`, `planar-ingestor`, `planar-importer`,
-`planar-synthesizer`, `planar-ext-sync`, `planar-feedback-triager`, `planar-introspector`
-and `planar-sync-reconciler`. This is the only Planar skill; no slash-command skill exists
-for any of these roles.
+| Topic | File |
+|-------|------|
+| Dispatching work to workers: tokens, waves, reviews | `references/dispatch.md` |
+| Preparing plans: work lists, decisions, questions, scenarios, ingest | `references/preparation.md` |
+| The host build and test queue | `references/queue.md` |
+| Claim, heartbeat and terminal verbs in detail | `references/claim-ritual.md` |
+| Health, stale claims, doctor | `references/recovery.md` |
+| Handoff, resume, worktree paths | `references/resume-handoff.md` |
+| Jira and GitHub: register, create, sync, resolve, propagate | `references/external-sync.md` |
+| Dashboards, claims and activity | `references/status.md` |
+| Decisions, artifacts, annotations, questions, links | `references/knowledge.md` |
+| Local skills and agents; workspaces | `references/local.md` |

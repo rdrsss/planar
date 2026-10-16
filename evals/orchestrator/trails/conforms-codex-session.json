@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "id": "conforms-codex-session",
+  "description": "A Codex session on another vendor with its own model names, plus one task the operator forced done, which is listed as an override.",
+  "style": "codex session",
+  "policy": {
+    "review_required": true,
+    "require_model": true,
+    "use_queue": true,
+    "task_gate": [
+      "make",
+      "test"
+    ]
+  },
+  "tasks": [
+    {
+      "title": "one",
+      "final": "done"
+    },
+    {
+      "title": "two",
+      "final": "done-forced"
+    }
+  ],
+  "claims": [
+    {
+      "task": 1,
+      "status": "completed",
+      "role": "coder",
+      "model": "gpt-5.6",
+      "vendor": "codex",
+      "session": "codex-coder",
+      "parent_action": true,
+      "reviews": [
+        {
+          "session": "codex-review",
+          "verdict": "approve"
+        }
+      ],
+      "gate_runs": [
+        {
+          "argv": [
+            "make",
+            "test"
+          ],
+          "cwd": "/work/repo",
+          "outcome": "exited",
+          "exit_code": 0
+        }
+      ]
+    }
+  ],
+  "expected": {
+    "conforms": true,
+    "violations": [],
+    "overrides": [
+      2
+    ],
+    "before_floor": {
+      "claims": 0,
+      "done_tasks": 0
+    }
+  }
+}

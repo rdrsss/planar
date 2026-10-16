@@ -247,12 +247,8 @@ TEST_CASE("a milestone counts as promoted only by a fresh roll-up that flipped i
             .plan_id = 2, .status_before = planning::plan_status::active, .status_after = after, .flipped = flipped}};
   };
   atomic::terminal_result fresh;
-  atomic::terminal_result replay;
-  replay.replayed = true;
 
   CHECK(agent::milestone_promoted(roll_up(true, planning::plan_status::done), fresh));
-  // A replay wrote nothing, so a retry never reports the milestone twice.
-  CHECK_FALSE(agent::milestone_promoted(roll_up(true, planning::plan_status::done), replay));
   // A roll-up that did not flip, or flipped to something else (a demotion), is not a promotion.
   CHECK_FALSE(agent::milestone_promoted(roll_up(false, planning::plan_status::done), fresh));
   CHECK_FALSE(agent::milestone_promoted(roll_up(true, planning::plan_status::active), fresh));
@@ -260,16 +256,15 @@ TEST_CASE("a milestone counts as promoted only by a fresh roll-up that flipped i
   CHECK_FALSE(agent::milestone_promoted(agent::plan_roll_up{}, fresh));
 }
 
-TEST_CASE("an engine complete that promotes a milestone prints the section once and its replay prints none",
+TEST_CASE("a complete that promotes a milestone prints the section, and a repeat is refused without writing",
           "[cmd][agent][diagnose][7383]") {
   for (bool const json : {false, true}) {
     INFO("json: " << json);
     scratch_dir scratch;
     seed_milestone(scratch, 1);
     auto const token = pull_token(scratch);
-    REQUIRE(run_verb(scratch, {"claim-associate", "--claim", token, "--supervisor", "engine", "--attempt", "A1"}).code == 0);
 
-    std::vector<std::string> argv{"complete", "--claim", token, "--as", "engine", "--attempt", "A1", "--no-locality-probe"};
+    std::vector<std::string> argv{"complete", "--claim", token, "--no-locality-probe"};
     if (json) {
       argv.push_back("--json");
     }
@@ -280,10 +275,10 @@ TEST_CASE("an engine complete that promotes a milestone prints the section once 
     CHECK(scalar_text(scratch, "select status from plans where id = 2") == "done");
     auto const rows = scalar_text(scratch, "select count(*) from agent_actions");
 
-    auto const replay = run_verb(scratch, argv);
-    CHECK(replay.code == 0);
-    CHECK(replay.out.find("diagnose") == std::string::npos);
-    CHECK(replay.out.starts_with(json ? "{\"ok\":true" : "ok task:1 status:done claim_status:completed\n"));
+    // The claim is completed now, so a repeat is refused, and it writes nothing.
+    auto const repeat = run_verb(scratch, argv);
+    CHECK(repeat.code != 0);
+    CHECK(repeat.out.find("diagnose") == std::string::npos);
     CHECK(scalar_text(scratch, "select count(*) from agent_actions") == rows);
   }
 }

@@ -33,10 +33,7 @@ import planar.cmd.planar.handlers.plan.create;
 import planar.cmd.planar.handlers.plan.show;
 import planar.cmd.planar.handlers.plan.list;
 import planar.cmd.planar.handlers.plan.update;
-import planar.cmd.planar.handlers.plan.edit;
 import planar.cmd.planar.handlers.plan.view;
-import planar.cmd.planar.handlers.plan.diff;
-import planar.cmd.planar.handlers.plan.review;
 import planar.cmd.planar.handlers.plan.link;
 import planar.cmd.planar.handlers.plan.next;
 import planar.cmd.planar.handlers.plan.recommend_strategy;
@@ -212,40 +209,23 @@ void warn_open_descendants(context& ctx, db::connection& conn, std::int64_t plan
                            plan_id, open, plan_id);
 }
 
-/// @brief Whether the task's authoritative routing packet is dispatchable.
+/// @brief Whether the task's packet reports it ready: claimable, unblocked, its
+/// citations resolved and no open question or proposed decision linked.
 ///
-/// `plan next` calls this for every available task and therefore blocks an
-/// absent packet. `recommend-strategy` first checks for materialized routing
-/// provenance, retaining planning-time recommendations for tasks not yet
-/// ingested; after provenance exists, it calls this same verdict.
+/// `plan next` calls this for every available task, and `recommend-strategy`
+/// (rule 7) for every task the earlier rules left eligible. The packet carries
+/// coordination facts only, so a task with no artifacts and no scenarios is
+/// ready.
 /// @param conn An open database connection.
 /// @param task_id The task to inspect.
 /// @param verb The caller's verb for its query-failure diagnostic.
 /// @return Whether the assembled packet is ready.
-auto routing_packet_ready(db::connection& conn, std::int64_t task_id, std::string_view verb)
-    -> std::expected<bool, domain_error> {
+auto task_packet_ready(db::connection& conn, std::int64_t task_id, std::string_view verb) -> std::expected<bool, domain_error> {
   auto packet = engine::ingest::packet::assemble_task(conn, task_id);
   if (!packet) {
     return std::unexpected(error_from_body(domain_error_kind::generic_failure, std::format("{} packet: QueryFailed", verb)));
   }
   return packet->ready();
-}
-
-/// @brief Whether ingest has materialized routing provenance for a task.
-auto has_routing_provenance(db::connection& conn, std::int64_t task_id, std::string_view verb)
-    -> std::expected<bool, domain_error> {
-  auto fact = conn.prepare("select 1 from routing_task_facts where task_id = ? limit 1");
-  if (!fact || !fact->bind_int64(1, task_id)) {
-    return std::unexpected(error_from_body(domain_error_kind::generic_failure, std::format("{} packet: QueryFailed", verb)));
-  }
-  auto stepped = fact->step();
-  if (!stepped) {
-    return std::unexpected(error_from_body(domain_error_kind::generic_failure, std::format("{} packet: QueryFailed", verb)));
-  }
-  if (*stepped == db::step_result::done) {
-    return false;
-  }
-  return true;
 }
 
 } // namespace
@@ -944,11 +924,11 @@ auto plan_next(context& ctx, const cliapp::parsed_args& args) -> handler_result 
   std::size_t n_stale   = 0;
   std::size_t n_blocked = 0;
   // A claim-aware task selector alone is insufficient for dispatch: a task
-  // whose provenance packet is incomplete must remain blocked until ingest
-  // reconciliation restores its reviewed evidence.
+  // whose packet is not ready (a dependency, open question or proposed decision
+  // holds it back) must remain blocked.
   for (auto& row : *rows) {
     if (row.bucket == aa::next_work_bucket::available) {
-      auto ready = routing_packet_ready(**conn, row.task_id, "plan next");
+      auto ready = task_packet_ready(**conn, row.task_id, "plan next");
       if (!ready) {
         return std::unexpected(ready.error());
       }
@@ -1117,23 +1097,9 @@ auto strategy_query_failed(std::string_view verb) -> domain_error {
 auto plan_recommend_strategy(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   namespace st = engine::planning::strategy;
 
-  // Both refusals are argument-shaped and come BEFORE the database is
-  // touched, matching the oracle: a bad `--closure-source` on a nonexistent
-  // plan reports the flag, not the plan.
   auto const id = entity_id_arg(args, "plan-id", "plan");
   if (!id) {
     return std::unexpected(id.error());
-  }
-  auto const raw_source = cliapp::flag_string(args, "--closure-source");
-  // The flag is declared with a `declared` default, so an absent value here
-  // means the parser handed us nothing -- treat it as the default rather than
-  // refusing on an empty string the operator never typed.
-  auto const source_text = raw_source.has_value() ? *raw_source : std::string{"declared"};
-  auto const source      = st::parse_closure_source(source_text);
-  if (!source.has_value()) {
-    return std::unexpected(
-        error_from_body(domain_error_kind::invalid_input,
-                        std::format("--closure-source must be 'declared' or 'derived', got '{}'", source_text)));
   }
 
   auto conn = ctx.db().ensure_db();
@@ -1141,7 +1107,7 @@ auto plan_recommend_strategy(context& ctx, const cliapp::parsed_args& args) -> h
     return std::unexpected(conn.error());
   }
 
-  auto rec = st::recommend_with(**conn, *id, *source);
+  auto rec = st::recommend(**conn, *id);
   if (!rec) {
     if (rec.error() == st::strategy_error::not_found) {
       return std::unexpected(strategy_plan_not_found(*id));
@@ -1152,15 +1118,7 @@ auto plan_recommend_strategy(context& ctx, const cliapp::parsed_args& args) -> h
   std::vector<st::task_ref> packet_ready;
   packet_ready.reserve(rec->parallel_eligible.size());
   for (auto& task : rec->parallel_eligible) {
-    auto provenance = has_routing_provenance(**conn, task.id, "recommend-strategy");
-    if (!provenance) {
-      return std::unexpected(provenance.error());
-    }
-    if (!*provenance) {
-      packet_ready.push_back(std::move(task));
-      continue;
-    }
-    auto ready = routing_packet_ready(**conn, task.id, "recommend-strategy");
+    auto ready = task_packet_ready(**conn, task.id, "recommend-strategy");
     if (!ready) {
       return std::unexpected(ready.error());
     }
@@ -1168,14 +1126,13 @@ auto plan_recommend_strategy(context& ctx, const cliapp::parsed_args& args) -> h
       packet_ready.push_back(std::move(task));
       continue;
     }
-    task.excluded_by.push_back(st::exclusion{.rule = 7, .reason = "excluded by rule 7: routing packet is not ready"});
+    task.excluded_by.push_back(st::exclusion{.rule = 7, .reason = "excluded by rule 7: task packet is not ready"});
     rec->serialized.push_back(std::move(task));
   }
   rec->parallel_eligible = std::move(packet_ready);
   rec->fan_out_available = rec->parallel_eligible.size() >= 2;
 
-  ctx.out() << (cliapp::flag_bool(args, "--json") ? st::render_recommendation_json(*rec, *source)
-                                                  : st::render_recommendation_text(*rec, *source));
+  ctx.out() << (cliapp::flag_bool(args, "--json") ? st::render_recommendation_json(*rec) : st::render_recommendation_text(*rec));
   return {};
 }
 
@@ -1331,13 +1288,7 @@ auto declare_plan_children(CLI::App& plan) -> void {
 
   plan_cli::attach_update(plan);
 
-  plan_cli::attach_edit(plan);
-
   plan_cli::attach_view(plan);
-
-  plan_cli::attach_diff(plan);
-
-  plan_cli::attach_review(plan);
 
   plan_cli::attach_link(plan);
 

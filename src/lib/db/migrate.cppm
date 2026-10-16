@@ -47,7 +47,7 @@ export auto current_version(connection& conn) -> std::expected<std::uint32_t, db
 ///
 /// `schema_migrations` is Planar's public schema-version contract
 /// (CLAUDE.md § Migrations, docs/architecture.md § schema contract,
-/// migrations/README.md). Five binaries share one SQLite file and each
+/// migrations/README.md). Four binaries share one SQLite file and each
 /// embeds its own copy of the chain, so "which schema is on disk, and does
 /// this binary understand it" has to be answered before any binary reads a
 /// column. This enum is the single home for that answer; the four
@@ -86,10 +86,10 @@ export auto current_version(connection& conn) -> std::expected<std::uint32_t, db
 /// `planar` owns migration, so it APPLIES the pending chain and then
 /// refuses only `ahead`; `planar-agent`, `planar-watch` and `planar-ext`
 /// consume the schema and refuse BOTH directions (`behind` means "run
-/// `planar init`"). `planar-execute` holds no SQLite handle and is out of
-/// scope entirely. `planar-watch`'s refusal on `behind` was raised as an
+/// `planar init`"). The removed `planar-execute` held no SQLite handle and was
+/// out of scope entirely. `planar-watch`'s refusal on `behind` was raised as an
 /// operator question (task 6691) and DECIDED (decision 1120): keep it. All
-/// five binaries ship and install together as one bundle, so a schema
+/// four binaries ship and install together as one bundle, so a schema
 /// mismatch on this binary is an installation-integrity signal, not an
 /// ordinary operational state an operator might reasonably run standalone
 /// into — refusing loudly is the correct response to "something is wrong
@@ -181,7 +181,7 @@ export auto assert_schema_compatible(connection& conn) -> std::expected<schema_s
 /// (`connection::begin_transaction(lock_mode::immediate)`). Idempotent:
 /// calling this again against an up-to-date database is a no-op.
 ///
-/// The immediate lock mode matters: Planar is a five-binary system
+/// The immediate lock mode matters: Planar is a four-binary system
 /// sharing one SQLite file, and every binary migrates at startup. Taking
 /// the write lock synchronously at `BEGIN` (rather than SQLite's default
 /// deferred mode, where no lock is taken until the first statement)

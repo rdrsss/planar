@@ -55,12 +55,13 @@ using parity::read_all;
 
 constexpr auto k_budget = std::chrono::seconds(30);
 
-/// @brief The field set the tech spec names for `queue status --json`, in its order.
+/// @brief The field set the tech spec names for `queue status --json`, in its order,
+/// then `claim_token` (plan 1142, task mo-queue-claim-evidence), which is appended last.
 const std::vector<std::string> k_fields{
     "seq",         "state",        "live",          "position",      "outcome",     "exit_code",  "signal",
     "terminating", "cancelled_by", "superseded_by", "nested",        "parent_seq",  "cwd",        "argv",
     "label",       "vendor",       "role",          "log_path",      "enqueued_at", "started_at", "ended_at",
-    "waited_ms",   "ran_ms",       "run_limit_ms",  "wait_limit_ms", "slots",       "grace_ms"};
+    "waited_ms",   "ran_ms",       "run_limit_ms",  "wait_limit_ms", "slots",       "grace_ms",   "claim_token"};
 
 auto agent_bin() -> std::filesystem::path {
   return std::filesystem::path{PLANAR_CPP_BIN};

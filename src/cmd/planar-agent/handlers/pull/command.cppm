@@ -12,10 +12,13 @@ namespace planar::cmd::agent::handlers::pull_cli {
 /// @param root Input root.
 export auto add(CLI::App& root) -> void {
   // --- pull ---------------------------------------------------------------
-  CLI::App* pull = root.add_subcommand("pull", "Atomically pick the next eligible task, claim it, and flip status to doing.");
+  CLI::App* pull = root.add_subcommand(
+      "pull", "Atomically pick the next eligible ready task, claim it, and flip status to doing; unready tasks are skipped.");
   shared::add_vendor(*pull, "Vendor tag (default: planar-agent)", "Vendor session id (e.g. claude:s1)");
   pull->add_option("--role")->description("Role name (planner|coder|reviewer|test_coder|...)");
-  shared::add_ttl(*pull, "Lease TTL (default 600s; accepts bare int seconds or suffixed duration: 10m, 1h, 500ms)");
+  pull->add_option("--model")->description(
+      "Model actually used, recorded verbatim as an opaque string. Never validated against a supported list.");
+  shared::add_ttl(*pull, "Lease TTL (default 2h; accepts bare int seconds or suffixed duration: 10m, 1h, 500ms)");
   pull->add_option("--purpose")->description("Free-text purpose recorded on the claim");
   pull->add_option("--base-ref")->description("Git ref the work is based on");
   pull->add_option("--worktree")->description("Worktree id or path for isolation context");
@@ -28,7 +31,6 @@ export auto add(CLI::App& root) -> void {
       ->description("Parent action id; wires the new action as a child of this action in `planar-watch tree` "
                     "(cross-session hierarchy)")
       ->check(cliapp::zig_int_validator());
-  shared::add_run_stage(*pull);
   shared::add_json(*pull, "Emit machine-readable JSON instead of text");
   pull->add_option("plan-id")->description("Plan id to pull from")->required()->check(cliapp::zig_int_validator());
 }

@@ -21,8 +21,6 @@ not a runtime dependency.
 | `test-coder`   | large  | Dispatched between coder and reviewer when `planar test-spec status` reports relevant uncovered slugs. Reads the test-spec and diff; adds repository-native verification assets; surfaces first-run failures without weakening them. Never edits production behavior. |
 | `reviewer`     | large  | Reviews coder (and, when present, test-coder) output. Per iteration, decides one of `approve`, `request-changes`, `open-question`, `abort`. Does not implement fixes. |
 
-Tier-to-model resolution: [`agents/models.md`](models.md).
-
 ## Phases
 
 The orchestrator manages the lifecycle phases below. Phases 1–2 apply only
@@ -130,48 +128,6 @@ The claim ritual is expressed entirely in `planar-agent` verbs (the dedicated ag
 6. **Operator recovery.** Stuck claims and the human cleanup path live on `planar-agent`, not `planar`: `planar-agent reconcile [--dry-run] [--stale-after <secs>]` for batch stale-claim sweeps, and `planar-agent abort --claim <token> --reason <text>` to force-release a specific claim regardless of the owning session.
 7. **Live observability.** The read-only `planar-watch` binary carries `ps`, `feed --follow`, `log`, `claims`, `actions`, and `plans` for streaming human observation. For non-streaming reads through the `planar` binary, use `planar dashboard --agents`, `planar plan next`, `planar tree`, `planar audit trail`, and `planar health`.
 
-### Engine-supervised claims (plan 1033, decision 1007)
-
-**Not live in this build.** The `planar-agent` verbs below ship and work, but
-nothing dispatches through the Centurion engine: `planar-execute`'s engine
-verbs require a Centurion-enabled build (`dev/centurion-integration`), and
-this build refuses them. Here every claim is **caller-supervised** and the
-ritual above holds unchanged. What follows is the variant that ritual gains.
-
-The orchestrator still **creates** the claim (`pull` / `claim --entity`) and
-hands it to the engine; from then on the engine alone keeps the lease and
-issues the one terminal verb (tech-spec D3):
-
-1. **Create.** The orchestrator pulls or claims exactly as above.
-2. **Hand over.** The engine's claim-supervision workflow runs
-   `planar-agent claim-associate --claim <token> --supervisor engine --attempt <attempt-id>`.
-   It is one-way (a claim is never handed back to the caller) and idempotent
-   by attempt: the same attempt again is a no-op, a new attempt (Centurion
-   retried) moves the claim to it.
-3. **Lease.** Only `planar-agent heartbeat --claim <token> --as engine --attempt <attempt-id>`
-   extends the lease. The coder, and the orchestrator, report activity with
-   `planar-agent heartbeat --claim <token> --status "<text>"` — no `--ttl`;
-   that records the status and leaves the lease exactly where the engine set
-   it. A bare caller heartbeat on an engine claim is refused
-   (`SupervisorMismatch`).
-4. **Terminate.** The engine issues exactly one of `complete` / `fail` /
-   `release` / `block` with `--as engine --attempt <attempt-id>`. A repeat
-   under the same attempt after it landed is exit 0 with no change, which is
-   what lets post-crash reconciliation re-issue it safely. **Neither the
-   orchestrator nor the coder runs a terminal verb on an engine claim** — it
-   is refused with `SupervisorMismatch` — and the in-pwd `barrel-bypass`
-   exception does not apply to one.
-5. **Recovery.** `planar-agent reconcile` skips engine claims and
-   `engine='centurion'` runs, and `abort` refuses an engine claim. Operator
-   takeover is `--override-supervisor` on `reconcile`, `abort`, or a terminal
-   verb; each use writes a `supervisor_override` action row. `planar-watch
-   claims` shows an expired engine claim as `lapsed (engine)`.
-
-Every supervised write leaves one audit row (`claim_associate`,
-`claim_terminal`, `supervisor_override`); `planar-agent action start` refuses
-those kinds, so agents cannot write them by hand. See
-[`docs/cli-reference.md` § Engine supervision](../docs/cli-reference.md#engine-supervision-plan-1033-d3d4).
-
 The default claim scope is exclusive for tasks and child milestones. Shared claims are reserved for read-only observation or plan-level coordination where multiple agents are intentionally watching the same entity. Overlapping exclusive live claims are a conflict, not a scheduling hint.
 
 Dispatch session entries include claim tokens so interrupted cycles can be reconstructed:
@@ -199,8 +155,8 @@ spawned subagent — the same isolation model as coder/reviewer dispatch.
 
 | Agent | Allowed | Not allowed |
 |-------|---------|-------------|
-| Coder | Heartbeats, repository changes, structured validation evidence, and a work-complete report. Only under an explicitly selected in-pwd `barrel-bypass` cycle may it run `planar-agent complete --claim <token>` — never on an engine-supervised claim, where it heartbeats `--status` only. | `planar plan closeout`, `planar task done`, or any other terminal/status transition |
-| Orchestrator | Routes exactly one `planar-agent complete`, `fail`, `release`, or `block` terminal verb after the cycle disposition — except on an engine-supervised claim, whose terminal verb the engine issues; dispatches janitor for plan closeout | `planar plan closeout` directly; finalizing silently; a terminal verb on an engine claim without an operator `--override-supervisor` |
+| Coder | Heartbeats, repository changes, structured validation evidence, and a work-complete report. Only under an explicitly selected in-pwd `barrel-bypass` cycle may it run `planar-agent complete --claim <token>` | `planar plan closeout`, `planar task done`, or any other terminal/status transition |
+| Orchestrator | Routes exactly one `planar-agent complete`, `fail`, `release`, or `block` terminal verb after the cycle disposition; dispatches janitor for plan closeout | `planar plan closeout` directly; finalizing silently |
 | Janitor | `planar plan closeout <plan-id>` (after gate passes); merge, reconcile, cleanup | Bypass the `--dry-run` gate; force-close a `ready: false` plan |
 
 **Capability boundary is hard:** coders never gain plan-mutation power. The orchestrator dispatches the janitor; the janitor is the only agent role that runs `planar plan closeout`.
@@ -236,7 +192,7 @@ These tasks follow the same terminal rules as any task — they must reach `done
    id, owned worktrees/branches, reviewer or bypass disposition, structured
    validation evidence, and session context.
 4. **Janitor executes its six-step flow.** See
-   [`agents/planar-janitor.md`](planar-janitor.md): verify evidence → integrate and prove Git
+   [`examples/agents/planar-janitor.md`](../examples/agents/planar-janitor.md): verify evidence → integrate and prove Git
    state → post-integration validation → reconcile Planar → clean owned Git
    state → `planar plan closeout`.
 5. **Gate verdict surfaces to operator.** The orchestrator reports the janitor's result:
@@ -250,7 +206,7 @@ Finalization (Phase 3.7) does merge + DB closeout: the plan transitions to `done
 
 ### External harness finalization hook
 
-Decision 1007 (plan 1033; see [`docs/concepts.md` §Deterministic workflow engine](../docs/concepts.md#deterministic-workflow-engine)) permits an external workflow harness, a host-native workflow, or a background agent to drive dispatch — the seam-only doctrine this section used to describe is retired, and the finalization hook below applies to whichever of these is doing the driving. Any of them may expose a **finalization hook after a clean workflow run** — the equivalent of the orchestrator's Phase 3.7. When a `.lua` workflow script, a host-native workflow, or a background agent completes all its worker tasks without a `failure-surfaced` or `abort` outcome, the dispatcher is expected to invoke the janitor (or run `planar plan closeout` directly as an operator-aligned call) to mirror what the model-driven orchestrator does in Phase 3.7. This is an **integration point**; its contract here is:
+Decision 1007 (plan 1033) permits an external workflow harness, a host-native workflow, or a background agent to drive dispatch — the seam-only doctrine this section used to describe is retired, and the finalization hook below applies to whichever of these is doing the driving. Any of them may expose a **finalization hook after a clean workflow run** — the equivalent of the orchestrator's Phase 3.7. When a workflow script, a host-native workflow, or a background agent completes all its worker tasks without a `failure-surfaced` or `abort` outcome, the dispatcher is expected to invoke the janitor (or run `planar plan closeout` directly as an operator-aligned call) to mirror what the model-driven orchestrator does in Phase 3.7. This is an **integration point**; its contract here is:
 
 - The hook fires only on a clean workflow run (all workers green, no unresolved test-coder failures, no orphaned claims blocking the gate).
 - The hook is gated identically to the orchestrator's Phase 3.7: `planar plan closeout --dry-run` must pass before apply; `ready: false` surfaces to the operator and halts without force-closing.
@@ -359,7 +315,7 @@ for lease renewal.
 
 `parallel-fanout` starts capacity-unknown work in bounded waves. At the
 strategy gate, the operator or vendor surface sets a maximum wave size; the
-orchestrator records that choice with the dispatch preview and never starts
+orchestrator records that choice with the strategy gate and never starts
 more than that many lanes at once. If no maximum is supplied, the orchestrator
 proposes a conservative bounded size and waits for confirmation instead of
 launching the full eligible set. Dependency barriers and the engine's
@@ -425,12 +381,12 @@ Four named strategies run in the **model-driven orchestrator**. The three sequen
   selectable worktree isolation is allowed when rollback or checkout hygiene
   matters. This is an expert, explicit opt-in for operators who accept
   gates-only risk. It is supported but never recommended by the orchestrator.
-- **`parallel-fanout`** — N coders fanned out across the parallel-eligible subset, each in its own worktree off a shared epic branch, staged into dependency-respecting waves and consolidated at fan-in. **Model-runnable** (plan 760): the deterministic wave/lane/merge/teardown computation lives in the spawn-free `workflows/parallel-dispatch.lua` seam (which reads `recommend-strategy` + the `depends-on` graph and HANDS BACK) — an optional deterministic helper, not the only permitted path. The runner that executes the seam's output — cutting worktrees, spawning the N coders, running the merges — may be the model orchestrator (through the host's subagent dispatch surface), a host-native workflow, or a background agent (decision 1007); every runner still drives Planar exclusively through existing primitives (`recommend-strategy`, `planar-agent pull --worktree`, `planar-agent reconcile`, the atomic terminal verbs). Recommended for: multi-lane plans (≥3 tasks, ≥2 parallel-eligible) whose lanes touch disjoint files.
+- **`parallel-fanout`** — N coders fanned out across the parallel-eligible subset, each in its own worktree off a shared epic branch, staged into dependency-respecting waves and consolidated at fan-in. The runner — cutting worktrees, spawning the N coders, running the merges — may be the model orchestrator (through the host's subagent dispatch surface), a host-native workflow, or a background agent (decision 1007); every runner still drives Planar exclusively through existing primitives (`recommend-strategy`, `planar-agent pull --worktree`, `planar-agent reconcile`, the atomic terminal verbs). Recommended for: multi-lane plans (≥3 tasks, ≥2 parallel-eligible) whose lanes touch disjoint files.
 
 Phase 3.5 remains per coder cycle under every named strategy. Strategy changes
 reviewer cadence, never the coverage gate.
 
-`isolated-sequential` is retained only as a descriptive alias for `classic` + `worktree` isolation. It is no longer an external-harness-only escape hatch — decision 1007 permits the model orchestrator, a host-native workflow, or a background agent equally. The same spawn-free seam that powers `parallel-fanout` exposes a `cycle_plan` phase for single-lane worktree bookkeeping; whichever of the three is driving still performs the git worktree/branch/merge operations and spawns the coder.
+`isolated-sequential` is retained only as a descriptive alias for `classic` + `worktree` isolation. It is no longer an external-harness-only escape hatch — decision 1007 permits the model orchestrator, a host-native workflow, or a background agent equally. Whichever of the three is driving still performs the git worktree/branch/merge operations and spawns the coder.
 
 ### Continuity guarantee: `classic`
 
@@ -440,7 +396,7 @@ reviewer cadence, never the coverage gate.
 
 The four tunable axes underlying every strategy. The model-driven orchestrator
 reaches both isolation values for sequential strategies (`pwd`/`worktree`) and
-the `fan-out` bundle through `workflows/parallel-dispatch.lua`.
+the `fan-out` bundle.
 
 | Axis | Values | `classic` default |
 |------|--------|-------------------|
@@ -460,7 +416,7 @@ Each strategy locks in concurrency and review cadence. Sequential strategies def
 | `barrel-bypass`       | in-pwd default; worktree optional | current-branch default; epic-child with worktree | sequential | gates-only |
 | `parallel-fanout`     | worktree | epic-child | fan-out | per-fanin |
 
-Both worktree shapes are model-runnable via `workflows/parallel-dispatch.lua`: `cycle_plan` computes one sequential lane, while `plan`/`waves` compute fan-out lanes.
+Both worktree shapes are model-runnable.
 
 ### Invalid combinations
 
@@ -473,7 +429,7 @@ The orchestrator proposes a strategy per plan based on plan shape, with status-q
 1. `barrel-bypass` is excluded from recommendation. It may be selected only by
    an explicit operator choice at the strategy gate or invocation flag.
 2. If the plan has a multi-milestone roadmap and at most one parallel-eligible task per milestone → recommend `barrel-deferred`.
-3. Else if the plan has ≥3 tasks with ≥2 parallel-eligible → recommend `parallel-fanout` (model-runnable via the `workflows/parallel-dispatch.lua` seam — staged worktree waves, per-lane coders fanned out concurrently, fan-in merge; runnable by the model orchestrator, a host-native workflow, or a background agent).
+3. Else if the plan has ≥3 tasks with ≥2 parallel-eligible → recommend `parallel-fanout` (staged worktree waves, per-lane coders fanned out concurrently, fan-in merge; runnable by the model orchestrator, a host-native workflow, or a background agent).
 4. Else if the plan has exactly 1 task → recommend `classic`.
 5. Else if the most recent dispatch on this plan used a non-default,
    non-bypass strategy `S` → recommend `S` (stickiness — the operator already
@@ -487,16 +443,16 @@ The recommendation is a proposal, never an action. The strategy gate (below) is 
 
 Phase 3 of the orchestrator now runs **two** gates in order before dispatch:
 
-1. **Strategy + isolation gate** (new). "Which strategy, and should it run in pwd or worktrees?" The orchestrator surfaces its recommended strategy + recommended isolation + a one-line rationale + the named alternatives + the **dispatch preview** (the task breakdown rendered as the ordered `depends-on`-subgraph via the seam's `waves` phase — a presentation projection under every strategy, not only `parallel-fanout` — with the proposed Axis C model tier per task). The operator confirms or overrides both axes and may override any task's tier before confirming; the confirmed tier map is binding for dispatch (see [`agents/models.md` §Coder tier policy](models.md#coder-tier-policy)).
+1. **Strategy + isolation gate** (new). "Which strategy, and should it run in pwd or worktrees?" The orchestrator surfaces its recommended strategy + recommended isolation + a one-line rationale + the named alternatives + the task breakdown rendered as the ordered `depends-on`-subgraph (a presentation projection under every strategy, not only `parallel-fanout`) with the proposed Axis C model tier per task). The operator confirms or overrides both axes and may override any task's tier before confirming; the confirmed tier map is binding for dispatch.
 2. **Dispatch-shape gate** (existing — see [Dispatch Granularity](#dispatch-granularity)). "Within that strategy, which shape for this cycle?" Constrained by the strategy: `barrel-bypass` forces the `barrel-bypass` shape; `barrel-deferred` forces the `barrel-deferred` shape; `parallel-fanout` forces the `fan-out` shape; `classic` keeps the full strict / grouped / single menu.
-3. **Dispatch.** For `pwd` isolation the orchestrator claims tasks and dispatches coders in the operator checkout. For sequential `worktree` isolation, the orchestrator drives one cycle lane at a time: call `planar-execute run workflows/parallel-dispatch.lua --phase cycle_plan`, cut/create the epic and cycle worktrees from the seam output, claim with `planar-agent pull --worktree <path>` (or `claim --entity ... --worktree <path>`), spawn the coder in that worktree, then merge the completed cycle branch into the epic worktree. For `parallel-fanout`, the orchestrator drives staged worktree fan-out itself — the seam computes the current wave / per-lane worktree paths / merge order, the model cuts the epic branch, creates the per-lane worktrees, spawns N coders concurrently (each `isolation: worktree`, each with its own `planar-agent pull --worktree` claim), and runs the fan-in merge.
+3. **Dispatch.** For `pwd` isolation the orchestrator claims tasks and dispatches coders in the operator checkout. For sequential `worktree` isolation, the orchestrator drives one cycle lane at a time: cut/create the epic and cycle worktrees, claim with `planar-agent pull --worktree <path>` (or `claim --entity ... --worktree <path>`), spawn the coder in that worktree, then merge the completed cycle branch into the epic worktree. For `parallel-fanout`, the orchestrator drives staged worktree fan-out itself — the model cuts the epic branch, creates the per-lane worktrees, spawns N coders concurrently (each `isolation: worktree`, each with its own `planar-agent pull --worktree` claim), and runs the fan-in merge.
 
 The strategy gate is operator-confirmed by default. Skip flags:
 
 - `--strategy <name>` — pre-commit to a named strategy. Skips the strategy part of the gate; isolation still defaults to `pwd` for sequential strategies unless `--isolation worktree` is supplied. The dispatch-shape gate still runs unless that gate also has a pre-committed answer.
 - `--strategy custom --isolation <X> --branch-model <Y> --concurrency <Z> --reviewer-cadence <W>` — pre-commit to a custom axis combination. Phase 3.5 remains coverage-driven per cycle.
 
-Auto-defaulting without confirmation is **not** a supported mode — the recommendation engine never silently picks a strategy. If the operator wants zero-friction repetition, `--strategy <name>` is the explicit opt-in. No flag pre-commits Axis C (model tier): under a fully-flagged invocation the dispatch preview is still printed, default-tier tasks proceed without prompting, and any proposed `large` escalation requires explicit confirmation before that dispatch.
+Auto-defaulting without confirmation is **not** a supported mode — the recommendation engine never silently picks a strategy. If the operator wants zero-friction repetition, `--strategy <name>` is the explicit opt-in. No flag pre-commits Axis C (model tier): under a fully-flagged invocation the task listing is still printed, default-tier tasks proceed without prompting, and any proposed `large` escalation requires explicit confirmation before that dispatch.
 
 **Persistence.** No new schema. The orchestrator writes the chosen strategy into the dispatch entry's `agent_actions.metadata` JSON column on the dispatch row:
 
@@ -526,11 +482,8 @@ working branches, their creation, fan-in merge, retention of failed lanes, and
 full teardown on plan completion — is driven by the model orchestrator, a
 host-native workflow, or a background agent (decision 1007) for both
 sequential worktree isolation and `parallel-fanout`. The deterministic
-bookkeeping lives in the spawn-free `workflows/parallel-dispatch.lua` seam:
-`cycle_plan` computes one sequential lane, while `plan`/`waves` compute
-parallel lanes. The seam is an optional deterministic helper for this
-bookkeeping, not a required exclusive path — whichever of the three drives
-dispatch still runs the git ops and spawns the coders itself. The
+bookkeeping is run by whichever of the three drives
+dispatch, which also runs the git ops and spawns the coders itself. The
 branch/path naming scheme is locked in the tech spec (epic
 `epic/p<plan>-<slug>`, lane `cycle/p<plan>/<task-slug>`); the six
 parallel-eligibility rules are the engine's (`recommend-strategy`) and apply
@@ -546,15 +499,15 @@ Two invariants govern scope behavior when cwd is inside a worktree:
 1. **The parent repo always dictates the scope.** A worktree at `<repo>/.worktrees/{epic,cycle}/...` resolves to the same association as `<repo>`. Worktrees are not separately scoped entities; they inherit. Reads (`planar plan list`, `planar task show`, `planar-watch *`) work transparently from inside a worktree and see the parent's data.
 2. **Planning verbs are refused from inside worktrees.** The runtime entry point refuses the planning-class verb set with a distinct exit code and a message pointing at the parent repo's cwd.
 
-**Planning-class verbs (refused in worktree):** `init`, `promote`, `demote`, `link`, `unlink`, every `links` subverb (including `links list`), every `annotate` subverb, `spec ingest`, every `workbench` subverb other than the five listed below, `feedback triage set`, and every non-read subverb of `plan`, `task`, `question`, `scenario`, `decision`, `artifact`, and `assoc` — for example `plan {create,update,closeout,step}`, `task {add,update,done,cancel,block,reopen}`, `task touches {add,remove,infer}`, `question {add,answer,wontfix}`, `decision {add,accept,withdraw,supersede}`, `artifact {add,update}`, `scenario {add,verify,retire}`, `assoc {create,add,remove}`. A verb the classifier does not recognize is refused.
+**Planning-class verbs (refused in worktree):** `init`, `promote`, `demote`, `link`, `unlink`, every `links` subverb (including `links list`), every `annotate` subverb, `spec ingest`, every `workbench` subverb other than the five listed below, and every non-read subverb of `plan`, `task`, `question`, `scenario`, `decision`, `artifact`, and `assoc` — for example `plan {create,update,closeout,step}`, `task {add,update,done,cancel,block,reopen}`, `task touches {add,remove,infer}`, `question {add,answer,wontfix}`, `decision {add,accept,withdraw,supersede}`, `artifact {add,update}`, `scenario {add,verify,retire}`, `assoc {create,add,remove}`. A verb the classifier does not recognize is refused.
 
-**Execution / read (allowed in worktree):** every `planar-agent *`, every `planar-watch *`, `planar resume`, `planar dashboard`, `planar handoff *`, `planar capture *`, `planar audit *`, `planar health`, `planar tree`, `planar search`, `planar report`, `planar update`, `planar import`, `planar synthesize`, `planar bench *`, the read leaves of the entity groups (`show`, `list`, `packet`, `view`, `diff`, `next`, `recommend-strategy`, `divergence`, `review`), `planar task touches list`, `planar feedback triage {list,show}`, `planar workbench {pull,push,status,sync,resolve}`, and every `planar workspace`, `config`, `models`, `templates`, `scope`, `local`, `test-spec`, and `workflow` subverb.
+**Execution / read (allowed in worktree):** every `planar-agent *`, every `planar-watch *`, `planar resume`, `planar dashboard`, `planar handoff *`, `planar capture *`, `planar audit *`, `planar health`, `planar tree`, `planar search`, `planar update`, the read leaves of the entity groups (`show`, `list`, `packet`, `view`, `diff`, `next`, `recommend-strategy`, `divergence`, `review`), `planar task touches list`, `planar workbench {pull,push,status,sync,resolve}`, and every `planar workspace`, `config`, `templates`, `scope`, `local` and `test-spec` subverb.
 
 **`task done` is refused on purpose.** Outside the explicitly selected in-pwd
 `barrel-bypass` exception, coders return evidence and the orchestrator advances
 task state with `planar-agent complete --claim <token>`, the atomic terminal
 verb that flips claim status and task status in one transaction. This
-reinforces the five-binary boundary and the canonical claim ritual in
+reinforces the four-binary boundary and the canonical claim ritual in
 [Coordination claims](#coordination-claims).
 
 **`--scope <slug>` does NOT override the refusal.** The rule is about *where the verb runs*, not which scope it targets. To plan against a member repo from elsewhere, cd to the parent repo (or workspace root with `--scope <member>`); do not try to plan from inside a worktree.
@@ -610,8 +563,7 @@ concurrency, ownership, security, state-transition, or resource-lifecycle
 boundaries, or large architectural work — but tier is per-task and independent
 of isolation. A cycle never inherits its highest task's tier: a mixed-tier
 group is partitioned by tier or dispatched per task. Classification ambiguity
-is surfaced at the gate as `tier: ?`, never rounded up silently. See
-[`agents/models.md` §Coder tier policy](models.md#coder-tier-policy).
+is surfaced at the gate as `tier: ?`, never rounded up silently.
 
 ## Validation cadence: task checks and milestone barrier
 
@@ -678,29 +630,18 @@ or target-specific commands.
 - [ ] No references to files that have been renamed or deleted (grep for
       all file paths cited in changed documents).
 
-<!-- queue-lint-ignore-begin: the queue rule text below is pinned byte for byte to src/lib/queuerule/queue-rule.md and its Examples line lists the programs -->
-## Builds and tests go through the host queue
+<!-- queue-lint-ignore-begin: the queue rule text below is pinned byte for byte to src/lib/queuerule/queue-rule.md and src/lib/queuerule/queue-mandate.md, and its Examples line lists the programs -->
+## Using the host queue
 
-Every build and every test run on this machine goes through one host-wide
-queue, so that agents in different projects do not build at the same time.
-Submit the command to the queue and collect its recorded outcome. Do not run
-it yourself.
+The host queue is one line, shared by every project on this machine, for
+commands that are expensive to run: builds and test suites. Submit a command
+to it, and it runs the command at its turn and records the outcome, so agents
+in different projects do not build at the same time.
 
-### What counts as a build or test command
-
-A command goes through the queue when it does any of these:
-
-- compiles or links code;
-- runs a test suite, or any part of one;
-- uses more than one core for more than a minute.
-
-Examples: `make`, `make test`, `cmake --build`, `ninja`, `ctest`, `cargo build`, `cargo test`, `go build`, `go test`, `npm test`, `pytest`, `tox`, `gradle build`, and linters and static analysers that build first.
-
-Not queued: reading files, searching, version control, formatting a single file, a program's `--help`, and the Planar commands themselves.
-
-When a command is not on the list and you are unsure, queue it. Queuing a
-cheap command costs a short wait. Not queuing an expensive one costs every
-other agent on the host.
+Whether an agent must use the queue is the operator's policy, `use_queue` in
+`config.toml`. This text describes how to use it. `planar-agent queue rule`
+adds the instruction to send every build and test through the queue, and names
+its source, only when the policy of the caller's scope requires it.
 
 ### Before the first submission
 
@@ -712,7 +653,7 @@ planar-agent queue rule >/dev/null
 
 Exit 0 establishes that the queue exists. For a nonzero exit, inspect the
 diagnostic and installed command catalog; only a verified absence of the
-`queue` verb permits the no-queue path below. A queue that exists but cannot
+`queue` verb means the installed Planar has no queue. A queue that exists but cannot
 be read has refused. Do not use general `--help` alone as an absence test:
 older Planar versions can answer unknown-command help with general help and
 exit 0. If the queue exists, discover the `wait` leaf once using the compact
@@ -732,7 +673,7 @@ planar-agent queue run --detach --timeout 2h --vendor <vendor> --role <role> --c
 Run it from the directory the command needs. The command runs there, with
 your environment.
 
-Pass `--claim` only when holding a caller-supervised claim. Always pass
+Pass `--claim` only when holding a claim. Always pass
 `--vendor` and `--role`. Give your own vendor (`claude`,
 `codex`, `copilot`, `gemini`) and your own role (`coder`, `test-coder`,
 `reviewer`, `janitor`, `orchestrator`). The operator reads them in the
@@ -776,7 +717,7 @@ observation stopped. `stalled`, `history_unavailable`, and `error` leave the
 job outcome unknown; inspect the ticket and queue health and report the gap.
 An empty log, absent `status`, or empty active queue proves no result.
 `queue wait` is read-only and never renews a claim. `queue run --claim`
-renews a caller-supervised claim while the submitter waits and runs; a failed
+renews a claim while the submitter waits and runs; a failed
 renewal appears in the output file without stopping the command. Heartbeat
 separately when that renewal is unavailable.
 
@@ -873,21 +814,49 @@ timeout, stalled observation, or observer error. Inspect `wait_reason` and
 with `queue status <seq> --json`.
 
 When a submit exits 125, or the queue cannot be used (its store cannot be
-opened, or it failed inside), stop. Report the `error:` line to the operator,
-word for word, and say which command you were trying to run. The command must
-not be run directly. Do not retry in a loop, and do not look for another way
-to run the build. The operator decided that an unreachable queue is refused,
-not bypassed.
+opened, or it failed inside), the command did not run and nothing was
+recorded. Stop. Report the `error:` line to the operator, word for word, and
+say which command you were trying to run. Do not retry in a loop.
 
 An entry that ended `cancelled` or `wait_timeout` is not this case. It is an
-outcome of a ticket you hold, and the table above says what to do. The
-command is still never run directly.
+outcome of a ticket you hold, and the table above says what to do.
+
+## Builds and tests go through the host queue
+
+The operator's policy requires this: `use_queue = true` for your scope. Every
+build and every test run on this machine goes through the host queue. Submit
+the command to the queue and collect its recorded outcome. Do not run it
+yourself.
+
+### What counts as a build or test command
+
+A command goes through the queue when it does any of these:
+
+- compiles or links code;
+- runs a test suite, or any part of one;
+- uses more than one core for more than a minute.
+
+Examples: `make`, `make test`, `cmake --build`, `ninja`, `ctest`, `cargo build`, `cargo test`, `go build`, `go test`, `npm test`, `pytest`, `tox`, `gradle build`, and linters and static analysers that build first.
+
+Not queued: reading files, searching, version control, formatting a single file, a program's `--help`, and the Planar commands themselves.
+
+When a command is not on the list and you are unsure, queue it. Queuing a
+cheap command costs a short wait. Not queuing an expensive one costs every
+other agent on the host.
+
+### If the queue refuses, never bypass it
+
+When a submit exits 125, or the queue cannot be used, the command must not be
+run directly. Do not look for another way to run the build. The operator
+decided that an unreachable queue is refused, not bypassed. An entry that ended
+`cancelled` or `wait_timeout` is an outcome of a ticket you hold, and the table
+of outcomes says what to do. The command is still never run directly.
 
 ### If Planar has no queue: run directly and say so
 
 Use this only after verifying the installed Planar lacks the `queue` verb.
 Nonzero `queue rule` alone does not establish absence. An older install with
-`queue` but without `wait` uses the finite compatibility path above.
+`queue` but without `wait` uses the finite compatibility path.
 
 Run the build or test command directly. Then tell the operator that Planar
 needs upgrading so that builds and tests can go through the queue.
@@ -928,7 +897,11 @@ re-running but bisecting, or reverting a merge that was never at fault.
 So do not treat the `BUILD_EXIT` tell as the general rule. It is the tell for
 one variant. The general rule is the operational one:
 
-**Builds and tests go through the host queue.** The queue runs one command
+**Builds and tests go through the host queue, when the operator's policy says
+so.** The mandate is not Planar's default. `planar-agent queue rule` prints it
+only for a scope whose policy sets `use_queue = true` (in `config.toml`,
+`[policy]` or `[associations."<slug>".policy]`), and then names that policy as
+its source; the rule below applies in exactly those scopes. The queue runs one command
 at a time on the host, which is what keeps two builds out of one build
 directory, whether they come from two lanes, the orchestrator's own gates,
 the lint target, the test suite or a break-probe script that rebuilds per
@@ -1154,7 +1127,7 @@ Before Phase 3 dispatch the orchestrator analyzes task coupling (shared file sco
 | `barrel-deferred`  | Deferred (at boundary)        | Throughput priority with a late safety net. Coder cycles run back-to-back; reviewer fires once at a milestone (default) or plan boundary on the union diff. |
 | `barrel-bypass`    | None                          | Maximum throughput. Quality gates ARE the review signal. No reviewer dispatch at all. |
 
-Groups must be **tier-homogeneous**: a `grouped`/`single` cycle whose tasks carry different confirmed Axis C tiers is partitioned by tier before dispatch — one coder per tier partition, dependency edges still ordering the dispatches — or falls back to per-task dispatch for that cycle. A cycle never inherits its highest task's tier (see [`agents/models.md` §Coder tier policy](models.md#coder-tier-policy)).
+Groups must be **tier-homogeneous**: a `grouped`/`single` cycle whose tasks carry different confirmed Axis C tiers is partitioned by tier before dispatch — one coder per tier partition, dependency edges still ordering the dispatches — or falls back to per-task dispatch for that cycle. A cycle never inherits its highest task's tier.
 
 The orchestrator **surfaces the proposed shape to the user and waits for confirmation** before dispatching. This is a hard user gate identical in strength to the Phase 2 ingestion gate. The user may accept the proposal, edit the groupings, or pick a different shape entirely. The gate is bypassed only when the invocation already specifies `--strict`, `--grouped`, `--barrel-grouped`, `--barrel-deferred [--barrel-deferred-at milestone|plan]`, `--barrel-bypass`, or `--batch <task-ids>...` — those flags act as a pre-committed answer.
 
@@ -1306,7 +1279,7 @@ the operator's explicit `barrel-bypass` choice.
 | Docs changes | Reviewer-on unless operator explicitly selects bypass | Documentation can encode contracts and executable examples. |
 
 When the reviewer IS dispatched, see the role spec at
-[`agents/planar-reviewer.md`](planar-reviewer.md) for the focused responsibilities and
+[`examples/agents/planar-reviewer.md`](../examples/agents/planar-reviewer.md) for the focused responsibilities and
 the explicit NOT-do list. The blind-read contract below governs how the
 brief is composed.
 
@@ -1359,7 +1332,7 @@ Every coder brief MUST:
   language or framework assumption.
 - **Specify the report shape.** A word ceiling (the work-complete
   report has a cap — keep it tight) and the required sections per
-  [`agents/planar-coder.md` §Work-complete report template](planar-coder.md#work-complete-report-template).
+  [`examples/agents/planar-coder.md` §Work-complete report template](../examples/agents/planar-coder.md#work-complete-report-template).
   The dispatcher reads the report; vague shape produces vague reports.
 - **Pose the problem; do not include the solution.** State the
   invariant, the constraint, and the acceptance signal. Let the coder
@@ -1445,7 +1418,7 @@ reviewer treats the coder's diff.
 
 - Parallel coder dispatch is **model-driven under `parallel-fanout`** (plan 760): the model spawns N coders concurrently through the host's subagent dispatch surface, each in its own worktree, against the parallel-eligible subset. The codified eligibility test (six parallelizability rules) is the engine's, consumed via `recommend-strategy` and never re-derived.
 - **Eligibility is not independence.** Rule 2 proves the lanes touch disjoint files; it cannot prove they are unordered. Two tasks routinely have disjoint touch sets *and* a real dependency — one creates a module the other imports, so the file sets never overlap because only the author edits the new file. Rule 1 catches ordering only from a declared `depends-on` edge, and nothing infers those edges: touch inference improves rule 2 alone. As touch coverage rises, more plans will *look* parallelizable while undeclared ordering stays invisible, so the orchestrator's pre-dispatch ordering check (the Phase 3 gate step) is what stands between eligibility and a correct fan-out. Record any ordering the operator names with `planar task block <task> --on <blocker>` so rule 1 enforces it thereafter. Sequential strategies (`classic` and the barrel modes) run one coder at a time in the confirmed isolation mode: `pwd` or `worktree`.
-- The substrate that lets worktree-isolated coders run without clobbering the operator checkout — per-task worktrees on epic-child branches, staged waves with a fan-in barrier for `parallel-fanout`, and the fan-in merge — is computed by the spawn-free `workflows/parallel-dispatch.lua` seam, an optional deterministic helper, and executed by the model orchestrator, a host-native workflow, or a background agent (decision 1007). See [Worktrees](#worktrees) for the ownership boundary.
+- The substrate that lets worktree-isolated coders run without clobbering the operator checkout — per-task worktrees on epic-child branches, staged waves with a fan-in barrier for `parallel-fanout`, and the fan-in merge — is executed by the model orchestrator, a host-native workflow, or a background agent (decision 1007). See [Worktrees](#worktrees) for the ownership boundary.
 - Reviewers may run in parallel against independent coder outputs. Under `parallel-fanout` a single reviewer cycle runs against the integrated diff on the epic, not per child.
 - A single task is always coder→reviewer sequential — never two coders on the same task simultaneously.
 - Stale claims are not ignored silently. The operator or orchestrator must reconcile or force-takeover them before treating the work as available.
@@ -1502,7 +1475,7 @@ Status strings describe the **agent's own state** (what it is doing), not a mirr
 
 ### Cross-references
 
-- Per-role canonical status strings: see the "Status reporting" sections in [`agents/planar-coder.md`](planar-coder.md#status-reporting), [`agents/planar-orchestrator.md`](planar-orchestrator.md#status-reporting), [`agents/planar-planner.md`](planar-planner.md#status-reporting), [`agents/planar-reviewer.md`](planar-reviewer.md#status-reporting), [`agents/planar-test-coder.md`](planar-test-coder.md#iteration-and-status), and [`agents/planar-ingestor.md`](planar-ingestor.md#status-reporting).
+- Per-role canonical status strings: see the "Status reporting" sections in [`examples/agents/planar-coder.md`](../examples/agents/planar-coder.md#status-reporting), [`agents/planar-orchestrator.md`](planar-orchestrator.md#status-reporting), [`examples/agents/planar-planner.md`](../examples/agents/planar-planner.md#status-reporting), [`examples/agents/planar-reviewer.md`](../examples/agents/planar-reviewer.md#status-reporting), [`agents/planar-test-coder.md`](planar-test-coder.md#iteration-and-status), and [`examples/agents/planar-ingestor.md`](../examples/agents/planar-ingestor.md#status-reporting).
 - `agent_actions` schema: see the installed Planar version's authoritative
   schema documentation.
 - Claim ritual: see [Coordination claims](#coordination-claims) above.

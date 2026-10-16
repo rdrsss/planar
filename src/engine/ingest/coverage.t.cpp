@@ -178,3 +178,53 @@ TEST_CASE("compute skips tasks proposed for removal", "[ingest][coverage]") {
   REQUIRE(cov.uncovered_task_slugs_.size() == 1);
   CHECK(cov.uncovered_task_slugs_[0] == "kept");
 }
+
+TEST_CASE("refuses_strict defaults to report-only even with gaps present", "[ingest][coverage][policy]") {
+  coverage::coverage gaps{};
+  gaps.uncovered_task_slugs_ = {"foo"};
+  gaps.orphan_scenarios_     = {"S"};
+  CHECK(gaps.has_gaps());
+  CHECK_FALSE(gaps.refuses_strict());
+  CHECK_FALSE(gaps.refuses_strict(false));
+}
+
+TEST_CASE("refuses_strict(true) refuses on an uncovered task", "[ingest][coverage][policy]") {
+  coverage::coverage uncovered{};
+  uncovered.uncovered_task_slugs_ = {"foo"};
+  CHECK(uncovered.refuses_strict(true));
+}
+
+TEST_CASE("refuses_strict(true) refuses on an orphan scenario", "[ingest][coverage][policy]") {
+  coverage::coverage orphaned{};
+  orphaned.orphan_scenarios_ = {"S"};
+  CHECK(orphaned.refuses_strict(true));
+}
+
+TEST_CASE("refuses_strict(true) accepts a fully covered diff", "[ingest][coverage][policy]") {
+  CHECK_FALSE(coverage::coverage{}.refuses_strict(true));
+
+  diff::diff       d{};
+  diff::plan_entry plan{.op_ = diff::op::add, .title_ = "M1", .existing_id_ = 0, .tasks_ = {}};
+  plan.tasks_.push_back(task_of(diff::op::add, "a", "task-a"));
+  d.child_plans_.push_back(std::move(plan));
+  const std::array<std::string_view, 1> cites_a{"task-a"};
+  d.scenarios_.push_back(scenario_of("covers a", cites_a));
+
+  const auto cov = coverage::compute(d);
+  CHECK_FALSE(cov.has_gaps());
+  CHECK_FALSE(cov.refuses_strict(true));
+}
+
+TEST_CASE("compute leaves the report unchanged under report-only policy", "[ingest][coverage][policy]") {
+  diff::diff       d{};
+  diff::plan_entry plan{.op_ = diff::op::add, .title_ = "M1", .existing_id_ = 0, .tasks_ = {}};
+  plan.tasks_.push_back(task_of(diff::op::add, "a", "task-a"));
+  d.child_plans_.push_back(std::move(plan));
+
+  const auto cov = coverage::compute(d);
+  REQUIRE(cov.uncovered_task_slugs_.size() == 1);
+  CHECK(cov.uncovered_task_slugs_[0] == "task-a");
+  CHECK(cov.has_gaps());
+  CHECK_FALSE(cov.refuses_strict());
+  CHECK(cov.refuses_strict(true));
+}

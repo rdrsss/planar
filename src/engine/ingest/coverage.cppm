@@ -10,10 +10,11 @@
 /// time a numeric id cannot be tied to a roadmap bullet and at apply time the
 /// task may not exist yet.
 ///
-/// The gate is informational by default; `--strict` promotes uncovered tasks
-/// and orphan scenarios from a printed warning into a non-zero exit. The JSON
-/// projection of this object is the M9 parity gate, so two ordering rules are
-/// contractual and must not be "tidied":
+/// Coverage is report-only by default: `--strict` still refuses on a slug
+/// collision, but uncovered tasks and orphan scenarios are only reported. A
+/// scope's `require_scenario_coverage` policy turns them into a refusal (see
+/// `refuses_strict`). The JSON projection of this object is the M9 parity
+/// gate, so two ordering rules are contractual and must not be "tidied":
 ///
 ///   * `uncovered_task_slugs_` is DEDUPLICATED and sorted bytewise. Two tasks
 ///     cannot share a slug (the index forbids it), but the dedupe is what the
@@ -40,9 +41,15 @@ export struct coverage {
   std::vector<std::string> uncovered_task_slugs_;   ///< Deduped, sorted bytewise.
   std::vector<std::string> orphan_scenarios_;       ///< Titles of scenarios citing nothing; sorted, NOT deduped.
 
-  /// @brief Whether the strict gate should refuse.
+  /// @brief Whether any task is uncovered or any scenario is an orphan.
   /// @return `true` when there is at least one uncovered task or orphan scenario.
   [[nodiscard]] auto has_gaps() const -> bool;
+
+  /// @brief Whether the strict gate refuses on coverage under the scope policy.
+  /// @param require_scenario_coverage The scope's `require_scenario_coverage`
+  ///        policy. `false` (the default) reports gaps without refusing.
+  /// @return `true` only when `require_scenario_coverage` is set and `has_gaps()` holds.
+  [[nodiscard]] auto refuses_strict(bool require_scenario_coverage = false) const -> bool;
 };
 
 /// @brief Computes coverage over a proposed diff.

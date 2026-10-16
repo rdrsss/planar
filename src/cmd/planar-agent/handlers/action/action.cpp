@@ -94,6 +94,13 @@ auto action_start(context& ctx, const cliapp::parsed_args& args) -> handler_resu
         std::format("action kind '{}' is written only by the supervised claim verbs, not by action start", kind_text)));
   }
 
+  // A `review` row is a verdict by someone other than the claim's owner; `planar-agent review` is
+  // the only writer, so an agent cannot forge one under its own claim.
+  if (*kind == aa::action_kind::review) {
+    return std::unexpected(
+        invalid_input_error("action kind 'review' is written only by `planar-agent review`, not by action start"));
+  }
+
   auto const skip = cliapp::flag_bool(args, "--no-locality-probe") || !aa::probe_default(*kind);
   auto const loc  = resolve_locality(cliapp::flag_string(args, "--repo-root"), ctx.cwd(), skip);
 

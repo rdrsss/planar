@@ -127,6 +127,15 @@ export using toml_map = std::map<std::string, toml_value, std::less<>>;
 /// or a located `toml_error`.
 export auto parse_toml(std::string_view content) -> std::expected<toml_map, toml_error>;
 
+/// @brief Read a config file and flatten it, treating a missing file as an empty document.
+///
+/// The caller that wants policy keys from `config.toml` uses this so every verb reads the file the
+/// same way. No environment variable is consulted; the path is the caller's.
+/// @param path The file. A path that does not exist is not an error.
+/// @return The flattened map (empty for a missing file), or a message naming the unreadable or
+/// unparsable file and, for a parse failure, the line.
+export auto load_toml_file(const std::filesystem::path& path) -> std::expected<toml_map, std::string>;
+
 /// @brief Rewrite `content` so that every table header appears exactly once
 /// and no header precedes a shallower header that it extends.
 ///

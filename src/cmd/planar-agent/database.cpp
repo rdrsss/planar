@@ -37,6 +37,17 @@ auto database_policy::open_existing(const std::filesystem::path& path, std::ostr
   return verify(std::move(*opened), path, error_stream, true);
 }
 
+auto database_policy::open_read_only(const std::filesystem::path& path, std::ostream& error_stream, int busy_timeout_ms)
+    -> std::expected<db::connection, domain_error> {
+  auto opened = db::connection::open_read_only(path.string(), busy_timeout_ms);
+  if (!opened) {
+    return std::unexpected(
+        error_from_body(domain_error_kind::generic_failure,
+                        std::format("failed to open database {}: {}", path.string(), opened.error().message_)));
+  }
+  return verify(std::move(*opened), path, error_stream, true);
+}
+
 auto database_policy::verify(db::connection opened, const std::filesystem::path& path, std::ostream& error_stream, bool strict)
     -> std::expected<db::connection, domain_error> {
   std::optional<db::connection> connection{std::move(opened)};

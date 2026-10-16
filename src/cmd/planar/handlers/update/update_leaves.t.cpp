@@ -189,7 +189,8 @@ auto make_world(std::string_view tag) -> world {
 }
 
 /// Publish a fake release under `w.rel`.
-auto publish(const world& w, std::string_view tag, std::string_view platform, int schema = 41, bool latest = true) -> void {
+auto publish(const world& w, std::string_view tag, std::string_view platform,
+             int schema = static_cast<int>(planar::db::embedded_max()), bool latest = true) -> void {
   std::string out;
   auto const  rc = bash(R"("$1/src/cmd/planar/handlers/update/release_fixture.sh" "$@")",
                         {source_root().string(), w.rel.string(), std::string{tag}, std::string{platform}, std::to_string(schema),
@@ -387,7 +388,7 @@ TEST_CASE("update: each refused fault leaves no temporary directory, no held loc
   auto w = make_world("upfaults");
   publish(w, "v1.0.0", "macos-arm64");
   publish(w, "v1.1.0", "macos-arm64");
-  publish(w, "v1.2.0", "linux-x86_64", 41, false);
+  publish(w, "v1.2.0", "linux-x86_64", static_cast<int>(planar::db::embedded_max()), false);
   seed_install(w, "v1.0.0");
   auto const before = read_all(w.inst / "release.json");
   auto const dir    = canon(w.inst) + ".lock";
@@ -1129,7 +1130,7 @@ TEST_CASE("update: the binary updates a bootstrap install end to end through the
     CHECK(got.err.starts_with("error: unsupported platform"));
     return;
   }
-  for (auto const& [tag, schema] : {std::pair{"v1.0.0", 41}, std::pair{"v1.1.0", 99}}) {
+  for (auto const& [tag, schema] : {std::pair{"v1.0.0", static_cast<int>(planar::db::embedded_max())}, std::pair{"v1.1.0", 99}}) {
     std::string out;
     REQUIRE(bash(R"("$1/src/cmd/planar/handlers/update/release_fixture.sh" "$@")",
                  {source_root().string(), rel.string(), tag, *plat, std::to_string(schema)}, &out) == 0);
@@ -1163,7 +1164,10 @@ TEST_CASE("update: the binary updates a bootstrap install end to end through the
   std::filesystem::create_directories(unpacked);
   REQUIRE(bash(R"(tar -xzf "$1" -C "$2")",
                {(rel / std::format("download/v1.1.0/planar-{}.tar.gz", *plat)).string(), unpacked.string()}) == 0);
-  for (std::string_view sub : {"bin", "skills", "agents", "codex-agents", "workflows", "migrations"}) {
+  // No role agent is staged: the bundle ships no agents/ or codex-agents/.
+  CHECK_FALSE(std::filesystem::exists(inst / "agents"));
+  CHECK_FALSE(std::filesystem::exists(inst / "codex-agents"));
+  for (std::string_view sub : {"bin", "skills", "scripts", "migrations"}) {
     INFO(sub);
     // Every bundle file is installed byte for byte (the installer adds
     // bin/planar-uninstall beside them).
@@ -1198,7 +1202,7 @@ TEST_CASE(
   for (auto const& tag : {"v1.0.0", "v1.1.0"}) {
     std::string out;
     REQUIRE(bash(R"("$1/src/cmd/planar/handlers/update/release_fixture.sh" "$@")",
-                 {source_root().string(), rel.string(), tag, *plat, "41"}, &out) == 0);
+                 {source_root().string(), rel.string(), tag, *plat, std::to_string(planar::db::embedded_max())}, &out) == 0);
   }
   auto const inst  = work / "home";
   auto const fhome = work / "fakehome";

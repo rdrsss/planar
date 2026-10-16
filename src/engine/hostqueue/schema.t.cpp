@@ -21,7 +21,7 @@
 // (PLANAR_HOSTQUEUE_SOURCE_DIR), exactly as rule_methodology.t.cpp reads
 // agents/methodology.md.
 //
-// Include-before-import is deliberate (see core/version.t.cpp / db.t.cpp).
+// Include-before-import is deliberate (see db.t.cpp).
 #include <catch2/catch_test_macros.hpp>
 
 import std;
@@ -68,6 +68,22 @@ constexpr std::array k_fingerprint_ledger{
                     "column guard already refuses any database lacking either column, so on every database the queue verbs "
                     "read, the probe's result was the same two columns in the same position, and the statements executed at "
                     "head are identical; nothing stored or judged changes"},
+    fingerprint_pin{2, "b21f85633b29b41361bc8ecf8f8738292e417ff7ffaeff44c517b3b226bda16e",
+                    "queue version 2 (plan 1142, migration 00042): queue_history gains the nullable claim_token, compat stays "
+                    "1. The schema change bumps the version; no hostqueue SQL literal or protocol value changed, so the "
+                    "fingerprint carries over from queue version 1's last entry"},
+    fingerprint_pin{2, "b0d56e94911952f9fdf9cc51fd4e929d81b2ef3dceda559fa77544e0b5584d64",
+                    "task mo-queue-claim-evidence (plan 1142), still queue version 2: end_entry copies the entry's "
+                    "claim_token onto the history row (the entry delete returns it, the history insert and reads name "
+                    "it), and the retention prune keeps tokened rows per claim lookup for at most 90 days after the "
+                    "claim ends. Compatible: the column is the one migration 00042 added and NULL keeps the older "
+                    "meaning, a binary at queue version 1 never names it and prunes by age alone, and no stored value "
+                    "or liveness or slot rule changes, so compat stays 1"},
+    fingerprint_pin{2, "7275b0a01e1b342363a30e4067368466f53ca045aaa2c38740e2fcc402ab5662",
+                    "task mo-policy-enforce-complete (plan 1142), still queue version 2: history_for_claim adds one read-only "
+                    "select over queue_history by the claim_token column migration 00042 already added (indexed), so "
+                    "`complete` can find the runs a claim recorded. Nothing stored changes and no existing statement, "
+                    "liveness or slot rule is touched, so compat stays 1 and an older binary never runs the new read"},
 };
 
 // ---------------------------------------------------------------------------
@@ -416,7 +432,9 @@ TEST_CASE("check_queue_schema passes on an ahead planar.db whose newer marker ke
   auto            conn = open_head(scratch);
   auto const      head = planar::db::embedded_max();
   REQUIRE(conn.execute("alter table queue_history add column note text"));
-  REQUIRE(conn.execute("insert into queue_schema (version, compat, description) values (2, 1, 'adds queue_history.note')"));
+  REQUIRE(conn.execute(
+      std::format("insert into queue_schema (version, compat, description) values ({}, 1, 'adds queue_history.note')",
+                  hq::k_queue_schema_version + 1)));
   REQUIRE(conn.execute(std::format("insert into schema_migrations (version, description) values ({}, 'newer')", head + 1)));
 
   auto const checked = hq::check_queue_schema(conn);
@@ -427,16 +445,18 @@ TEST_CASE("check_queue_schema passes on an ahead planar.db whose newer marker ke
 TEST_CASE("check_queue_schema refuses a marker whose compat is above this binary's queue version, naming both versions",
           "[hostqueue][schema][qp-queue-compat]") {
   scratch_db_path scratch;
-  auto            conn = open_head(scratch);
-  REQUIRE(conn.execute("insert into queue_schema (version, compat, description) values (2, 2, 'incompatible')"));
+  auto            conn  = open_head(scratch);
+  auto const      newer = hq::k_queue_schema_version + 1;
+  REQUIRE(conn.execute(
+      std::format("insert into queue_schema (version, compat, description) values ({0}, {0}, 'incompatible')", newer)));
 
   auto const checked = hq::check_queue_schema(conn);
   REQUIRE_FALSE(checked.has_value());
   CHECK(checked.error().kind == hq::queue_schema_failure::incompatible_marker);
-  CHECK(checked.error().store_version == 2U);
-  CHECK(checked.error().store_compat == 2U);
+  CHECK(checked.error().store_version == newer);
+  CHECK(checked.error().store_compat == newer);
   INFO(checked.error().message);
-  CHECK(checked.error().message.contains("queue version 2"));
+  CHECK(checked.error().message.contains(std::format("queue version {}", newer)));
   CHECK(checked.error().message.contains(std::format("queue version {}", hq::k_queue_schema_version)));
 }
 
@@ -586,25 +606,78 @@ TEST_CASE("k_queue_schema_version equals the highest queue_schema.version in the
   CHECK(checked.has_value());
 }
 
-TEST_CASE(
-    "a synthetic chain whose newest migration inserts queue_schema (2, 2) fails the constant-equals-chain test, naming both "
-    "values",
-    "[hostqueue][schema][qp-queue-compat]") {
+TEST_CASE("a synthetic chain whose newest migration inserts a queue_schema row above the constant fails the "
+          "constant-equals-chain test, naming both values",
+          "[hostqueue][schema][qp-queue-compat]") {
   auto const        embedded = planar::db::migrations();
   auto const        next     = embedded.back().version_ + 1;
-  std::string const up       = std::format("insert into queue_schema (version, compat, description) values (2, 2, 'bump');"
-                                           "insert into schema_migrations (version, description) values ({}, 'bump');",
-                                           next);
+  auto const        bumped   = hq::k_queue_schema_version + 1;
+  std::string const up       = std::format("insert into queue_schema (version, compat, description) values ({0}, {0}, 'bump');"
+                                           "insert into schema_migrations (version, description) values ({1}, 'bump');",
+                                           bumped, next);
   std::vector<planar::db::migration_record> chain(embedded.begin(), embedded.end());
   chain.push_back(planar::db::migration_record{.version_ = next, .name_ = "queue_marker_bump", .up_sql_ = up, .down_sql_ = ""});
 
-  auto const checked = check_constant_matches_chain(chain, 1);
+  auto const checked = check_constant_matches_chain(chain, hq::k_queue_schema_version);
   REQUIRE_FALSE(checked.has_value());
   INFO(checked.error());
-  CHECK(checked.error().contains("k_queue_schema_version is 1"));
-  CHECK(checked.error().contains("highest queue_schema.version is 2"));
+  CHECK(checked.error().contains(std::format("k_queue_schema_version is {}", hq::k_queue_schema_version)));
+  CHECK(checked.error().contains(std::format("highest queue_schema.version is {}", bumped)));
   // ...and agreeing with it passes.
-  CHECK(check_constant_matches_chain(chain, 2).has_value());
+  CHECK(check_constant_matches_chain(chain, bumped).has_value());
+}
+
+// ===========================================================================
+// Queue version 2 (plan 1142, migration 00042): queue_history.claim_token
+// ===========================================================================
+
+TEST_CASE("migration 00042 is queue version 2 at compat 1: this binary accepts its head, a queue-version-1 binary still "
+          "would, and a database without it fails the column guard",
+          "[hostqueue][schema][mo-schema-review-gate]") {
+  CHECK(hq::k_queue_schema_version == 2);
+  CHECK(hq::k_queue_history_columns.back() == "claim_token");
+
+  // New database, new binary: the head marker is (2, 1) and the check passes.
+  scratch_db_path scratch;
+  auto            conn = open_head(scratch);
+  CHECK(scalar(conn, "select version || ',' || compat from queue_schema order by version desc limit 1") == "2,1");
+  auto const checked = hq::check_queue_schema(conn);
+  INFO((checked ? std::string{} : checked.error().message));
+  CHECK(checked.has_value());
+
+  // New database, queue-version-1 binary: that binary's check reads the same
+  // highest row and admits compat 1 <= 1, and its column guard names every
+  // column this binary names except claim_token, all of which still exist.
+  auto const compat = static_cast<std::uint32_t>(std::stoul(scalar(conn, "select compat from queue_schema where version = 2")));
+  CHECK(compat <= 1U);
+  auto const history = column_names(conn, "queue_history");
+  for (auto const column : hq::k_queue_history_columns) {
+    if (column != "claim_token") {
+      INFO(column);
+      CHECK(std::ranges::find(history, std::string(column)) != history.end());
+    }
+  }
+
+  // Old database (00042 rolled back: marker (1, 1), no claim_token), new
+  // binary: the marker admits it, and the column guard names the missing
+  // column. A queue verb never reaches this check there, because the
+  // schema_migrations handshake refuses the behind database first
+  // (queue_schema_refusal_tag(41, 42) is nullopt: schema_version_behind).
+  // The head is newer than 00042 (00043 dropped the routing tables), so roll
+  // back every migration above 00042 and then 00042 itself.
+  auto const chain = planar::db::migrations();
+  REQUIRE(chain.size() >= 42);
+  REQUIRE(chain[41].version_ == 42);
+  for (auto i = chain.size(); i-- > 41;)
+    REQUIRE(conn.execute(chain[i].down_sql_));
+  CHECK(scalar(conn, "select group_concat(version || ',' || compat, ';') from queue_schema") == "1,1");
+  auto const old_db = hq::check_queue_schema(conn);
+  REQUIRE_FALSE(old_db.has_value());
+  CHECK(old_db.error().kind == hq::queue_schema_failure::missing_column);
+  INFO(old_db.error().message);
+  CHECK(old_db.error().message.contains("queue_history.claim_token"));
+  CHECK(old_db.error().store_version == 1U);
+  CHECK(hq::queue_schema_refusal_tag(41, 42) == std::nullopt);
 }
 
 // ===========================================================================
@@ -688,7 +761,8 @@ TEST_CASE("the entry and history reads work on an ahead planar.db that passes ch
   auto            conn = open_head(scratch);
   REQUIRE(conn.execute("alter table queue_entries add column note text"));
   REQUIRE(conn.execute("alter table queue_history add column note text"));
-  REQUIRE(conn.execute("insert into queue_schema (version, compat, description) values (2, 1, 'adds note columns')"));
+  REQUIRE(conn.execute(std::format("insert into queue_schema (version, compat, description) values ({}, 1, 'adds note columns')",
+                                   hq::k_queue_schema_version + 1)));
   REQUIRE(conn.execute(
       std::format("insert into schema_migrations (version, description) values ({}, 'newer')", planar::db::embedded_max() + 1)));
   REQUIRE(hq::check_queue_schema(conn).has_value());

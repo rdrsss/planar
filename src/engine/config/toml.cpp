@@ -465,4 +465,27 @@ auto parse_toml(std::string_view content) -> std::expected<toml_map, toml_error>
   return out;
 }
 
+auto load_toml_file(const std::filesystem::path& path) -> std::expected<toml_map, std::string> {
+  std::error_code ec;
+  auto const      present = std::filesystem::exists(path, ec);
+  // A missing file, or a missing parent directory, is the empty document. Any other failure to look, such as a permission
+  // error on the directory, is an error: reading it as "no file" would run a claim or a completion with no policy.
+  if (ec && ec != std::errc::no_such_file_or_directory && ec != std::errc::not_a_directory) {
+    return std::unexpected(std::format("cannot read {}: {}", path.string(), ec.message()));
+  }
+  if (!present) {
+    return toml_map{};
+  }
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    return std::unexpected(std::format("cannot read {}", path.string()));
+  }
+  std::string const content{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+  auto              parsed = parse_toml(content);
+  if (!parsed) {
+    return std::unexpected(std::format("{}: line {}: {}", path.string(), parsed.error().line, parsed.error().message));
+  }
+  return std::move(*parsed);
+}
+
 } // namespace planar::engine::config

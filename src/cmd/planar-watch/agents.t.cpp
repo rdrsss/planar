@@ -335,3 +335,23 @@ TEST_CASE("agents: only in-progress tasks and working carets pulse", "[cmd][watc
   CHECK_FALSE(ag::row_pulses(held_stopped));
   CHECK_FALSE(ag::row_pulses(agent)); // a claim's status column is not a task status
 }
+
+TEST_CASE("agents: a claim row still carrying run, stage and supervisor values reads cleanly", "[cmd][watch][agents][7454]") {
+  // Rows written before the engine-supervision verbs were removed keep their
+  // run_id, stage, supervisor and attempt_id columns. The agents view reads
+  // the claim without error and classifies it as it would any other claim.
+  auto const s    = make_scratch("legacy-run");
+  auto       conn = seed_plans(s);
+  exec(conn, "insert into workflow_runs (plan_id, workflow_name, run_identifier, pid, repo_root) "
+             "values (1, 'wf', 'legacy', 1, '/r')");
+  add_claim(conn, {.id = 1, .role = "orchestrator", .kind = "plan", .entity = 1});
+  add_claim(conn, {.id = 2, .role = "coder", .kind = "task", .entity = 11});
+  exec(conn, "update agent_work_claims set run_id = 1, stage = 'code', supervisor = 'engine', attempt_id = 'A1' where id = 2");
+  add_heartbeat(conn, 2, "reading brief");
+
+  auto const snap = snapshot_of(s);
+  REQUIRE(snap.agents.size() == 1);
+  CHECK(snap.agents[0].claim_id == 1);
+  REQUIRE(snap.claims.contains(2));
+  CHECK(snap.claims.at(2).state == ag::agent_state::working);
+}

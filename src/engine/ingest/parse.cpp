@@ -652,4 +652,100 @@ auto section_has_content(std::string_view body, std::string_view header) -> bool
   return false;
 }
 
+namespace {
+
+/// @brief Whether an H2 milestone name is one of the reserved spec sections.
+[[nodiscard]] auto is_reserved_section(std::string_view name) -> bool {
+  return name == "Decisions" || name == "Open Questions" || name == "Scenarios";
+}
+
+/// @brief Normalizes a title for cross-artifact comparison: trimmed, ASCII
+/// lowercase. Matches the comparison the ingest diff applies per title.
+[[nodiscard]] auto title_key(std::string_view title) -> std::string {
+  auto key = std::string{trim(title, whitespace_block)};
+  std::ranges::transform(key, key.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  return key;
+}
+
+/// @brief Records `title` as owned by artifact `id` and fails when another
+/// artifact already owns it. Empty titles are never claimed.
+[[nodiscard]] auto claim_title(std::map<std::string, std::int64_t>& owners, std::string_view what, std::string_view title,
+                               std::int64_t id) -> std::expected<void, std::string> {
+  auto const key = title_key(title);
+  if (key.empty()) {
+    return {};
+  }
+  auto const [it, inserted] = owners.try_emplace(key, id);
+  if (!inserted && it->second != id) {
+    return std::unexpected(
+        std::format("duplicate {} '{}' in artifact {} and artifact {}; a {} title may appear in one artifact only", what,
+                    trim(title, whitespace_block), it->second, id, what));
+  }
+  return {};
+}
+
+} // namespace
+
+auto parses_as_work_list(std::string_view body) -> bool {
+  return std::ranges::any_of(parse_roadmap(body),
+                             [](const milestone& ms) { return !is_reserved_section(ms.name_) && !ms.work_items_.empty(); });
+}
+
+auto select_work_list(std::span<const source_artifact> artifacts) -> std::expected<std::size_t, std::string> {
+  for (std::size_t idx = 0; idx < artifacts.size(); ++idx) {
+    if (artifacts[idx].kind_ == "roadmap") {
+      return idx;
+    }
+  }
+
+  std::vector<std::size_t> candidates;
+  for (std::size_t idx = 0; idx < artifacts.size(); ++idx) {
+    if (parses_as_work_list(artifacts[idx].body_)) {
+      candidates.push_back(idx);
+    }
+  }
+  if (candidates.empty()) {
+    return std::unexpected(std::string{"no work list: add a roadmap artifact or an artifact with milestones and task bullets"});
+  }
+  if (candidates.size() > 1) {
+    std::string message = "ambiguous work list: more than one artifact parses as one and none is a roadmap (";
+    for (std::size_t n = 0; n < candidates.size(); ++n) {
+      const auto& art = artifacts[candidates[n]];
+      message += std::format("{}artifact {} '{}'", n == 0 ? "" : ", ", art.id_, art.title_);
+    }
+    message += "); add a roadmap artifact to choose the work list";
+    return std::unexpected(std::move(message));
+  }
+  return candidates.front();
+}
+
+auto collect_spec_sections(std::span<const source_artifact> artifacts) -> std::expected<spec_sections, std::string> {
+  spec_sections                       out;
+  std::map<std::string, std::int64_t> decision_owners;
+  std::map<std::string, std::int64_t> question_owners;
+  std::map<std::string, std::int64_t> scenario_owners;
+
+  for (const auto& art : artifacts) {
+    for (auto& dec : parse_tech_spec_decisions(art.body_)) {
+      if (auto claimed = claim_title(decision_owners, "decision", dec.title_, art.id_); !claimed) {
+        return std::unexpected(std::move(claimed.error()));
+      }
+      out.decisions_.push_back(std::move(dec));
+    }
+    for (auto& question : parse_tech_spec_open_questions(art.body_)) {
+      if (auto claimed = claim_title(question_owners, "question", question.title_, art.id_); !claimed) {
+        return std::unexpected(std::move(claimed.error()));
+      }
+      out.questions_.push_back(std::move(question));
+    }
+    for (auto& sc : parse_test_spec(art.body_)) {
+      if (auto claimed = claim_title(scenario_owners, "scenario", sc.title_, art.id_); !claimed) {
+        return std::unexpected(std::move(claimed.error()));
+      }
+      out.scenarios_.push_back(std::move(sc));
+    }
+  }
+  return out;
+}
+
 } // namespace planar::engine::ingest::parse

@@ -1,14 +1,13 @@
 // @file uncovered_leaves.t.cpp
 // @brief Black-box coverage for the eight `planar` (verb, subcommand)
 // leaves task 6546 found unexercised by any C++ test: `artifact edit`,
-// `artifact review`, `decision diff`, `decision view`, `scenario diff`,
-// `scenario review`, `scenario view`, `workbench sync` (plan 996, task
-// 6546, decision 1035).
+// `artifact review`, `decision view`, `scenario review`, `scenario view`,
+// `workbench sync` (plan 996, task 6546, decision 1035).
 //
 // ## Confirming the premise
 //
 // Grepping every `*.t.cpp` under `src/cmd/` for these eight exact argv
-// tuples (`{"artifact", "edit"}`, `{"decision", "diff"}`, ...) turns up
+// tuples (`{"artifact", "edit"}`, `{"decision", "view"}`, ...) turns up
 // NOTHING before this file. Their only prior occurrence anywhere in the
 // C++ test tree is as leaf NAMES inside the pinned `schema` catalog string
 // literal at `parity.t.cpp:811` -- a JSON blob, never a dispatch. Every
@@ -390,56 +389,6 @@ TEST_CASE("task 6546: decision view writes the canonical file and refuses an unr
 }
 
 // ===========================================================================
-// decision diff
-// ===========================================================================
-
-TEST_CASE("task 6546: decision diff is silent when clean, pins the timestamp-only hunk when dirty, and refuses",
-          "[cmd][uncovered][decision][diff]") {
-  auto const space = make_arena("uncov_ddiff");
-  seed_and_push(space.cpp_root);
-
-  // Right after `push`, the canonical file already matches the database --
-  // `diff` on equal content writes nothing and exits 0, mirroring `diff -u`.
-  auto const clean = run_pinned(cpp_bin(), std::array<std::string, 3>{"decision", "diff", "1"}, space.cpp_root, "ddclean");
-  CHECK(clean.code == 0);
-  CHECK(clean.out.empty());
-  CHECK(clean.err.empty());
-
-  // `view` overwrites the file with the THIN render, which drops the two
-  // `**Created:**`/`**Updated:**` lines the canonical render carries --
-  // `diff` then reports exactly that two-line deletion.
-  REQUIRE(run_pinned(cpp_bin(), std::array<std::string, 3>{"decision", "view", "1"}, space.cpp_root, "ddview").code == 0);
-  auto const dirty = run_pinned(cpp_bin(), std::array<std::string, 3>{"decision", "diff", "1"}, space.cpp_root, "ddirty");
-  CHECK(dirty.code == 0);
-  CHECK(normalize(dirty.out, space.cpp_root) == "--- db:decision:1\n"
-                                                "+++ fs:<ARENA>/workbench/project_demo/p1-demo-feature/decisions/"
-                                                "1-use-sqlite.md\n"
-                                                "@@ -8,9 +8,7 @@\n"
-                                                " \n"
-                                                " # Decision 1: Use SQLite\n"
-                                                " \n"
-                                                "-**Status:** proposed  \n"
-                                                "-**Created:** <TS>  \n"
-                                                "-**Updated:** <TS>\n"
-                                                "+**Status:** proposed\n"
-                                                " \n"
-                                                " ## Body\n"
-                                                " \n");
-  CHECK(dirty.err.empty());
-
-  // Refusal: `diff` is STRICT -- 0 is rejected at exit 2, unlike `view`.
-  auto const bad_id = run_pinned(cpp_bin(), std::array<std::string, 3>{"decision", "diff", "0"}, space.cpp_root, "ddbadid");
-  CHECK(bad_id.code == 2);
-  CHECK(bad_id.err == "error: decision id must be a positive integer, got 0\n");
-
-  // Refusal: an unlinked id -- `diff`'s prose names the anchor failure
-  // directly, unlike `view`'s bare `NoPlanLink` tag.
-  auto const no_link = run_pinned(cpp_bin(), std::array<std::string, 3>{"decision", "diff", "999"}, space.cpp_root, "ddnolink");
-  CHECK(no_link.code == 1);
-  CHECK(no_link.err == "error: decision 999 is not linked to a plan; cannot resolve anchor plan\n");
-}
-
-// ===========================================================================
 // scenario view
 // ===========================================================================
 
@@ -476,47 +425,6 @@ TEST_CASE("task 6546: scenario view writes the canonical file and refuses an unr
   auto const bad_id = run_pinned(cpp_bin(), std::array<std::string, 3>{"scenario", "view", "abc"}, space.cpp_root, "sviewbadid");
   CHECK(bad_id.code == 2);
   CHECK(bad_id.err == "error: scenario id must be an integer, got 'abc'\n");
-}
-
-// ===========================================================================
-// scenario diff
-// ===========================================================================
-
-TEST_CASE("task 6546: scenario diff is silent when clean and pins the timestamp-only hunk when dirty",
-          "[cmd][uncovered][scenario][diff]") {
-  auto const space = make_arena("uncov_sdiff");
-  seed_and_push(space.cpp_root);
-
-  auto const clean = run_pinned(cpp_bin(), std::array<std::string, 3>{"scenario", "diff", "1"}, space.cpp_root, "sdclean");
-  CHECK(clean.code == 0);
-  CHECK(clean.out.empty());
-  CHECK(clean.err.empty());
-
-  REQUIRE(run_pinned(cpp_bin(), std::array<std::string, 3>{"scenario", "view", "1"}, space.cpp_root, "sdview").code == 0);
-  auto const dirty = run_pinned(cpp_bin(), std::array<std::string, 3>{"scenario", "diff", "1"}, space.cpp_root, "sdirty");
-  CHECK(dirty.code == 0);
-  CHECK(normalize(dirty.out, space.cpp_root) == "--- db:scenario:1\n"
-                                                "+++ fs:<ARENA>/workbench/project_demo/p1-demo-feature/scenarios/"
-                                                "1-round-trip.md\n"
-                                                "@@ -8,7 +8,5 @@\n"
-                                                " \n"
-                                                " # Scenario 1: Round trip\n"
-                                                " \n"
-                                                "-**Status:** draft  \n"
-                                                "-**Created:** <TS>  \n"
-                                                "-**Updated:** <TS>\n"
-                                                "+**Status:** draft\n"
-                                                " \n");
-  CHECK(dirty.err.empty());
-
-  // Refusal: strict-id and unlinked-id, same shapes as `decision diff`.
-  auto const bad_id = run_pinned(cpp_bin(), std::array<std::string, 3>{"scenario", "diff", "0"}, space.cpp_root, "sdbadid");
-  CHECK(bad_id.code == 2);
-  CHECK(bad_id.err == "error: scenario id must be a positive integer, got 0\n");
-
-  auto const no_link = run_pinned(cpp_bin(), std::array<std::string, 3>{"scenario", "diff", "999"}, space.cpp_root, "sdnolink");
-  CHECK(no_link.code == 1);
-  CHECK(no_link.err == "error: scenario 999 is not linked to a plan; cannot resolve anchor plan\n");
 }
 
 // ===========================================================================

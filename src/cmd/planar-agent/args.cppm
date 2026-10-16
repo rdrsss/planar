@@ -60,7 +60,7 @@ namespace planar::cmd::agent {
 /// that): `--stale-after 0` is a legitimate, meaningful value (no
 /// additional grace beyond lease expiry — `reconcile`'s own default), while
 /// `--ttl 0` is not (it mints an already-lapsed lease). The lease-minting
-/// call sites (`claim`, `run start`) refuse a zero RESULT themselves,
+/// call site (`claim`) refuses a zero RESULT themselves,
 /// after calling this parser; `--stale-after` does not. See those call
 /// sites' own comments.
 /// @param text The raw flag value.

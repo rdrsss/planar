@@ -4,8 +4,8 @@
 //
 // ## HOME SAFETY, AND WHY IT IS SHARPER HERE THAN ANYWHERE ELSE
 //
-// This family WRITES the operator's `~/.planar/config.toml` (`init` and
-// `edit` both create it) and READS it in the other three. Every fixture
+// This family WRITES the operator's `~/.planar/config.toml` (`edit`
+// creates it) and READS it in the other three. Every fixture
 // builds an explicit environment map with `HOME` and `PLANAR_CONFIG_PATH`
 // under its own uniquely-named scratch root and dispatches through
 // `map_env`, so nothing here reads the process environment.
@@ -17,11 +17,11 @@
 // reason. Oracle-confirmed in a pinned arena with the two pointing at
 // different directories: `config path` printed the one under `HOME`.
 //
-// ## NONE OF THE FIVE MAY OPEN SQLITE
+// ## NONE OF THE FOUR MAY OPEN SQLITE
 //
 // `ctx.db().opened()` is asserted FALSE after every case. That is a real
-// contract, not a property of the current implementation: `config init`
-// and `config path` are what an operator runs BEFORE `planar init`, and
+// contract, not a property of the current implementation: `config path`
+// is what an operator runs BEFORE `planar init`, and
 // the runtime applies pending migrations on first use — so a `config path`
 // that opened the database could migrate the operator's live one past what
 // every installed binary supports.
@@ -310,74 +310,6 @@ TEST_CASE("config path refuses at exit 1 when neither variable yields a path", "
   cleanup(fx);
 }
 
-// --- config init ------------------------------------------------------
-
-TEST_CASE("config init creates the starter file and reports the path", "[cmd][config][init]") {
-  auto const fx = make_fixture("init");
-  REQUIRE_FALSE(std::filesystem::exists(fx.cfg));
-  auto const r = dispatch(fx, {"config", "init"});
-  CHECK(r.code == 0);
-  CHECK(r.out == "config init: created " + fx.cfg.string() + "\n");
-  CHECK(r.err.empty());
-  CHECK_FALSE(r.db_open);
-  REQUIRE(std::filesystem::exists(fx.cfg));
-  cleanup(fx);
-}
-
-TEST_CASE("config init is idempotent and reports already-exists at exit 0", "[cmd][config][init]") {
-  // NOT an error, which is the whole `D-init-idempotent` shape: the Go
-  // original returns `(false, nil)` and Zig mirrors it. A port that made
-  // this exit 1 would break `planar init`, which calls the same path.
-  auto const fx = make_fixture("initagain");
-  write_config(fx, "vendor = \"kept\"\n");
-  auto const r = dispatch(fx, {"config", "init"});
-  CHECK(r.code == 0);
-  CHECK(r.out == "config init: already exists " + fx.cfg.string() + "\n");
-  CHECK(r.err.empty());
-  // The existing file is NOT overwritten — asserted, because "already
-  // exists" printed while the file was clobbered would still pass on
-  // stdout alone.
-  CHECK(read_file(fx.cfg) == "vendor = \"kept\"\n");
-  cleanup(fx);
-}
-
-TEST_CASE("config init creates missing parent directories", "[cmd][config][init]") {
-  auto fx = make_fixture("initdeep");
-  fx.cfg  = fx.root / "a" / "b" / "c.toml";
-  fx.vars.insert_or_assign("PLANAR_CONFIG_PATH", fx.cfg.string());
-  REQUIRE_FALSE(std::filesystem::exists(fx.root / "a"));
-  auto const r = dispatch(fx, {"config", "init"});
-  CHECK(r.code == 0);
-  CHECK(r.out == "config init: created " + fx.cfg.string() + "\n");
-  CHECK(std::filesystem::exists(fx.cfg));
-  cleanup(fx);
-}
-
-TEST_CASE("config init writes the LONGER of the two starter blobs", "[cmd][config][init][oracle-defect]") {
-  // ORACLE-MEASURED, not read off the constant: `config init` writes 1267
-  // bytes and `config edit` writes 1048, and the 219-byte difference is an
-  // eight-line `[models.codex]` / `[roles]` example block that plan 540
-  // added to `init.zig`'s copy and never back-ported to `edit.zig`'s —
-  // whose comment still claims it "mirrors init.zig's starter_config
-  // exactly". Reproduced rather than unified (D2): merging them would
-  // change what one of the two verbs writes to the operator's disk.
-  auto const fx = make_fixture("initblob");
-  REQUIRE(dispatch(fx, {"config", "init"}).code == 0);
-  auto const body = read_file(fx.cfg);
-  REQUIRE_FALSE(body.empty());
-  CHECK(body.size() == 1267);
-  CHECK(body.starts_with("# ~/.planar/config.toml"));
-  CHECK(body.ends_with("# done = \"Closed\"\n"));
-  CHECK(body.contains("# [models.codex]"));
-  CHECK(body.contains("# [roles]"));
-  // The file it writes must itself validate cleanly — a starter that the
-  // very next `config validate` rejects would be a poor welcome.
-  auto const validated = dispatch(fx, {"config", "validate"});
-  CHECK(validated.code == 0);
-  CHECK(validated.out == "config validate: ok\n");
-  cleanup(fx);
-}
-
 // --- config edit ------------------------------------------------------
 
 TEST_CASE("config edit execs the editor on the config file itself", "[cmd][config][edit]") {
@@ -407,8 +339,8 @@ TEST_CASE("config edit execs the editor on the config file itself", "[cmd][confi
 }
 
 TEST_CASE("config edit writes the SHORTER starter blob when the file is absent", "[cmd][config][edit][oracle-defect]") {
-  // 1048 bytes, oracle-measured, and WITHOUT the `[models.codex]` /
-  // `[roles]` block `config init`'s copy carries. Both halves are asserted:
+  // 1048 bytes, oracle-measured, and WITHOUT the eight-line `[models.codex]` /
+  // `[roles]` example. Both halves are asserted:
   // the size, and the absence of the block — a size check alone would pass
   // against any 1048-byte file.
   auto fx = make_fixture("editblob");
@@ -466,21 +398,21 @@ TEST_CASE("config show lists every resolved key with no provenance", "[cmd][conf
   CHECK(r.code == 0);
   CHECK(r.err.empty());
   CHECK_FALSE(r.db_open);
-  // A file-free HOME still lists the embedded defaults — 29 keys, and the
+  // A file-free HOME still lists the embedded defaults — 30 keys, and the
   // count is asserted so a resolver that silently stopped emitting a family
   // cannot pass on the two keys the case happens to name. (22 until plan 1033
-  // task 6485 added `execute.engine`, which `planar-execute` reads from this
-  // very listing; 28 since plan 1080 task hq-config added the five
-  // `queue.*` keys; 29 since `introspection.transcript_scan_bytes`.)
-  CHECK(lines_of(r.out).size() == 29);
-  CHECK(line_for(r.out, "introspection.transcript_scan_bytes") == "introspection.transcript_scan_bytes = 67108864");
+  // task 6485 added `execute.engine`; 28 since plan 1080 task hq-config added
+  // the five `queue.*` keys and `introspection.transcript_scan_bytes`; 28
+  // again after task 7459 removed `execute.engine`; 24 after task 7472 removed
+  // the transcript budget and the three `*_enabled` keys; 30 after plan 1142
+  // task mo-policy-config added the six `policy.*` keys.)
+  CHECK(lines_of(r.out).size() == 30);
   CHECK(line_for(r.out, "queue.slots") == "queue.slots = 1");
   CHECK(line_for(r.out, "queue.poll_interval") == "queue.poll_interval = 1s");
   CHECK(line_for(r.out, "queue.stale_after") == "queue.stale_after = 30s");
   CHECK(line_for(r.out, "queue.grace") == "queue.grace = 10s");
   CHECK(line_for(r.out, "queue.history_days") == "queue.history_days = 30");
   CHECK(line_for(r.out, "defaults.vendor") == "defaults.vendor = claude");
-  CHECK(line_for(r.out, "execute.engine") == "execute.engine = embedded");
   CHECK(line_for(r.out, "workbench.root") == "workbench.root = ~/.planar/workbench");
   cleanup(fx);
 }
@@ -678,14 +610,14 @@ TEST_CASE("config show --defaults prints the embedded file and beats every other
   auto const r = dispatch(fx, {"config", "show", "--defaults"});
   CHECK(r.code == 0);
   REQUIRE_FALSE(r.out.empty());
-  // Oracle-measured byte count (3057) plus the 309-byte `[execute]` block
-  // plan 1033 task 6485 added, and the content markers that prove it is the
-  // DEFAULTS file rather than the operator's (which is what `--raw` would
-  // have printed). Plus the 781-byte `[queue]` block plan 1080 task
-  // hq-config added, and the `transcript_scan_bytes` key and its comment (4476 in all).
-  CHECK(r.out.size() == 4476);
+  // The content markers prove it is the DEFAULTS file rather than the
+  // operator's (which is what `--raw` would have printed). The byte count is
+  // the embedded defaults.toml, which lost its 309-byte `[execute]` block to
+  // plan 1142 task 7459, then gained the 988-byte `[policy]` table in task
+  // mo-policy-config (3550 bytes before, 4538 after).
+  CHECK(r.out.size() == 4538);
   CHECK(r.out.contains("[queue]\n"));
-  CHECK(r.out.contains("[execute]\n"));
+  CHECK_FALSE(r.out.contains("[execute]"));
   CHECK(r.out.starts_with("# ~/.planar/config.toml"));
   CHECK_FALSE(r.out.contains("claude-fable-5"));
   // `--defaults` returns before anything else is consulted.
@@ -701,7 +633,7 @@ TEST_CASE("config show --defaults works with no HOME at all", "[cmd][config][sho
   fx.vars.erase("PLANAR_CONFIG_PATH");
   auto const r = dispatch(fx, {"config", "show", "--defaults"});
   CHECK(r.code == 0);
-  CHECK(r.out.size() == 4476);
+  CHECK(r.out.size() == 4538);
   cleanup(fx);
 }
 
@@ -872,18 +804,74 @@ TEST_CASE("config validate cross-checks the github-issues auth value", "[cmd][co
   cleanup(fx);
 }
 
-TEST_CASE("config validate refuses an invalid [introspection].transcript_scan_bytes, naming the key",
-          "[cmd][config][validate][wide-keep-narrow]") {
-  auto const fx = make_fixture("valscan");
-  for (std::string_view const value : {"0", "-3", "\"big\""}) {
-    INFO(value);
-    write_config(fx, std::format("[introspection]\ntranscript_scan_bytes = {}\n", value));
-    auto const r = dispatch(fx, {"config", "validate"});
-    CHECK(r.code == 1);
-    CHECK(r.err.find("error: introspection.transcript_scan_bytes: ") == 0);
+TEST_CASE("config validate refuses an [execute] table as an unknown key", "[cmd][config][validate][execute]") {
+  // The execute engine selector and profiles left planar's configuration
+  // with planar-execute (plan 1142, task 7459). A file that still carries
+  // the table is refused by name, including an empty table, which a parsed
+  // map alone would not show.
+  auto const fx = make_fixture("valexec");
+  write_config(fx, "[execute]\nengine = \"embedded\"\n");
+  auto const r = dispatch(fx, {"config", "validate"});
+  CHECK(r.code == 1);
+  CHECK(r.out.empty());
+  CHECK(r.err == "error: execute: unknown key (the [execute] table was removed from planar's configuration)\n");
+
+  for (auto const* body : {"[execute]\n", "[execute.profiles.w]\nstate_dir = \"~/s\"\n"}) {
+    INFO("body: " << body);
+    write_config(fx, body);
+    auto const again = dispatch(fx, {"config", "validate"});
+    CHECK(again.code == 1);
+    CHECK(again.err.starts_with("error: execute: unknown key"));
   }
+  cleanup(fx);
+}
+
+TEST_CASE("config show --effective prints no execute. key, even when the file or the old env var names one",
+          "[cmd][config][show][execute]") {
+  auto fx = make_fixture("showexec");
+  write_config(fx, "[execute]\nengine = \"centurion\"\n\n[execute.profiles.w]\nstate_dir = \"~/s\"\n");
+  fx.vars["PLANAR_EXECUTE_ENGINE"] = "embedded";
+
+  auto const r = dispatch(fx, {"config", "show", "--effective"});
+  CHECK(r.code == 0);
+  CHECK(r.err.empty());
+  CHECK(r.out.find("execute.") == std::string::npos);
+  CHECK(r.out.find("PLANAR_EXECUTE_ENGINE") == std::string::npos);
+
+  // The embedded defaults carry no execute table either.
+  auto const defaults = dispatch(fx, {"config", "show", "--defaults"});
+  CHECK(defaults.out.find("[execute]") == std::string::npos);
+  cleanup(fx);
+}
+
+TEST_CASE("config validate refuses the removed transcript keys by name", "[cmd][config][validate]") {
+  // Plan 1142 (task 7472) removed the transcript capture settings with the
+  // introspection engines. A stale file that still carries them is refused by name, the
+  // way a stale `[execute]` table is, rather than having the keys ignored.
+  auto const fx = make_fixture("valremoved");
+  write_config(fx, "[introspection.transcripts]\nclaude_enabled = false\n");
+  auto const table = dispatch(fx, {"config", "validate"});
+  CHECK(table.code == 1);
+  CHECK(table.err.find("error: introspection.transcripts: unknown key") == 0);
+
   write_config(fx, "[introspection]\ntranscript_scan_bytes = 1048576\n");
+  auto const key = dispatch(fx, {"config", "validate"});
+  CHECK(key.code == 1);
+  CHECK(key.err.find("error: introspection.transcript_scan_bytes: unknown key") == 0);
+
+  write_config(fx, "[introspection]\ncli_log = true\nretention_days = 30\n");
   CHECK(dispatch(fx, {"config", "validate"}).code == 0);
+  cleanup(fx);
+}
+
+TEST_CASE("config show --effective has no transcript keys and keeps the CLI telemetry keys", "[cmd][config][show][effective]") {
+  auto const fx = make_fixture("showtelemetry");
+  auto const r  = dispatch(fx, {"config", "show", "--effective"});
+  CHECK(r.code == 0);
+  CHECK_FALSE(r.out.contains("introspection.transcripts."));
+  CHECK_FALSE(r.out.contains("introspection.transcript_scan_bytes"));
+  CHECK(r.out.contains("introspection.cli_log"));
+  CHECK(r.out.contains("introspection.retention_days"));
   cleanup(fx);
 }
 
@@ -903,12 +891,11 @@ TEST_CASE("config validate reads auth from the FILE, never from the embedded def
   cleanup(fx);
 }
 
-TEST_CASE("config validate rejects a routed model that is not in its tier's candidate list", "[cmd][config][validate][routing]") {
-  // The finding ORDER is observable and is vendor x tier x work-type, NOT
-  // sorted key order: `schema` precedes `cli` precedes `feature` in the
-  // work-type enum, so `schema` reports before `feature` even though
-  // `feature` sorts earlier. Oracle-captured; pinned as one exact payload
-  // rather than two `contains` checks, which would pass in either order.
+TEST_CASE("config validate has no work-type routing cross-check output", "[cmd][config][validate][routing]") {
+  // The routed-model-versus-candidate-list check left with the models engine
+  // (plan 1142, task 7456). A file that the old check refused for a routed
+  // model absent from its tier's candidate list now validates clean, and the
+  // verb prints no `routing.*` finding and no `candidate list` text.
   auto const fx = make_fixture("valrouting");
   write_config(fx, R"TOML([models.claude]
 medium = ["claude-sonnet-5", "claude-fable-5"]
@@ -919,46 +906,17 @@ feature = "bogus-model"
 schema = "another-bogus"
 )TOML");
   auto const r = dispatch(fx, {"config", "validate"});
-  CHECK(r.code == 1);
-  CHECK(r.out.empty());
-  CHECK(r.err == "error: routing.claude.medium.schema: routed model id \"another-bogus\" is not in the "
-                 "models.claude.medium candidate list\n"
-                 "error: routing.claude.medium.feature: routed model id \"bogus-model\" is not in the "
-                 "models.claude.medium candidate list\n");
-  cleanup(fx);
-}
-
-TEST_CASE("config validate does NOT validate a routing key whose tier has no models entry", "[cmd][config][validate][routing]") {
-  // The oracle's `orelse continue`, and it is the single most
-  // counter-intuitive rule in this verb: `routing.codex.medium.cli` names a
-  // model that exists nowhere at all, and the file is CLEAN — because
-  // `models.codex.medium` is absent, so there is no candidate list to check
-  // against. An implementation that validated it would refuse configs the
-  // oracle accepts.
-  //
-  // The claude half of the same file is present so the case cannot pass
-  // vacuously: it proves the cross-check is running and simply skipping
-  // codex.
-  auto const fx = make_fixture("valrouteorphan");
-  write_config(fx, R"TOML([models.claude]
-medium = ["claude-sonnet-5"]
-
-[routing.claude.medium]
-cli = "claude-sonnet-5"
-
-[routing.codex.medium]
-cli = "a-model-that-exists-nowhere"
-)TOML");
-  auto const shown = dispatch(fx, {"config", "show"});
-  REQUIRE(line_for(shown.out, "routing.codex.medium.cli") == "routing.codex.medium.cli = a-model-that-exists-nowhere");
-  auto const r = dispatch(fx, {"config", "validate"});
   CHECK(r.code == 0);
   CHECK(r.out == "config validate: ok\n");
   CHECK(r.err.empty());
+  CHECK_FALSE(r.err.contains("candidate list"));
+  CHECK_FALSE(r.err.contains("routing."));
   cleanup(fx);
 }
 
-TEST_CASE("config validate treats a scalar model tier as a one-element candidate list", "[cmd][config][validate][routing]") {
+TEST_CASE("config validate treats a scalar model tier and an orphan routing key as clean", "[cmd][config][validate][routing]") {
+  // Neither shape is a finding any more: a scalar tier needs no candidate-list
+  // check, and a routing key whose tier has no `models` entry is not inspected.
   auto const fx = make_fixture("valroutescalar");
   write_config(fx, R"TOML([models.claude]
 medium = "m1"
@@ -966,48 +924,42 @@ medium = "m1"
 [routing.claude.medium]
 cli = "m1"
 feature = "m2"
+
+[routing.codex.medium]
+cli = "a-model-that-exists-nowhere"
 )TOML");
   auto const r = dispatch(fx, {"config", "validate"});
-  CHECK(r.code == 1);
-  CHECK(r.err == "error: routing.claude.medium.feature: routed model id \"m2\" is not in the models.claude.medium "
-                 "candidate list\n");
+  CHECK(r.code == 0);
+  CHECK(r.out == "config validate: ok\n");
+  CHECK(r.err.empty());
   cleanup(fx);
 }
 
-TEST_CASE("config validate ACCUMULATES findings across steps two through four", "[cmd][config][validate]") {
-  // Three different rules, one invocation, one exit — and in the fixed
-  // step order: the sensitive scan, then the auth cross-check, then
-  // routing. A handler that returned on the first finding would report
-  // only the first line and still exit 1, which no exit-code assertion
-  // would catch.
+TEST_CASE("config validate ACCUMULATES findings across steps two and three", "[cmd][config][validate]") {
+  // Two different rules, one invocation, one exit — and in the fixed step
+  // order: the sensitive scan, then the auth cross-check. A handler that
+  // returned on the first finding would report only the first line and
+  // still exit 1, which no exit-code assertion would catch.
   auto const fx = make_fixture("valmulti");
   write_config(fx, R"TOML([external.github-issues]
 auth = "token-env"
 
 [external.jira]
 token = "literal"
-
-[models.claude]
-small = ["a"]
-
-[routing.claude.small]
-mechanical = "b"
 )TOML");
   auto const r = dispatch(fx, {"config", "validate"});
   CHECK(r.code == 1);
   CHECK(r.out.empty());
   CHECK(r.err == "error: line 5: token: sensitive key must not carry a literal value in the config file "
                  "(use *_env convention instead)\n"
-                 "error: external.github-issues.token_env: auth = \"token-env\" requires token_env to name an env var\n"
-                 "error: routing.claude.small.mechanical: routed model id \"b\" is not in the models.claude.small "
-                 "candidate list\n");
+                 "error: external.github-issues.token_env: auth = \"token-env\" requires token_env to name an env var\n");
   cleanup(fx);
 }
 
 TEST_CASE("config validate stops at a parse failure and reports nothing else", "[cmd][config][validate]") {
   // Step 1 returns IMMEDIATELY. A file that is BOTH unparseable and
   // carries a literal secret reports only the parse error — asserted
-  // directly, because the accumulating shape of steps 2-4 makes "report
+  // directly, because the accumulating shape of steps 2-6 makes "report
   // everything" the tempting generalisation.
   auto const fx = make_fixture("valparsefirst");
   write_config(fx, "[defaults\ntoken = \"abc\"\n");
@@ -1176,16 +1128,15 @@ TEST_CASE("both table-header shapes the oracle accepts are accepted here too", "
 // --- the family-wide invariant ----------------------------------------
 
 TEST_CASE("no config leaf opens the database", "[cmd][config][db]") {
-  // Asserted once across all five as a family invariant, rather than only
-  // per case: `config init` and `config path` are what an operator runs
-  // BEFORE `planar init`, and the runtime applies pending migrations on
+  // Asserted once across all four as a family invariant, rather than only
+  // per case: `config path` is what an operator runs BEFORE `planar init`,
+  // and the runtime applies pending migrations on
   // first use — so a leaf that opened the database could migrate the
   // operator's live one past what every installed binary supports.
   auto fx = make_fixture("nodb");
   fx.vars.emplace("PLANAR_EDITOR", "/usr/bin/true");
   write_config(fx, k_rich_config);
   for (auto const& args : std::vector<std::vector<std::string>>{{"config", "path"},
-                                                                {"config", "init"},
                                                                 {"config", "edit"},
                                                                 {"config", "show"},
                                                                 {"config", "show", "--effective"},
@@ -1202,11 +1153,12 @@ TEST_CASE("no config leaf opens the database", "[cmd][config][db]") {
 }
 
 TEST_CASE("config show --json escapes values, so every line is valid JSON", "[cmd][config][show][json]") {
-  // Found by plan 1033 task 6494: `planar-execute` reads its execution
-  // profiles out of this output, and an array value rendered as JSON text
-  // (`["~/a","/b"]`) came out as `"value":"["~/a","/b"]"` — not JSON. Any
-  // operator value holding a quote or a backslash broke the line the same
-  // way; none of the shipped defaults happens to.
+  // Found by plan 1033 task 6494: `planar-execute` read its execution
+  // profiles out of this output before it left master, and an array value
+  // rendered as JSON text (`["~/a","/b"]`) came out as
+  // `"value":"["~/a","/b"]"` — not JSON. Any operator value holding a quote
+  // or a backslash broke the line the same way; none of the shipped defaults
+  // happens to.
   auto const fx = make_fixture("showjsonescape");
   write_config(fx, "[defaults]\nvendor = 'a\"b\\c'\n");
   auto const r = dispatch(fx, {"config", "show", "--json"});
@@ -1219,5 +1171,238 @@ TEST_CASE("config show --json escapes values, so every line is valid JSON", "[cm
   }
   REQUIRE(hits.size() == 1);
   CHECK(hits.front() == R"({"key":"defaults.vendor","value":"a\"b\\c","provenance":"config file"})");
+  cleanup(fx);
+}
+
+// ---------------------------------------------------------------------------
+// Policy tables (plan 1142, task mo-policy-config)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// @brief The `--effective` row for `key`, or empty.
+/// @param out The verb's stdout.
+/// @param key The effective key, for example `policy.use_queue`.
+/// @return The whole line.
+auto effective_row(std::string_view out, std::string_view key) -> std::string {
+  for (auto const& line : lines_of(out)) {
+    if (line.starts_with(std::format("{} = ", key))) {
+      return line;
+    }
+  }
+  return {};
+}
+
+} // namespace
+
+TEST_CASE("config validate refuses a workflow-shaped policy key and names it", "[cmd][config][validate][policy]") {
+  auto const fx = make_fixture("policyflow");
+  write_config(fx, "[policy]\nafter_review = \"dispatch\"\nreview_required = true\n");
+  auto const r = dispatch(fx, {"config", "validate"});
+  CHECK(r.code == 1);
+  CHECK(r.err.contains("error: policy.after_review: unknown policy key"));
+  CHECK(r.err.contains("facts Planar can check at one verb"));
+  CHECK_FALSE(r.err.contains("policy.review_required"));
+  CHECK_FALSE(r.out.contains("config validate: ok"));
+  cleanup(fx);
+}
+
+TEST_CASE("config validate refuses every workflow word and any unknown policy key, in both table shapes",
+          "[cmd][config][validate][policy]") {
+  for (std::string_view key : {"then", "on_failure", "retry", "steps", "totally_unknown"}) {
+    for (std::string_view header : {"[policy]", "[associations.\"org:acme\".policy]"}) {
+      INFO(key << " in " << header);
+      auto const fx = make_fixture("policyunknown");
+      write_config(fx, std::format("{}\n{} = \"x\"\n", header, key));
+      auto const r = dispatch(fx, {"config", "validate"});
+      CHECK(r.code == 1);
+      CHECK(r.err.contains(std::format("policy.{}: unknown policy key", key)));
+      CHECK_FALSE(r.out.contains("config validate: ok"));
+      cleanup(fx);
+    }
+  }
+}
+
+TEST_CASE("config validate names the expected type for a mistyped policy value", "[cmd][config][validate][policy]") {
+  auto const fx = make_fixture("policytype");
+  write_config(fx, "[policy]\nuse_queue = \"yes\"\ntask_gate = \"make test\"\n");
+  auto const r = dispatch(fx, {"config", "validate"});
+  CHECK(r.code == 1);
+  CHECK(r.err.contains("error: policy.use_queue: must be a boolean"));
+  CHECK(r.err.contains("error: policy.task_gate: must be a non-empty array of strings"));
+  cleanup(fx);
+}
+
+TEST_CASE("config validate refuses a task_gate unless use_queue is on in the same scope",
+          "[cmd][config][validate][policy][gate]") {
+  auto const gate_message = [](std::string_view scope) {
+    return std::format(
+        "gate evidence is a queued run, so use_queue = true is required in the same scope (add use_queue = true under [{}])",
+        scope);
+  };
+  SECTION("a top-level gate without use_queue exits 1 with the fix") {
+    auto const fx = make_fixture("gateq1");
+    write_config(fx, "[policy]\ntask_gate = [\"make\", \"test\"]\n");
+    auto const r = dispatch(fx, {"config", "validate"});
+    CHECK(r.code == 1);
+    CHECK(r.err.contains(std::format("error: policy.task_gate: {}", gate_message("policy"))));
+    CHECK_FALSE(r.out.contains("config validate: ok"));
+    cleanup(fx);
+  }
+  SECTION("use_queue = true beside the gate validates") {
+    auto const fx = make_fixture("gateq2");
+    write_config(fx, "[policy]\nuse_queue = true\ntask_gate = [\"make\", \"test\"]\n");
+    auto const r = dispatch(fx, {"config", "validate"});
+    CHECK(r.code == 0);
+    CHECK(r.out == "config validate: ok\n");
+    cleanup(fx);
+  }
+  SECTION("an association that inherits the gate and sets use_queue = false is refused by name") {
+    auto const fx = make_fixture("gateq3");
+    write_config(fx,
+                 "[policy]\nuse_queue = true\ntask_gate = [\"make\"]\n[associations.\"org:acme\".policy]\nuse_queue = false\n");
+    auto const r = dispatch(fx, {"config", "validate"});
+    CHECK(r.code == 1);
+    CHECK(r.err.contains(
+        std::format("error: associations.org:acme.policy.task_gate: {}", gate_message("associations.\"org:acme\".policy"))));
+    CHECK_FALSE(r.err.contains("error: policy.task_gate"));
+    cleanup(fx);
+  }
+  SECTION("an association with its own gate inherits use_queue from the top level") {
+    auto const fx = make_fixture("gateq4");
+    write_config(fx, "[policy]\nuse_queue = true\n[associations.\"org:acme\".policy]\ntask_gate = [\"make\"]\n");
+    auto const r = dispatch(fx, {"config", "validate"});
+    CHECK(r.code == 0);
+    cleanup(fx);
+  }
+  SECTION("an association with its own gate and no use_queue anywhere is refused") {
+    auto const fx = make_fixture("gateq5");
+    write_config(fx, "[associations.\"org:acme\".policy]\ntask_gate = [\"make\"]\n");
+    auto const r = dispatch(fx, {"config", "validate"});
+    CHECK(r.code == 1);
+    CHECK(r.err.contains("error: associations.org:acme.policy.task_gate: gate evidence is a queued run"));
+    cleanup(fx);
+  }
+}
+
+TEST_CASE("config validate refuses a confirm_before entry that is not a verb path", "[cmd][config][validate][policy][confirm]") {
+  SECTION("top-level and association entries with capitals, extra spaces or punctuation") {
+    auto const fx = make_fixture("confirmbad");
+    write_config(fx, "[policy]\nconfirm_before = [\"task done\", \"Plan Closeout\"]\n"
+                     "[associations.\"org:acme\".policy]\nconfirm_before = [\"task  done\"]\n");
+    auto const r = dispatch(fx, {"config", "validate"});
+    CHECK(r.code == 1);
+    CHECK(r.err.contains("error: policy.confirm_before: must be an array of verb paths"));
+    CHECK(r.err.contains("error: associations.org:acme.policy.confirm_before: must be an array of verb paths"));
+    cleanup(fx);
+  }
+  SECTION("a non-array value is refused") {
+    auto const fx = make_fixture("confirmbad2");
+    write_config(fx, "[policy]\nconfirm_before = \"task done\"\n");
+    auto const r = dispatch(fx, {"config", "validate"});
+    CHECK(r.code == 1);
+    CHECK(r.err.contains("error: policy.confirm_before: must be an array of verb paths"));
+    cleanup(fx);
+  }
+  SECTION("valid verb paths, and an empty list, validate") {
+    auto const fx = make_fixture("confirmok");
+    write_config(fx, "[policy]\nconfirm_before = [\"task done\", \"plan closeout\", \"spec "
+                     "ingest\"]\n[associations.\"org:acme\".policy]\nconfirm_before = []\n");
+    auto const r = dispatch(fx, {"config", "validate"});
+    CHECK(r.code == 0);
+    cleanup(fx);
+  }
+}
+
+TEST_CASE("config validate accepts a file with valid policy tables", "[cmd][config][validate][policy]") {
+  auto const fx = make_fixture("policyok");
+  write_config(fx, R"([policy]
+review_required = true
+task_gate = ["make", "test"]
+confirm_before = ["task done", "plan closeout"]
+use_queue = true
+
+[associations."org:acme".policy]
+require_model = true
+review_required = false
+)");
+  auto const r = dispatch(fx, {"config", "validate"});
+  CHECK(r.code == 0);
+  CHECK(r.out == "config validate: ok\n");
+  CHECK(r.err.empty());
+  cleanup(fx);
+}
+
+TEST_CASE("config show --effective prints every policy key with its source", "[cmd][config][show][effective][policy]") {
+  auto const fx = make_fixture("policyshow");
+  write_config(fx, "[policy]\nreview_required = true\ntask_gate = [\"make\", \"test\"]\nuse_queue = true\n");
+  auto const r = dispatch(fx, {"config", "show", "--effective"});
+  REQUIRE(r.code == 0);
+  CHECK(effective_row(r.out, "policy.review_required") ==
+        std::format("policy.review_required = true  [config file: {}, policy]", fx.cfg.string()));
+  CHECK(effective_row(r.out, "policy.task_gate") ==
+        std::format("policy.task_gate = [\"make\",\"test\"]  [config file: {}, policy]", fx.cfg.string()));
+  CHECK(effective_row(r.out, "policy.require_model") == "policy.require_model = false  [embedded default]");
+  CHECK(effective_row(r.out, "policy.confirm_before") == "policy.confirm_before = []  [embedded default]");
+  CHECK(effective_row(r.out, "policy.require_scenario_coverage") ==
+        "policy.require_scenario_coverage = false  [embedded default]");
+  CHECK(effective_row(r.out, "policy.use_queue") ==
+        std::format("policy.use_queue = true  [config file: {}, policy]", fx.cfg.string()));
+  cleanup(fx);
+}
+
+TEST_CASE("config show --effective: an unset task_gate prints (unset)", "[cmd][config][show][effective][policy]") {
+  auto const fx = make_fixture("policyunset");
+  auto const r  = dispatch(fx, {"config", "show", "--effective"});
+  REQUIRE(r.code == 0);
+  CHECK(effective_row(r.out, "policy.task_gate") == "policy.task_gate = (unset)  [embedded default]");
+  cleanup(fx);
+}
+
+TEST_CASE("config show --effective --scope: an association policy beats the top level and names its table",
+          "[cmd][config][show][effective][policy]") {
+  auto const fx = make_fixture("policyassoc");
+  write_config(fx, "[policy]\nreview_required = true\nuse_queue = true\n"
+                   "[associations.\"org:acme\".policy]\nreview_required = false\n");
+  auto const scoped = dispatch(fx, {"config", "show", "--effective", "--scope", "org:acme"});
+  REQUIRE(scoped.code == 0);
+  CHECK(effective_row(scoped.out, "policy.review_required") ==
+        std::format("policy.review_required = false  [per-association override: {}, associations.\"org:acme\".policy]",
+                    fx.cfg.string()));
+  CHECK(effective_row(scoped.out, "policy.use_queue") ==
+        std::format("policy.use_queue = true  [config file: {}, policy]", fx.cfg.string()));
+  auto const unscoped = dispatch(fx, {"config", "show", "--effective", "--scope", "org:other"});
+  CHECK(effective_row(unscoped.out, "policy.review_required") ==
+        std::format("policy.review_required = true  [config file: {}, policy]", fx.cfg.string()));
+  cleanup(fx);
+}
+
+TEST_CASE("config show --effective: an environment variable cannot switch a policy off",
+          "[cmd][config][show][effective][policy][env]") {
+  auto fx = make_fixture("policyenv");
+  write_config(fx, "[policy]\nreview_required = true\n");
+  fx.vars["PLANAR_REVIEW_REQUIRED"]        = "false";
+  fx.vars["PLANAR_POLICY_REVIEW_REQUIRED"] = "false";
+  auto const r                             = dispatch(fx, {"config", "show", "--effective"});
+  REQUIRE(r.code == 0);
+  CHECK(effective_row(r.out, "policy.review_required") ==
+        std::format("policy.review_required = true  [config file: {}, policy]", fx.cfg.string()));
+  CHECK_FALSE(r.out.contains("env: PLANAR_REVIEW_REQUIRED"));
+  cleanup(fx);
+}
+
+TEST_CASE("config show --json carries the policy provenance and still escapes", "[cmd][config][show][json][policy]") {
+  auto const fx = make_fixture("policyjson");
+  write_config(fx, "[policy]\ntask_gate = [\"make\", \"test\"]\n");
+  auto const r = dispatch(fx, {"config", "show", "--json"});
+  REQUIRE(r.code == 0);
+  std::string row;
+  for (auto const& line : lines_of(r.out)) {
+    if (line.starts_with(R"({"key":"policy.task_gate",)")) {
+      row = line;
+    }
+  }
+  CHECK(row.starts_with(R"({"key":"policy.task_gate","value":"[\"make\",\"test\"]","provenance":"config file: )"));
+  CHECK(row.ends_with(", policy\"}"));
   cleanup(fx);
 }

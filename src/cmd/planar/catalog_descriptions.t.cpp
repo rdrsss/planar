@@ -13,15 +13,15 @@
 //     raw `CLI::App::add_option(...)` calls in `planar-agent` and
 //     `planar-ext` bypass the helpers entirely. Neither is visible to the
 //     compiler. Both surface in the catalog as an empty description.
-//   - The catalog is the one artifact all five binaries share, so it is the
+//   - The catalog is the one artifact all four binaries share, so it is the
 //     place a single walk can hold them to one rule.
 //
 // ## No allowance
 //
-// All five binaries are held to the rule. The sweeps of `planar-agent`,
+// All four binaries are held to the rule. The sweeps of `planar-agent`,
 // `planar-ext` and `planar-watch` landed, so no binary may carry an empty
-// description. The last case below pins that `planar-execute` (and the
-// rest) stay outside any allowance.
+// description. The last case below pins that every binary stays outside any
+// allowance.
 //
 // ## Provenance
 //
@@ -101,7 +101,6 @@ auto binaries() -> std::vector<binary_under_test> {
   return {{"planar", PLANAR_CPP_BIN},
           {"planar-agent", PLANAR_AGENT_CPP_BIN},
           {"planar-watch", PLANAR_WATCH_CPP_BIN},
-          {"planar-execute", PLANAR_EXECUTE_CPP_BIN},
           {"planar-ext", PLANAR_EXT_CPP_BIN}};
 }
 
@@ -209,25 +208,25 @@ TEST_CASE("the catalog walk reaches every binary and fails on an empty descripti
       FAIL_CHECK(describe(e));
     }
   }
-  // The five live catalogs hold about 1,160 flag and positional entries
-  // (measured 2026-10-04). A floor close to that catches a walk that
-  // silently skipped a binary or a field; 630 would have let almost half the
-  // surface vanish unnoticed.
+  // The live catalogs held about 1,160 flag and positional entries (measured 2026-10-04). Plan 1142 tasks 7455,
+  // 7458, 7468 and 7472 left 915 measured 2026-10-10; tasks 7469 and 7471 and the three feedback triage leaves
+  // (task 7473) leave 876 measured 2026-10-11; plan 1142 task 7467 removes fifteen more (876 -> 861), and the floor
+  // keeps a margin of fifteen. A floor close to that catches a
+  // walk that silently skipped a binary or a field; 630 would have let almost half the surface vanish unnoticed.
   CAPTURE(total);
-  REQUIRE(total >= 1100);
+  REQUIRE(total >= 846);
 }
 
 TEST_CASE("the catalog walk allows no binary an empty description", "[catalog][descriptions]") {
   // Every binary, planar-agent, planar-ext and planar-watch included, is held to
   // the rule; the sweep of each landed, so the allowance is gone.
   auto const all = binaries();
-  REQUIRE(all.size() == 5);
+  REQUIRE(all.size() == 4);
   for (auto const& bin : all) {
     auto const walked = walk_binary(bin);
     CAPTURE(bin.name);
     CHECK(walked.empties.empty());
   }
-  CHECK(std::ranges::any_of(all, [](binary_under_test const& bin) { return bin.name == "planar-execute"; }));
 }
 
 TEST_CASE("the retired-word scan names the command and the word it found", "[catalog][descriptions][retired]") {

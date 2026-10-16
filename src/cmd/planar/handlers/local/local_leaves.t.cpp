@@ -4,7 +4,7 @@
 //
 // ## EVERY CASE ASSERTS PERSISTED STATE, NOT ONLY STDOUT
 //
-// The same discipline `runs_leaves.t.cpp` and `annotate_leaves.t.cpp`
+// The same discipline `annotate_leaves.t.cpp`
 // established, translated to the state this family actually owns. `local`
 // touches NO database: its durable state is two JSON manifests
 // (`<sandbox>/{skills,agents}/.link-manifest.json`) and the vendor copies
@@ -199,7 +199,7 @@ auto normalize(std::string_view text, const fixture& fx) -> std::string {
 ///   `<name>|<vendor>|…`  a real recorded install.
 ///
 /// The first three print identical stdout on the leaves that produce them,
-/// so only a state read separates them — the same reason `runs_leaves.t.cpp`
+/// so only a state read separates them — the same reason `annotate_leaves.t.cpp`
 /// renders SQL NULL as `<NULL>` rather than as the empty string. `mode` and
 /// `linked_at` are each rendered `<NULL>` when the writer omitted the key,
 /// which keeps "absent" distinguishable from "present and empty"; the stamp

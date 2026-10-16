@@ -45,10 +45,11 @@
 /// bare tasks in one plan: `recommend-strategy` serializes both with a rule-2
 /// exclusion; `divergence` reports `pairs:1` and all-zero overlaps.
 ///
-/// **`--closure-source` EXISTS ONLY ON `recommend-strategy`.** Passing it to
-/// `divergence` is `error: UnknownFlag` at exit 2 — `divergence` always reads
-/// BOTH sources by construction. Correspondingly `recommend-strategy`'s JSON
-/// carries a `closure_source` field and `divergence`'s does not.
+/// **`recommend-strategy` READS DECLARED TOUCHES ONLY.** It has no source
+/// switch and never reads the closure tables. Its JSON keeps a
+/// `closure_source` key pinned to `"declared"` for output stability.
+/// `divergence` is the one verb that reads BOTH sources, and its JSON carries
+/// no such key.
 ///
 /// **`jaccard` IS RENDERED TWO DIFFERENT WAYS.** JSON emits the shortest
 /// round-trip form (`0`, `1`, `0.5`, `0.3333333333333333`); text emits fixed
@@ -100,28 +101,6 @@ export enum class strategy_error : std::uint8_t {
   not_found,    ///< The plan does not exist.
   query_failed, ///< SQL failure.
 };
-
-/// @brief Which signal rule 2's pairwise overlap test reads (decision D4).
-///
-/// Only rule 2's overlap branch switches. Rules 1/3/4/5/6 — and rule 2's
-/// empty-touches branch — always read the DECLARED set, because a migration
-/// touch, a singleton touch and the touches-everything guard are all
-/// declared-path properties rather than closure properties.
-export enum class closure_source : std::uint8_t {
-  declared, ///< Baseline: `task_touch_paths` + whole-repo `entity_links` edges.
-  derived,  ///< The computed symbol-level closure in `closures`.
-};
-
-/// @brief Parse the `--closure-source` flag value.
-/// @param text The operator-supplied token.
-/// @return The source, or `nullopt` for an unknown token so the caller can
-/// emit the oracle's precise refusal.
-export auto parse_closure_source(std::string_view text) -> std::optional<closure_source>;
-
-/// @brief The flag spelling for a source, as it appears in both renderings.
-/// @param source The source.
-/// @return `"declared"` or `"derived"`.
-export auto closure_source_name(closure_source source) -> std::string_view;
 
 /// @brief Canonical coordination files (rule 4).
 ///
@@ -183,18 +162,10 @@ export struct divergence_result {
   double      jaccard           = 0.0; ///< `flips / |declared ∪ derived|`; 0.0 when the union is empty.
 };
 
-/// @brief Compute the parallel-eligibility recommendation under an explicit
-/// closure source.
-/// @param conn An open database connection.
-/// @param plan_id The plan to analyse.
-/// @param source Which signal rule 2's overlap branch reads.
-/// @return The recommendation, or `not_found` when the plan does not exist.
-export auto recommend_with(db::connection& conn, std::int64_t plan_id, closure_source source)
-    -> std::expected<recommendation, strategy_error>;
-
-/// @brief Compute the recommendation under the baseline DECLARED source.
+/// @brief Compute the parallel-eligibility recommendation from DECLARED touches.
 ///
-/// Behaviour-preserving wrapper over `recommend_with(..., declared)`.
+/// Rule 2 reads `task_touch_paths` and the whole-repo `entity_links` touches
+/// only. The closure tables are never read here.
 /// @param conn An open database connection.
 /// @param plan_id The plan to analyse.
 /// @return The recommendation, or `not_found` when the plan does not exist.
@@ -210,16 +181,18 @@ export auto recommend(db::connection& conn, std::int64_t plan_id) -> std::expect
 export auto compute_divergence(db::connection& conn, std::int64_t plan_id) -> std::expected<divergence_result, strategy_error>;
 
 /// @brief Render `plan recommend-strategy --json`.
+///
+/// The `closure_source` key is always `"declared"`, kept for output stability.
 /// @param rec The recommendation.
-/// @param source The source that produced it (echoed as `closure_source`).
 /// @return A COMPLETE stdout payload including its trailing newline.
-export auto render_recommendation_json(const recommendation& rec, closure_source source) -> std::string;
+export auto render_recommendation_json(const recommendation& rec) -> std::string;
 
 /// @brief Render `plan recommend-strategy` in text mode.
+///
+/// The header line names the source as `declared`, matching the JSON key.
 /// @param rec The recommendation.
-/// @param source The source that produced it.
 /// @return A COMPLETE stdout payload including its trailing newline.
-export auto render_recommendation_text(const recommendation& rec, closure_source source) -> std::string;
+export auto render_recommendation_text(const recommendation& rec) -> std::string;
 
 /// @brief Render `plan divergence --json`.
 /// @param plan_id The plan asked about (not carried by `divergence_result`).

@@ -89,8 +89,8 @@ if not isinstance(portable, dict) or portable.get('result') != 'pass':
     fail(f'{archive.name}: the portable gate did not pass')
 if isinstance(count, bool) or not isinstance(count, int) or count < 1:
     fail(f'{archive.name}: the portable gate matched {count!r} tests; zero matched is no gate')
-if portable.get('staged_binaries') != 5:
-    fail(f'{archive.name}: the portable gate inspected {portable.get("staged_binaries")!r} staged binaries, not 5')
+if portable.get('staged_binaries') != 4:
+    fail(f'{archive.name}: the portable gate inspected {portable.get("staged_binaries")!r} staged binaries, not 4')
 bundle = archive.name[:-len('.tar.gz')]
 with tarfile.open(archive) as tar:
     try:

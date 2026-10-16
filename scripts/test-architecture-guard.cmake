@@ -16,30 +16,10 @@
 #   upward             — layer-1 `core` depends on layer-2 `engine_widget`
 #                         (the generic D15 upward-edge rule). MUST fail,
 #                         naming the D15 violation and the offending edge.
-#   engine-execute-db  — `engine_execute` depends on `db` (the hardcoded
-#                         no-SQLite-handle exception, legal by layer number
-#                         alone). MUST fail, naming the D15 violation and
-#                         the offending edge.
-#   cmd-binary-db      — a planar_binary()-registered executable
-#                         (`cmd_planar_execute`) depends on `db` (same
-#                         exception, proving add_executable() targets are
-#                         walked once registered). MUST fail, naming the
-#                         D15 violation and the offending edge.
 #   layer1-same-layer  — layer-1 `cli` depends on layer-1 `core` (the
 #                         layer-1 interdependency decision). MUST SUCCEED —
 #                         the positive control proving the decision is
 #                         implemented, not just documented.
-#   planar-binary-real — a same-layer cmd -> cmd edge, both binaries
-#                         created through the REAL planar_binary() (plan
-#                         996 task 6070, M3 pre-work: planar_binary() had
-#                         zero call sites before this). MUST fail, naming
-#                         the D15 violation and the offending edge.
-#   planar-binary-execute-natural-name — the no-SQLite-handle exception
-#                         exercised through planar_binary(execute ...),
-#                         the natural/unprefixed call convention, proving
-#                         the naming-coupling trap (task 6070) is closed.
-#                         MUST fail, naming the D15 violation and the
-#                         offending edge.
 #
 # CMake script rather than shell so the test runs identically on all
 # platforms (tabula's parity note: its .sh predecessor was BAD_COMMAND on

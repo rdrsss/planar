@@ -266,8 +266,7 @@ export auto plan_descendants(context& ctx, const cliapp::parsed_args& args) -> h
 /// `not_found` (exit 1) when the plan does not exist.
 export auto plan_next(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
-/// @brief `plan recommend-strategy <plan-id> [--closure-source S] [--json]`
-/// (task 6310).
+/// @brief `plan recommend-strategy <plan-id> [--json]` (task 6310).
 ///
 /// Applies the six parallel-eligibility rules (decision 370) to the plan's
 /// open (`todo`) tasks and reports the parallel-eligible subset plus the
@@ -277,14 +276,12 @@ export auto plan_next(context& ctx, const cliapp::parsed_args& args) -> handler_
 /// choosing a dispatch strategy — so the `summary.fan_out_available` flag and
 /// the three `recommended_note` strings are contract, not decoration.
 ///
-/// `--closure-source` selects the signal rule 2's OVERLAP branch reads and
-/// defaults to `declared`. An unknown token refuses at exit 2 BEFORE the
-/// database is touched. Note the flag does NOT exist on the sibling `plan
-/// divergence`, which reads both sources by construction.
+/// Rule 2 reads the DECLARED touches only. The verb takes no source flag: an
+/// unknown option, `--closure-source` included, is a parser refusal at exit 2.
 /// @param ctx The invocation context.
 /// @param args The parsed arguments.
-/// @return Success, or `invalid_input` (exit 2) for a non-integer id or a bad
-/// `--closure-source`, or `not_found` (exit 1) when the plan does not exist.
+/// @return Success, or `invalid_input` (exit 2) for a non-integer id, or
+/// `not_found` (exit 1) when the plan does not exist.
 export auto plan_recommend_strategy(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 /// @brief `plan divergence <plan-id> [--json]` (task 6310).

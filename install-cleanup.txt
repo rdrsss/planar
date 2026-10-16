@@ -15,11 +15,13 @@
 # agent links and pl-* skill directories, are removed by install.sh's sweep
 # "Retiring the previous skill and agent projections", not by this manifest.)
 #
-# (No active entries. `bin/planar-execute` was listed here when the Lua harness
-# was extracted to a separate external project (2026-06); plan 633 revived
-# planar-execute as a shipped fifth binary — the deterministic spawn-free
-# workflow engine — so the cleanup line was removed (a re-install must keep,
-# not delete, it).)
+# planar-execute, its Lua workflows and the model tier table left the bundle
+# with plan 1142: the bundle ships four binaries, no workflows/ and no
+# agents/models.md. A re-install over a tree from an older release removes
+# these copies.
+bin/planar-execute
+workflows/
+agents/models.md
 # The retired agent.db (plan 1089) is NOT listed here: it is data, and
 # removing it needs the live-queue guard and the old-range checks, so the
 # installer's retire step (scripts/install-lib/queue-retire.sh,
@@ -67,3 +69,39 @@ agents/codex/
 agents/copilot/
 agents/gemini/
 agents/opencode/
+# planar import and planar synthesize, their engines and their role agents
+# left the tree with plan 1142, task 7471 (preserved at tag
+# archive/import-synthesize). A re-install removes the staged role files and
+# the Codex TOML renders they left behind.
+agents/planar-importer.md
+agents/planar-synthesizer.md
+codex-agents/planar-importer.toml
+codex-agents/planar-synthesizer.toml
+
+# Retired planar-introspector role (plan 1142, task 7472): the usage
+# introspection engines left the tree with it, so a re-install over a tree
+# from an older release removes the staged role spec.
+agents/planar-introspector.md
+codex-agents/planar-introspector.toml
+
+# Retired planar-feedback-triager role (plan 1142, task 7473): the `planar
+# feedback triage` verbs and their engine left the tree with it, so a re-install
+# over a tree from an older release removes the staged role spec.
+agents/planar-feedback-triager.md
+codex-agents/planar-feedback-triager.toml
+
+# Role agents left the install with plan 1142: they are examples
+# (examples/agents/ in the source tree), and the `planar` skill is the only
+# agent surface Planar ships. A re-install removes the staged role files and
+# the shared documents beside them, and the Codex TOML renders. The planar-<role>
+# agents an older install placed in the vendor agent directories are removed by
+# install.sh's sweep (ownership.sh, sweep_role_agents), which runs BEFORE these
+# lines take effect because the staged files are its evidence.
+agents/
+codex-agents/
+# The backups an interrupted older install could leave of those two trees.
+# No current journal owns them (neither is a managed subtree any more), so
+# nothing would ever remove them otherwise. Like the lines above, they are
+# removed after the sweep.
+agents.old/
+codex-agents.old/

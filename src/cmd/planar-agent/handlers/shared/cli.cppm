@@ -4,6 +4,7 @@ module;
 export module planar.cmd.planar_agent.handlers.shared.cli;
 import std;
 import cli11;
+import planar.engine.runtime.agentactivity;
 import planar.cliapp.args;
 import planar.cliapp.surface;
 namespace planar::cmd::agent::handlers::shared {
@@ -49,46 +50,25 @@ export auto add_no_locality_probe(CLI::App& app, std::string desc) -> void {
 /// acquisition verbs ("Lease TTL") and `heartbeat` ("New TTL").
 ///
 /// Declared as a plain string with a DEFAULT, not as an integer: the value
-/// is a duration (`600`, `10m`, `500ms`) that
+/// is a duration (`7200`, `2h`, `500ms`) that
 /// `planar.cmd.planar_agent.args::parse_ttl_seconds` interprets. The
 /// default string is load-bearing beyond help — `planar.cliapp.args::
 /// harvest` materializes a declared default into the parsed result, so an
-/// omitted `--ttl` still reaches the handler as "600".
+/// omitted `--ttl` still reaches the handler as "7200" (the engine's `default_lease_secs`).
 /// @param app The node to declare it on.
 /// @param desc The verb's own wording.
 export auto add_ttl(CLI::App& app, std::string desc) -> void {
-  app.add_option("--ttl")->description(std::move(desc))->default_str("600");
-}
-
-/// @brief The engine-supervision flags (plan 1033 D3/D4, task 6488).
-///
-/// `--as engine --attempt <id>` is how the engine supervisor identifies
-/// itself on a claim it has been handed with `claim-associate --supervisor
-/// engine`. Absent, the verb acts as the caller, exactly as before plan
-/// 1033. `--override-supervisor` (terminal verbs only) is operator recovery:
-/// a caller terminal verb on an engine claim, logged as a
-/// `supervisor_override` action.
-/// @param app The verb.
-/// @param terminal Whether to add `--override-supervisor`.
-export auto add_supervision(CLI::App& app, bool terminal) -> void {
-  app.add_option("--as")
-      ->description("Who is acting: caller (default) or engine (the supervisor of an engine-associated claim; needs --attempt)")
-      ->check(CLI::IsMember{std::vector<std::string>{"caller", "engine"}});
-  app.add_option("--attempt")
-      ->description("The Centurion attempt the engine acts for; must match the claim's associated attempt");
-  if (terminal) {
-    cliapp::add_bool_flag(
-        app, "--override-supervisor",
-        "Operator recovery: let the caller terminate an engine-supervised claim (logged as supervisor_override)");
-  }
+  app.add_option("--ttl")
+      ->description(std::move(desc))
+      ->default_str(std::to_string(engine::runtime::agentactivity::default_lease_secs));
 }
 
 /// @brief The `heartbeat` verb's `--ttl`, declared WITHOUT a default.
 ///
-/// Deliberately not `add_ttl`. That helper's `default_str("600")` is
+/// Deliberately not `add_ttl`. That helper's `default_str(...)` is
 /// load-bearing (see above): `harvest` materializes it, so an omitted
-/// `--ttl` would reach the handler as "600" and be indistinguishable from
-/// an explicit `--ttl 600`. For `heartbeat` that distinction IS the
+/// `--ttl` would reach the handler as the default and be indistinguishable
+/// from an explicit `--ttl 7200`. For `heartbeat` that distinction IS the
 /// contract — omitting `--ttl` renews the lease length the claim already
 /// holds, rather than resetting it to a fixed default and truncating every
 /// long lease (Planar task 6093). Leaving the default off is what lets the
@@ -108,18 +88,6 @@ export auto add_heartbeat_ttl(CLI::App& app) -> void {
 export auto add_vendor(CLI::App& app, std::string vendor_desc, std::string session_desc) -> void {
   app.add_option("--vendor")->description(std::move(vendor_desc))->default_str("planar-agent");
   app.add_option("--vendor-session")->description(std::move(session_desc));
-}
-
-/// @brief The `--run` / `--stage` pair carried by `pull` and `claim`
-/// (NOT by `claim-associate`, whose versions are required and worded
-/// differently).
-/// @param app The node to declare them on.
-export auto add_run_stage(CLI::App& app) -> void {
-  app.add_option("--run")
-      ->description("workflow_runs.id to associate with this claim (populated by an external workflow harness; omit "
-                    "for interactive claims)")
-      ->check(cliapp::zig_int_validator());
-  app.add_option("--stage")->description("Workflow stage name (e.g. code, review) to record on the claim; requires --run");
 }
 
 } // namespace planar::cmd::agent::handlers::shared

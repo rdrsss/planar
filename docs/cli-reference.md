@@ -2,7 +2,7 @@
 
 Reference for every `planar` subcommand. Authoritative current surface for the installed binary. For machine-readable help, use `planar <subcommand> --help`.
 
-**Source of truth:** schema across `migrations/00001_foundation.up.sql` through `migrations/00041_contextual_annotation_threads.up.sql`. Every "schema effects" section below cites real columns from those migrations. The CLI surface is served by C++26 binaries built via CMake (see [docs/architecture.md](architecture.md) and [docs/toolchain-parity.md](toolchain-parity.md)); the Zig implementation under `zig/`, retained through the port as its parity oracle, was deleted at the M10 cutover. See [docs/architecture.md § Application tables](architecture.md#application-tables) for the migration-by-migration table inventory.
+**Source of truth:** schema across `migrations/00001_foundation.up.sql` through `migrations/00043_drop_routing_tables.up.sql`. Every "schema effects" section below cites real columns from those migrations. The CLI surface is served by C++26 binaries built via CMake (see [docs/architecture.md](architecture.md) and [docs/toolchain-parity.md](toolchain-parity.md)); the Zig implementation under `zig/`, retained through the port as its parity oracle, was deleted at the M10 cutover. See [docs/architecture.md § Application tables](architecture.md#application-tables) for the migration-by-migration table inventory.
 
 ---
 
@@ -71,16 +71,14 @@ the `planar` binary.
 | `6` | Precondition conflict: slug conflict, or the entity already exists. | `slug_conflict`, `already_exists` |
 | `7` | Database schema is **newer** than this binary supports. | `schema_version_ahead` |
 | `8` | **Worktree-gate refusal**: a planning verb was run from inside a git worktree. Outside the `domain_error_kind` bucket table entirely — `planar.cmd.planar.worktree_gate` returns it directly, before the parser even runs, so it fires even when the invocation's flags would also fail to parse. `--scope` does not bypass it. | `planar.cmd.planar.worktree_gate::check` |
-| `10` | **Update available** — not a failure. Only `planar update --check` returns it, when the installed release differs from the latest one (see [Domain: `update`](#domain-update)). Outside the `domain_error_kind` table; the handler returns it through `passthrough_code`. No other verb returns 10 of its own (`workflow run` passes a workflow's own status through verbatim). | `planar update --check` |
+| `10` | **Update available** — not a failure. Only `planar update --check` returns it, when the installed release differs from the latest one (see [Domain: `update`](#domain-update)). Outside the `domain_error_kind` table; the handler returns it through `passthrough_code`. No other verb returns 10 of its own. | `planar update --check` |
 | `64` | Handler is **not implemented** — a placeholder verb. NOT `EX_USAGE`. | `not_implemented` |
 | `130` | **Interrupted by `SIGINT`** (128 + 2): a plain `planar update` caught it before its installer hand-off, removed its download directory and released the mutation lock. Outside the `domain_error_kind` table, through `passthrough_code`. | `planar update` |
 | `143` | **Interrupted by `SIGTERM`** (128 + 15), as for `130`. | `planar update` |
 
 **Usage errors exit `2`, not `64`.** An unknown flag, a missing required
 positional and a missing flag value are all `parse_error` on this binary. This
-is oracle-matched: 536 pinned refusals in
-`scripts/parity-data/6316-refusal-differential.jsonl` agree on `2` for those
-arms. `64` is reserved for a verb whose handler does not exist yet.
+is pinned by the CLI parity tests. `64` is reserved for a verb whose handler does not exist yet.
 
 ### The code for a usage error depends on WHICH BINARY
 
@@ -112,7 +110,7 @@ Exit codes:
   ...
 ```
 
-Both sections come from the same table as the `docs.examples` and `docs.exitCodes` arrays of the `schema` catalog (`docs.exitCodes` holds `{"code":N,"meaning":"..."}` objects), so the page and the catalog cannot disagree; `planar schema --command "planar task update"` prints the data. A group such as `planar task` has no sections and `"examples":[]`. The table lives in each binary's `docs.cppm` (`src/cmd/<binary>/docs.cppm`) beside its summary table, and a leaf lists only the codes its handler can return, in ascending order. `planar` and `planar-agent` leaves other than `schema`, `completion`, `version` and `help` each carry at least one example. `planar-execute` publishes its exit codes and examples in `schema` only, because its usage banner is hand-written. `make cli-usage-check` validates every `docs.examples` entry against the live catalogs the same way it validates the invocations in these documents, and reports how many it checked.
+Both sections come from the same table as the `docs.examples` and `docs.exitCodes` arrays of the `schema` catalog (`docs.exitCodes` holds `{"code":N,"meaning":"..."}` objects), so the page and the catalog cannot disagree; `planar schema --command "planar task update"` prints the data. A group such as `planar task` has no sections and `"examples":[]`. The table lives in each binary's `docs.cppm` (`src/cmd/<binary>/docs.cppm`) beside its summary table, and a leaf lists only the codes its handler can return, in ascending order. `planar` and `planar-agent` leaves other than `schema`, `completion`, `version` and `help` each carry at least one example. `make cli-usage-check` validates every `docs.examples` entry against the live catalogs the same way it validates the invocations in these documents, and reports how many it checked.
 
 ### Error envelope tags — one vocabulary per binary (task 6902)
 
@@ -185,7 +183,6 @@ the install manifest's `build_id`.
 
 Each accepts `version --json`, which emits `release`, full `sha`, `date`,
 boolean `dirty`, and `compiler`. Version queries do not open the database.
-`planar-execute` has no version verb.
 
 ## Top-Level Usage
 
@@ -193,7 +190,7 @@ boolean `dirty`, and `compiler`. Version queries do not open the database.
 planar [GLOBAL FLAGS] <subcommand> [subcommand args]
 ```
 
-**Bare invocation.** When `planar` is called with no subcommand it prints the root help/usage text and exits 0, on a TTY or otherwise. There is no interactive terminal interface: `planar explore` is a reserved leaf that currently prints its own help page and exits 0 — see [Domain: `explore`](#domain-explore).
+**Bare invocation.** When `planar` is called with no subcommand it prints the root help/usage text and exits 0, on a TTY or otherwise. There is no interactive terminal interface in `planar`; the interactive agent view is `planar-watch`.
 
 ### Global Flags
 
@@ -211,7 +208,7 @@ Global flags must appear before the subcommand. They are not repeated in per-com
 
 ## Cross-scope guard
 
-The cross-scope guard is a refusal mechanism that runs at the top of ten specific verbs — those that walk from a parent entity to derived rows, or mutate one existing entity in a way the audit judged worth guarding (see [Guarded verbs](#guarded-verbs); it is NOT on every mutating verb). It is layered on top of the strict write-scope resolver described in [Scope Shorthand](#scope-shorthand): the resolver picks the operator's intended scope; the guard then compares that against the *target entity's* stored `(scope_kind, scope_id)` and refuses if they disagree. See [docs/concepts.md § Cross-scope guard](./concepts.md#cross-scope-guard) for the conceptual model.
+The cross-scope guard is a refusal mechanism that runs at the top of seven specific verbs — those that walk from a parent entity to derived rows, or mutate one existing entity in a way the audit judged worth guarding (see [Guarded verbs](#guarded-verbs); it is NOT on every mutating verb). It is layered on top of the strict write-scope resolver described in [Scope Shorthand](#scope-shorthand): the resolver picks the operator's intended scope; the guard then compares that against the *target entity's* stored `(scope_kind, scope_id)` and refuses if they disagree. See [docs/concepts.md § Cross-scope guard](./concepts.md#cross-scope-guard) for the conceptual model.
 
 ### Resolution → guard pipeline
 
@@ -237,7 +234,7 @@ The refusal is a multi-line message naming both scopes and listing three remedia
        Refusing cross-scope write without explicit operator intent
 ```
 
-The exit code is `5` (`domain_error_kind::scope_mismatch`) — the same code as the ambiguous-workspace-root refusal described in [Scope in `docs/concepts.md`](./concepts.md#scope) — see e.g. `spec ingest --apply`'s and `feedback triage set`'s refusal messages, both worded "Refusing cross-scope write; pass --scope \<slug\> or cd into the right repo." An unresolvable `--scope` slug (`SlugNotFound`) is the only scope-related failure that exits `1`. No database writes occur before either refusal.
+The exit code is `5` (`domain_error_kind::scope_mismatch`) — the same code as the ambiguous-workspace-root refusal described in [Scope in `docs/concepts.md`](./concepts.md#scope) — see e.g. `spec ingest --apply`'s refusal message, worded "Refusing cross-scope write; pass --scope \<slug\> or cd into the right repo." An unresolvable `--scope` slug (`SlugNotFound`) is the only scope-related failure that exits `1`. No database writes occur before either refusal.
 
 ### No escape hatch
 
@@ -258,7 +255,7 @@ thing everywhere. Measured at task 6075:
 
 | Meaning | Effect of passing `--scope` | Verbs |
 |---------|----------------------------|-------|
-| **Write-scope selector** | Sets the operator scope the write resolves under. This is the one the guard's remedy assumes. | `plan create`, `task add`, `task update`, `artifact add`, `decision add`, `question add`, `scenario add`, `annotate add`, `closure compute`, `spec ingest`, `feedback triage set`, `audit publish-decision` |
+| **Write-scope selector** | Sets the operator scope the write resolves under. This is the one the guard's remedy assumes. | `plan create`, `task add`, `task update`, `artifact add`, `decision add`, `question add`, `scenario add`, `annotate add`, `spec ingest`, `decision accept`, `decision withdraw` |
 | **Patch field** | **Reassigns the entity's stored scope** — it moves the row. | `plan update`, `artifact update`, `annotate update` |
 | **Read filter** | Restricts which rows are listed. | `plan list`, `artifact list`, `decision list`, `question list`, `scenario list`, `annotate list`, `search`, `tree`, `dashboard`, `health` |
 | **Inert** | Accepted, parsed, discarded. | `planar-ext ext propagate` |
@@ -271,22 +268,18 @@ does not exist for them, and could not be offered without a new flag.
 
 ### Guarded verbs
 
-**Measured against the source at task 6075 (2026-09-11) and re-measured at
-task 6825 (2026-09-21), not aspirational.** Ten verbs carry a cross-scope
-check; eight `guard_with_membership` call sites implement them (`sync push`
-and `sync pull` share one; `decision accept` and `decision withdraw` share
-their transition helper). Every other mutating verb — including several this
+**Measured against the source with `grep -rn guard_with_membership src/cmd`,
+not aspirational.** Seven verbs carry a cross-scope check; five
+`guard_with_membership` call sites implement them (`sync push` and `sync pull` share one; `decision accept`
+and `decision withdraw` share their transition helper). Every other mutating verb — including several this
 table claimed for years — performs **no** scope comparison.
 
 | Verb | Guards against | Comparison | Call site |
 |------|---------------|-----------|-----------|
 | `spec ingest <plan> --apply` | `plan` | membership-aware | `src/cmd/planar/handlers/spec/command.cpp` |
-| `feedback triage set <id>` | owning entity | membership-aware | `src/cmd/planar/handlers/feedback/command.cpp` |
-| `audit publish-decision <id>` | `decision` | membership-aware | `src/cmd/planar/handlers/audit/command.cpp` |
 | `decision accept <id>` | `decision` | membership-aware | `src/cmd/planar/handlers/decision/command.cpp` |
 | `decision withdraw <id>` | `decision` | membership-aware | `src/cmd/planar/handlers/decision/command.cpp` |
 | `task update <task-id>` | `task` | membership-aware | `src/cmd/planar/handlers/task/command.cpp` |
-| `closure compute` | resolved write scope | membership-aware | `src/cmd/planar/handlers/closure/command.cpp` |
 | `planar-ext sync push <link\|kind:id>` | `plan` or `task` | membership-aware | `src/cmd/planar-ext/handlers/sync/sync.cpp` |
 | `planar-ext sync pull <link\|kind:id>` | `plan` or `task` | membership-aware | `src/cmd/planar-ext/handlers/sync/sync.cpp` |
 | `planar-ext sync resolve <event-id>` | the event's target entity | membership-aware | `src/cmd/planar-ext/handlers/sync/sync.cpp` |
@@ -301,13 +294,12 @@ accepts an entity at `repo:<project>` when the operator's write scope is an
 association that project belongs to (via `project_associations`). The reverse
 direction — operator `repo:`, entity `assoc:` — still refuses with exit 5.
 
-This was not always true. Until decision 1121 (task 6735), `task update` and
-`closure compute` called `engine::identity::check_scope_guard` directly —
+This was not always true. Until decision 1121 (task 6735), `task update`
+called `engine::identity::check_scope_guard` directly —
 strict equality after `assoc:` normalization — so an `assoc:<org>` →
 `repo:<member>` write was **accepted** by `spec ingest --apply` and
-**refused** by `task update`, from the identical working directory. Task 6075
-measured the split; decision 1121 widened those two to match the rest, on the
-grounds that strict equality could not tell "my own member repo" from "an
+**refused** by `task update`, from the identical working directory. Decision
+1121 widened `task update` to match the rest, on the grounds that strict equality could not tell "my own member repo" from "an
 unrelated repo" and refused both identically. The guard stops a write leaking
 sideways, not an association acting on its own member.
 
@@ -356,7 +348,7 @@ Initializes the Planar database and registers the current directory as a project
 planar init [--name <text>] [--slug <slug>] [--skip-project] [--allow-no-repo] [--force]
 ```
 
-**Description:** Idempotently ensure the config file exists (via `config init`), apply the embedded migration corpus (compiled into the binary at configure time from `migrations/` via `cmake/generate_migrations.cmake`) against the configured database (creating it if absent), then register the current working directory as a project if it is not already registered. Human output names the `assoc create` and `assoc add` commands that establish the project's planning scope; `--json` retains the stable initialization result shape without prose guidance. Order: ensure config → apply migrations → create project row.
+**Description:** Idempotently ensure the config file exists, apply the embedded migration corpus (compiled into the binary at configure time from `migrations/` via `cmake/generate_migrations.cmake`) against the configured database (creating it if absent), then register the current working directory as a project if it is not already registered. Human output names the `assoc create` and `assoc add` commands that establish the project's planning scope; `--json` retains the stable initialization result shape without prose guidance. Order: ensure config → apply migrations → create project row.
 
 **Workspace-shape guardrail:** when cwd has no `.git` of its own but contains one or more immediate child directories that do, `planar init` refuses with a hint pointing at `planar workspace init`. A bare init in a polyrepo workspace directory would otherwise register a semantically-wrong project row for the workspace itself. Pass `--allow-no-repo` to override and register the non-repo cwd as a standalone project anyway (`--force` is a different flag — see the options table). See [Domain: `workspace`](#domain-workspace) and [concepts.md § Workspace](concepts.md#workspace).
 
@@ -401,7 +393,7 @@ planar initialized
 
 Inspects the cwd-derived scope and proposes associations the current directory could be wired into. Scope itself is no longer managed as ambient state: it is a pure function of `(--scope flag, cwd, db schema)`. To change resolved scope, `cd` into a registered scope or pass `--scope <slug>` to the target verb.
 
-Plan 153 M5 removed the `planar scope use`, `planar scope pop`, and `planar scope clear` subcommands and dropped the underlying `active_scope` table (migration `0009_drop_active_scope.sql`). The removed verbs survive as exit-1 redirect stubs that print a one-line corrective message pointing at this section; they will be removed entirely in a future release.
+Plan 153 M5 removed the active scope stack and dropped the underlying `active_scope` table (migration `0009_drop_active_scope.sql`). The `planar scope use`, `pop` and `clear` redirect stubs were deleted in plan 1142; those words now fail as unknown subcommands at exit 2.
 
 ---
 
@@ -475,18 +467,6 @@ cd into a registered scope or pass --scope <slug> to any verb.
 
 ---
 
-### `planar scope use|pop|clear`
-
-Removed in plan 153 M5. Invoking any of these verbs prints a one-line corrective message on stderr and exits 2:
-
-```
-error: `planar scope use` was removed in plan 153 M5; the active scope stack is gone. Pass --scope <slug> to individual verbs, or cd into a registered scope. Run `planar scope show` to inspect the cwd-derived scope.
-```
-
-To switch scope: `cd` into the target project / workspace root, or pass `--scope <slug>` to the verb in question. To inspect: `planar scope show`.
-
----
-
 ### `planar scope suggest`
 
 **Synopsis:**
@@ -494,7 +474,7 @@ To switch scope: `cd` into the target project / workspace root, or pass `--scope
 planar scope suggest
 ```
 
-**Description:** Inspect the current working directory and list the associations the cwd project is a member of. Read-only — there is no ambient scope to apply suggestions to. To act on a suggestion, pass `--scope <slug>` to the target verb or `cd` into that scope. (Companion to `assoc detect`, which proposes new association *creation*; `scope suggest` proposes existing associations the cwd qualifies for.)
+**Description:** Inspect the current working directory and list the associations the cwd project is a member of. Read-only — there is no ambient scope to apply suggestions to. To act on a suggestion, pass `--scope <slug>` to the target verb or `cd` into that scope. `scope suggest` proposes existing associations the cwd qualifies for.
 
 **Output (human):**
 ```
@@ -678,43 +658,6 @@ members of org:acme (3):
 
 ---
 
-### `planar assoc detect [--apply]`
-
-**Synopsis:**
-```
-planar assoc detect [--apply] [--json]
-```
-
-**Description:** Inspect the current working directory's git remote host/org and parent path, then propose new association slugs using the conventional auto-tag rules (`host:`, `org:`, `path:`, `lang:`). Without `--apply`, prints proposals only. With `--apply`, creates proposed associations that do not already exist and adds the current project to them.
-
-**Options:**
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--apply` | Create proposed associations and add current project. | off |
-
-**Output (human):**
-```
-proposed associations:
-  host:github.com   (from git remote host)  [will create]
-  org:rdrsss        (from git remote org)   [already exists, will add]
-  path:projects     (from parent dir)        [will create]
-```
-
-**Schema effects (without `--apply`):** Reads only. No writes.
-**Schema effects (with `--apply`):**
-- Inserts into `associations(slug, name, kind, auto_detected=1)` for each new association.
-- Inserts into `project_associations(project_id, association_id, source='auto:git-remote' | 'auto:path' | 'auto:lang')`.
-
-**Capture:** None.
-
----
-
-## Domain: `plan`
-
-Plans are the top-level structured intent for a body of work. They may be hierarchical (via `parent_plan_id`) and contain ordered steps (`plan_steps`) that optionally materialize as tasks.
-
----
 
 ### `planar plan create <title>`
 
@@ -1035,7 +978,7 @@ planar plan next <plan-id> [--include-claimed] [--include-stale] [--json]
 | `stale` | Task has a `stale` claim, or an `active` claim whose lease has expired without a reconcile pass. |
 | `blocked` | Task status `blocked`, OR a `todo`/`doing` task carrying an outbound `depends-on` edge (`entity_links`) to a task whose status is not `done`/`cancelled`. |
 
-Applies the SAME dependency-exclusion clause `planar-agent pull`/`peek` apply (task 6841 / decision D6): a task with an open `depends-on` blocker never lands in `available`. This is a distinct query from `pull`/`peek`'s selector — not literally shared code — but the two agree on which rows are dispatchable, so an operator reading `plan next` sees the same eligibility an agent's `pull`/`peek` would (task 6898). `plan next` additionally folds a routing-packet-readiness gate into `blocked` that `pull`/`peek` do NOT apply (they exclude on the dependency clause only, per D6). This is the operator's read surface; agents call `planar-agent peek` / `pull`. There is no `planar agent` subcommand by design — agent observability lives on `planar-watch` (M8) and ritual writes live on `planar-agent`.
+Applies the SAME dependency-exclusion clause `planar-agent pull`/`peek` apply (task 6841 / decision D6): a task with an open `depends-on` blocker never lands in `available`. This is a distinct query from `pull`/`peek`'s selector — not literally shared code — but the two agree on which rows are dispatchable, so an operator reading `plan next` sees the same eligibility an agent's `pull`/`peek` would (task 6898). `plan next` additionally folds the task packet's coordination readiness (see [`task packet`](#planar-task-packet-task-id)) into `blocked`: a task with an `open` linked question or a `proposed` linked decision, or a dependency the claim-aware clause did not see, is `blocked` here, and a task with no artifacts, scenarios or body is not. `pull`/`peek` do NOT apply that gate (they exclude on the dependency clause only, per D6). This is the operator's read surface; agents call `planar-agent peek` / `pull`. There is no `planar agent` subcommand by design — agent observability lives on `planar-watch` (M8) and ritual writes live on `planar-agent`.
 
 **Options:**
 
@@ -1072,7 +1015,7 @@ Applies the SAME dependency-exclusion clause `planar-agent pull`/`peek` apply (t
 
 **Synopsis:**
 ```
-planar plan recommend-strategy <plan-id> [--json] [--closure-source declared|derived]
+planar plan recommend-strategy <plan-id> [--json]
 ```
 
 **Description:** Read-only execution-strategy recommender. Computes the parallel-eligible subset of a plan's open (`todo`) tasks by applying the six parallel-eligibility rules and reports the eligible subset plus the serialized remainder with per-task exclusion reasons. This is the single source of truth for parallelizability (decision 370) consumed by the orchestrator and the parallel-fan-out gate; the rules are not re-derived elsewhere. Writes nothing.
@@ -1090,18 +1033,22 @@ Two open tasks are parallel-eligible iff **all six** hold:
 
 A task may be excluded by multiple rules; every rule it trips is listed in `excluded_by`.
 
+Rules 5 and 6 use the same predicates as the `open_question_linked` and `proposed_decision_linked` reasons of [`task packet`](#planar-task-packet-task-id), so the two cannot disagree about a link. A task that passes the rules is then checked against its packet; one whose packet is not ready (for example a dependency in another plan, which rule 1 does not walk) is excluded with `"excluded by rule 7: task packet is not ready"`. The packet needs no artifact, scenario or body, so a hand-made task is not excluded by rule 7.
+
 **Options:**
 
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--json` | Emit JSON instead of text. | off |
-| `--closure-source declared\|derived` | Rule-2 overlap signal: `declared` (default, `task_touches`) or `derived` (computed closure). | `declared` |
+
+Rule 2 reads declared touches only. There is no source flag; `--closure-source` is an unknown option (exit 2).
 
 **JSON shape:**
 
 ```json
 {
   "plan_id": 12,
+  "closure_source": "declared",
   "parallel_eligible": [ { "id": 1, "slug": null, "title": "..." } ],
   "serialized": [
     { "id": 5, "slug": null, "title": "...",
@@ -1505,13 +1452,13 @@ planar task update <task-id> [--title <text>] [--body <text>] [--status <status>
 | `--next-action <text>` | Update the next concrete action. | unchanged |
 | `--due <date>` | Update due date. | unchanged |
 | `--plan <plan-id>` | Move task to a different plan (or `none` to detach). | unchanged |
-| `--force` | Bypass the active-claim guard (see **Claim-atomic guard** below) AND the status-transition matrix. Required to move a `done` / `cancelled` task back to a non-terminal status without going through `task reopen`; the transition is recorded in `task_reopens` with `source='task-update-force'`. Prefer `task reopen <id>` for the documented recovery path. | off |
+| `--force` | Bypass the active-claim guard (see **Claim-atomic guard** below) AND the status-transition matrix. Required to move a `done` / `cancelled` task back to a non-terminal status without going through `task reopen`; the transition is recorded in `task_reopens` with `source='task-update-force'`. Prefer `task reopen <id>` for the documented recovery path. When it sets `done`, the `audit_log` row says `done (--force)`, which `planar health conformance` lists as an override. | off |
 | `--reason <text>` | Operator-supplied rationale recorded on the `task_reopens` audit row when `--force` triggers a terminal → non-terminal transition. | empty |
 | `--no-auto-promote` | Skip the [plan-status auto-promotion invariant](concepts.md#plan) (plan 304) for this operation. Escape hatch for scripted migrations that don't intend the plan-level transition. | off |
 | `--editor` | Accepted as a no-op. The editor-driven path is `task edit`; this flag exists so scripts that pass `--editor=false` alongside other flags (e.g. copied from `task add` invocations) are not rejected with `UnknownFlag`. | off |
 | `--slug <slug>` | Replace the task's slug. `tasks.slug` is globally unique. | none |
 
-**Claim-atomic guard:** When `--status` is supplied and the task has an active work claim (`agent_work_claims.status='active'` and lease not yet expired), the status flip is refused with exit code `1` and a message identifying the active claim. This prevents an operator `task update --status done` from stranding a live agent lease. Pass `--force` to override and flip the status anyway — use this only when you know the agent is no longer working the task (e.g. it crashed without releasing the claim).
+**Claim-atomic guard:** When `--status` is supplied and the task has an active work claim (`agent_work_claims.status='active'` and lease not yet expired), the status flip is refused with exit code `1`, nothing is written, and the message names the claim's token and the command that would succeed: `error: task <id> is claimed (token <token>); finish it with: planar-agent complete --claim <token> (or fail|release|block), or pass --force to override`. This prevents an operator `task update --status done` from stranding a live agent lease. Pass `--force` to override and flip the status anyway — use this only when you know the agent is no longer working the task (e.g. it crashed without releasing the claim).
 
 **Schema effects:** Updates `tasks(title, body, status, priority, next_action, due_at, plan_id, updated_at)`. When `--force` triggers a terminal → non-terminal transition, also inserts into `task_reopens(task_id, from_status, to_status, source='task-update-force', reason)`.
 
@@ -1536,13 +1483,13 @@ planar task done <task-id> [--force] [--json]
 
 **Scope guard:** NONE. `task done` declares `--scope` and never reads it; the flag is inert here and no comparison is made. See [Cross-scope guard](#cross-scope-guard).
 
-**Claim-atomic guard:** Refuses if the task has an active work claim. The agent path (`planar-agent complete`) is the correct way to close out a claimed task. Pass `--force` to override and mark done anyway — use this only when the agent is known to be no longer active.
+**Claim-atomic guard:** Refuses if the task has an active work claim, exit `1`, writing nothing. The message names the claim's token and the command that would succeed: `error: task <id> is claimed (token <token>); finish it with: planar-agent complete --claim <token> (or fail|release|block), or pass --force to override`. Pass `--force` to override and mark done anyway — use this only when the agent is known to be no longer active.
 
 **Options:**
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--force` | Override the active-claim guard and mark the task done regardless of any live claim. | off |
+| `--force` | Override the active-claim guard and mark the task done regardless of any live claim. The `audit_log` row says `done (--force)`, which `planar health conformance` lists as an override rather than a violation (the same for `task update --status done --force`). | off |
 
 **Schema effects:** Updates `tasks(status='done', updated_at)`.
 
@@ -1562,11 +1509,11 @@ planar task done <task-id> [--force] [--json]
 planar task reopen <task-id> [--status todo|doing|blocked] [--reason <text>] [--scope <slug>] [--force] [--json]
 ```
 
-**Description:** Reopen a task currently in a terminal status (`done` or `cancelled`). The dedicated recovery path for wrongly-marked tasks — see [`import`](#planar-import-repo-root) for the producer of the most common false-done case. Refuses if the task is not in a terminal status; use `task update --status <s>` for ordinary transitions.
+**Description:** Reopen a task currently in a terminal status (`done` or `cancelled`). The dedicated recovery path for wrongly-marked tasks. Refuses if the task is not in a terminal status; use `task update --status <s>` for ordinary transitions.
 
 **Scope guard:** NONE. `task reopen` declares `--scope` and never reads it; the flag is inert here and no comparison is made. See [Cross-scope guard](#cross-scope-guard).
 
-**Claim-atomic guard:** Refuses if the task has an active work claim. Pass `--force` to override.
+**Claim-atomic guard:** Refuses if the task has an active work claim, with the same message as `task done` (claim token and the `planar-agent` terminal verb that would succeed). Pass `--force` to override.
 
 **Options:**
 
@@ -1601,7 +1548,7 @@ planar task block <task-id> --on <task-id> [--force] [--json] [--reason <text>]
 
 **Scope guard:** NONE. `task block` declares `--scope` and never reads it; neither endpoint is compared. See [Cross-scope guard](#cross-scope-guard).
 
-**Claim-atomic guard:** Refuses if the task being blocked has an active work claim. Pass `--force` to override.
+**Claim-atomic guard:** Refuses if the task being blocked has an active work claim, with the same message as `task done`. Pass `--force` to override.
 
 **Options:**
 
@@ -1647,45 +1594,55 @@ planar task link <task-id> <to-kind:to-id> --relationship <kind> [--json] [--sco
 
 ---
 
-### `planar task facts stage <task-id>`
+### `planar task packet <task-id>`
 
 **Synopsis:**
 ```
-planar task facts stage <task-id> [--json]
+planar task packet <task-id> [--json]
+planar task packet <task-id> --expand <ref> [--json]
 ```
 
-**Description:** Rebuild one task's routing facts (`routing_task_facts`) under **operator** provenance, then report the resulting packet.
+**Description:** Compile the current packet for a task: its text, owning plan, dependencies, open questions, proposed decisions, claims and the references it cites, with a `ready` verdict and the named `reasons` when it is not ready. `ready: false` is a stop for an agent about to take the task.
 
-`planar spec ingest --apply` is the only other writer of routing facts, and it rebuilds every task below an anchor plan. That left two gaps this verb closes (task 6048, decision 1102):
+**Readiness covers coordination facts only.** A task is ready when it is claimable, unblocked, its citations resolve and no open question or proposed decision is linked to it. A task created with `task add` and nothing else is ready: spec documents, the task's body, test scenarios, touches and validation sections never affect `ready`. `task packet` takes no caller, so a live claim always makes the task not ready. `reasons` are emitted in this fixed order, each at most once; read a reason by name, never by position.
 
-- a hand-filed task — one created with `planar task add` rather than materialized from a roadmap bullet — could never obtain routing facts at all, so `planar task packet` reported `missing_acceptance_fact` / `missing_next_action_fact` and the four `missing_*_spec` reasons permanently;
-- editing a task body moves the acceptance section's digest, which strands the facts ingest staged from it. The task becomes `stale_fact` with no operator-reachable way to restage short of re-ingesting the whole anchor plan.
+| Reason | Fires when |
+|--------|------------|
+| `missing_title` | The title is blank. |
+| `invalid_task_status` | The task is not claimable: it is not `todo` or `doing`, or it is held by a live claim. A `doing` task whose claim is stale or expired, or that has none, is claimable (recovery). |
+| `missing_owning_plan` | The task has no plan. |
+| `unresolved_citation` | A cited artifact has no digest or is not `active`, `draft` or `ready`. |
+| `blocked_by_open_task` | A `depends-on` link from the task reaches a task that is not `done` or `cancelled`. |
+| `open_question_linked` | A question linked to the task, in either direction, is `open` (the condition of [`recommend-strategy`](#planar-plan-recommend-strategy-plan-id) rule 5). |
+| `proposed_decision_linked` | A decision linked to the task, in either direction, is `proposed` (rule 6). |
 
-Facts are derived through the **same predicates** the plan-wide pass uses, so an operator-staged fact and an ingest-staged one agree on what they mean. They are stamped `operator-v1` rather than `spec-ingest-v1`, so provenance stays legible in the row and in `task packet --json`.
+Each clears when its cause is resolved: the dependency is done or cancelled, the question answered or won't-fix, the decision accepted, withdrawn or superseded. `plan next` and `recommend-strategy` (rule 7) read this same verdict.
 
-**Staleness is not traded away.** `packet` accepts both materializer versions, but the digest comparison is unchanged: an operator-staged fact goes stale the moment its source text changes, exactly as an ingest-staged one does. A fact that could never go stale would be a weaker contract, and is deliberately not what this verb produces.
-
-**Citations are resolved, never invented.** A `cited_artifact_section` fact is staged only for an artifact the task *already* cites through an `entity_links` edge **and** references explicitly in its body as `artifact:<id>#Section`. A BARE locator of that form runs to end-of-line but stops at the first `,`, `)` or `]` — each of which ends a real writing pattern (`(see artifact:5#Overview)`, `see artifact:5#Overview, which ...`). To cite a heading that CONTAINS one of those characters, wrap the whole locator in brackets: `[artifact:<id>#File-level tree (operator-approved)]` suppresses the `,` and `)` stops and ends at the matching `]` (nesting counted). An unmatched `[` falls back to the bare scan (task 6760, decision 1124). An artifact cited without a resolvable locator is reported as a diagnostic naming the task, the artifact, the section asked for, and the sections that artifact actually has — and **nothing is staged** in that case.
-
-**Scope:** strictly one task. The delete that precedes the rewrite is keyed on `task_id`, so staging one task never discards a sibling's ingest-materialized facts.
+The packet holds no cited text and no routing fact. Each artifact the task `cites` (an `entity_links` row, task to artifact) is a **reference**: `ref` (`artifact:<id>`), `kind` (the artifact's kind), `id`, `locator` (`body`, the whole artifact), `digest` (SHA-256 over the artifact's identity and body, `source_digest("artifact", id, "body", body)`), `label` (its title) and `status`. The digest is read live, so editing a cited artifact moves the reference digest and the packet digest, and never the verdict. A packet for a task that cites four large artifacts is under 16 KB as text.
 
 **Arguments:**
 
 | Argument | Description |
 |----------|-------------|
-| `<task-id>` | Task whose facts are rebuilt (required). |
+| `<task-id>` | The task to compile (required). |
 
 **Options:**
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--json` | Emit the resulting routing packet as JSON, identical in shape to `task packet --json`. | off |
+| `--json` | Emit the packet envelope, or with `--expand` the expansion object, as JSON. | off |
+| `--expand <ref>` | Print one cited artifact (`artifact:<id>`) or one section of it (`artifact:<id>#<heading>`) and nothing else. The heading match is case-insensitive and a section runs to the next heading of the same or shallower level. | none |
 
-**Output:** text mode prints the provenance stamp, whether the packet is now ready, and — when it is not — the readiness reasons that remain. Reporting the post-state rather than a bare success is deliberate: the operator's question is whether the task is dispatchable now, and the packet is the only authority on that.
+**Output:** text mode prints `task packet <id>: ready|not_ready`, the `digest:`, a `reasons:` block when not ready, a `references (expand one with: ...)` block listing `- <ref> <12-character digest> <label>` per citation, and the canonical body. `--json` prints `{"policy_version","ready","input","digest","reasons"}`; `policy_version` is `routing-packet-v3`, and two packets are comparable only under the same one. `input` holds `task_id`, `status`, `title`, `body`, `next_action`, `owning_plans`, `references`, `dependencies`, `open_questions`, `proposed_decisions` and `claims`. `input.references` is an array of `{"ref","kind","id","locator","digest","label","status"}` in kind-then-id order. Every other `input` array holds evidence rows `{"kind","id","locator","text","display_label","source_digest","current_digest","status","provenance"}`; a row has no `required`, `covered`, materializer-version or `freshness` field. The `digest` is SHA-256 over the canonical body, which is the packet without any `display_label` or reference `label`, so renaming an entity changes the printed packet and not its digest. `input` has no `citations` or `facts` array and the envelope has no `canonical` copy.
 
-**Exit codes:** `0` on success (including a successful stage that leaves the packet unready — that is a real answer). `1` when the task id does not exist, and `1` for an unresolvable citation, matching `spec ingest --apply` for the identical condition. `2` for a non-integer id.
+With `--expand`, text mode prints the section, or the whole body without a fragment, followed by a newline. `--json` prints `{"ref":"<ref as given>","digest":"<64 hex>","text":"<section>"}`. The `digest` of a whole-artifact expansion equals the reference's `digest`.
 
-**Schema effects:** Deletes and reinserts `routing_task_facts` rows for `<task-id>` only, inside one immediate transaction.
+**Exit codes:**
+- `0` — a packet was compiled (including an unready one), or the reference was expanded.
+- `1` — the task does not exist; with `--expand`, the reference is not among the task's `cites` links (`error: task packet: unknown reference artifact:99 for task 12`), is malformed, or names a heading the artifact does not have.
+- `2` — a non-integer id.
+
+**Schema effects:** none. Read-only.
 
 ---
 
@@ -1721,7 +1678,7 @@ planar task touches add <task-id> <repo-slug> [--path <p>] [--scope <scope>]
 ```
 (`path` is `null` for a repo-level add.)
 
-**Advisory — association-less repo.** If the named repo belongs to **no association**, a warning is printed to stderr (naming a same-basename alternative when one exists) and the write proceeds. This is not a scope check: link verbs are [deliberately unguarded](concepts.md#cross-scope-guard) because a touches edge to a repo in a *different* association is the legitimate polyrepo workflow. A repo in *no* association is different — nothing can reach it, so it is nearly always a stale duplicate slug chosen over the live one. Declarations on such a repo still compute eligibility correctly (rule 2 compares `(repo_id, path)` tuples and never reads the filesystem), but closure extraction reads `projects.root_path`, so seeds resolve against the wrong checkout and unreadable files are skipped silently.
+**Advisory — association-less repo.** If the named repo belongs to **no association**, a warning is printed to stderr (naming a same-basename alternative when one exists) and the write proceeds. This is not a scope check: link verbs are [deliberately unguarded](concepts.md#cross-scope-guard) because a touches edge to a repo in a *different* association is the legitimate polyrepo workflow. A repo in *no* association is different — nothing can reach it, so it is nearly always a stale duplicate slug chosen over the live one. Declarations on such a repo still compute eligibility correctly (rule 2 compares `(repo_id, path)` tuples and never reads the filesystem).
 
 **Schema effects:** Inserts into `entity_links(from_kind='task', from_id=<task-id>, to_kind='repo', to_id=<repo-id>, relationship='touches')`; with `--path`, also inserts `task_touch_paths(task_id=<task-id>, repo_id=<repo-id>, path=<p>)`.
 
@@ -4751,14 +4708,6 @@ SHA                                       session  claim  committed_at          
 
 ---
 
-### `planar audit publish-decision <decision-id> [--scope <slug>] [--json]`
-
-**Description:** Post a decision's body to every operational-plane target reachable from that decision's external links — the bridge that pushes a recorded local decision out to the linked Jira issue / GitHub issue as a comment. Subject to the cross-scope guard (the decision's scope must agree with the operator's, or pass `--scope`).
-
-**Schema effects:** Reads `decisions`, `entity_links`, `external_links`, and `external_systems`; updates each attempted link's last-sync state and inserts a `sync_events` row. Performs outbound HTTP to each linked system.
-
----
-
 ### `planar audit handoff-readiness [--threshold <n>] [--json]`
 
 **Description:** Check resume-readiness across all in-flight tasks at once — the fleet-wide companion to `resume validate`. Reports which tasks would resume cleanly and which are missing a next action or capture context. `--threshold` tunes the staleness cutoff.
@@ -4904,6 +4853,100 @@ this stable shape:
 Findings do not affect process status: a successfully produced hygiene report
 always exits `0`. Invalid flags, thresholds, scopes, or database failures remain
 ordinary command errors.
+
+### `planar health conformance`
+
+```text
+planar health conformance <plan-id> [--scope <slug>] [--floor <claim-id>] [--json]
+```
+
+Grades the recorded trail of one plan against the coordination rules and
+changes nothing. The trail is read for the plan, its descendant plans, their
+tasks and the claims taken on them, so the grade is the same whichever
+orchestrator, vendor or prompt produced the work. `<plan-id>` is a plan id.
+
+| Rule | Name | Violation |
+|------|------|-----------|
+| 1 | `completed-claim` | A `done` task has no claim that ended `completed`. A task whose trailing run of done status changes holds `task done --force` or `task update --status done --force` is an override, even if a no-op `task done` followed it: it is listed apart and does not fail the verb, and its line says whether a claim was live when it was forced (`forced, no live claim`, or `a claim was live at the time`). A `task reopen` or any other status change ends the run, so a later plain `done` makes it an ordinary done task again. |
+| 2 | `terminal-verb` | A claim ended `stale`, or is still `active` past its lease expiry. The second half reads the clock, so the same database can pass now and fail later. A live `active` claim is work in progress. |
+| 3 | `coder-model` | Under `require_model`, a `coder` claim records no model, or an empty one. |
+| 4 | `parent-action` | Graded only where an orchestration is visible in the plan tree: some claim has the role `orchestrator`, or some claim has a parent action. Then every claim with a role other than `orchestrator` must have a root action (its first non-review action) under a parent action. A child that the claim's own worker nests under its root with `planar-agent action start` does not count, nor does a parent that belongs to the same claim. A claim with no role is never graded, and a tree with no orchestration (a solo session that pulls its own work) grades no claim on this rule. A `review` row does not count; it is about the claim. |
+| 5 | `queued-gate` | Only when `use_queue` and a `task_gate` are both set (`use_queue` alone grades nothing), a completed task claim has no passing queued run of exactly the gate argv, carrying its token, in its repository root or worktree. The test is the one `planar-agent complete` applies. |
+| 6 | `independent-review` | Under `review_required`, a completed task claim has no approving review from another session. The test is the one `complete` applies: the latest review decides, and a review row with no verdict is never a review. |
+
+The policy is the effective policy of the plan's scope, resolved from
+`config.toml` exactly as `claim` and `complete` resolve it (an association's
+table over the top-level table over the default, no environment override). A
+claim records only the digest of the policy it ran under, so rules 3, 5 and 6
+grade a claim when its digest equals the current policy's, or when it recorded
+none. A claim whose digest differs ran under a policy that cannot be
+reconstructed: it is graded on rules 1, 2 and 4 only, and listed under
+`policy_changed` (the text output prints it as `graded without the policy
+rules`). The digest covers every policy key, including the display-only
+`confirm_before` and `require_scenario_coverage`, so editing either of them
+also moves every earlier claim into `policy_changed` and exempts it from rules
+3, 5 and 6; keep those two keys steady across a plan, or read `policy_changed`
+as "not graded on the policy rules". A `config.toml` whose policy cannot be
+applied refuses the verb (exit 1, nothing graded).
+
+**The floor.** History from before the first release that carries this check
+never fails; it is counted and reported on its own line (`before the floor: N
+claims, M done tasks`). The cut-over is a claim id, the floor: claims with a
+lower id are before it. A task has no claim id, so the floor carries a time as
+well, and a done task that became done before it is before the floor (the time
+is that of the first status change in the task's trailing run of `done` changes,
+so neither a later edit nor a no-op `task done` on an old done task brings it
+back; a task whose latest status change is not a `done`, such as one finished
+by `planar-agent complete` after a `task block`, uses its `updated_at`). By default
+both come from the database, so the default works on every install: the time
+is when migration `00042` was applied (`schema_migrations.applied_at`) and the
+floor is the lowest claim id claimed at or after it, or one past the highest
+id when there is none. When no row records migration 42, the floor is the lowest
+claim that recorded a policy digest. `--floor <claim-id>` replaces the default:
+claims with that id or higher are graded, and done tasks that became done since
+the first of them; a floor of 1, or one at or below the lowest claim id, grades
+everything. `--floor` must be at least 1 (exit 2).
+
+`--scope <slug>` is a read filter: the plan must be in that scope, an
+association also covering the repositories that belong to it, otherwise the
+verb exits 1 without grading. A global plan is in scope `global`.
+
+Text output opens with a `conformance: plan N (K plans graded)` line, a `floor:`
+line (the floor claim, its origin and the cut-over time) and a `graded:` line,
+then lists the violations (rule number and name, the entity and its id, the
+claim token's first eight characters and what it holds, one line of reason),
+then the overrides, then any claims that are `graded without the policy rules
+(policy changed since the claim)`, then the before-the-floor line. `--json`
+carries the same facts:
+
+```json
+{
+  "plan_id": 12, "plans": 3, "conforms": false,
+  "floor": { "claim_id": 4021, "origin": "migration", "cut_at": "2026-10-12T09:30:00.000Z" },
+  "graded": { "claims": 18, "done_tasks": 9 },
+  "violations": [{
+    "rule": 2, "name": "terminal-verb", "entity_kind": "claim", "entity_id": 4030,
+    "claim_token": "9f1c...", "claimed_entity": "task:311",
+    "reason": "claim ended stale: its lease lapsed and no terminal verb ran"
+  }],
+  "overrides": [{ "task_id": 305, "reason": "operator moved the task to done with --force (audit row 88112 at 2026-10-13T11:02:41.118Z)" }],
+  "policy_changed": [],
+  "before_floor": { "claims": 40, "done_tasks": 12 }
+}
+```
+
+`origin` is `migration`, `digest` or `explicit`; `cut_at` is `null` when
+nothing is graded and `""` when everything is.
+
+**Exit codes:**
+- `0` — the trail broke no rule.
+- `1` — at least one violation (the report is written first), or the plan, its
+  scope or its policy could not be read. The two share the code; the JSON
+  report on stdout is what tells them apart (a refusal prints no report and
+  names the cause on stderr), and a program should check for it rather than
+  trust the exit code alone.
+- `2` — a plan id that is not an integer, or a `--floor` below 1.
+- `7` — the database schema is ahead of this build.
 
 ---
 
@@ -5188,6 +5231,11 @@ tables `planar-agent` and `planar-ext` write) and then lists every top-level com
 
 `planar help` takes no arguments. Per-node help stays on the flag: `planar <subcommand> [<sub-subcommand>] --help`
 for a group or leaf. Trailing words are not interpreted: `planar help task` prints the root page, not `task`'s.
+That is the one place a second root verb is tolerated, and only when `help` is the first word. A root verb
+(`help`, `version`, `update`, `init` and the rest) typed as a trailing word after a group or leaf, such as
+`planar task help` or `planar plan list version`, is refused as a parse failure at exit 2 with
+`error: planar: The following argument was not expected: <word>`, listing only the misplaced word and any
+words after it.
 `help` is a leaf in the `planar schema`
 catalog. The text is rendered by Planar's own help renderer in `src/lib/cliapp/` (decision 948: CLI11 handles
 tokenization and value coercion only, because the help text is a pinned surface).
@@ -5196,6 +5244,7 @@ tokenization and value coercion only, because the help text is a pinned surface)
 
 **Exit codes:**
 - `2` — the node the flag was attached to does not exist (`planar plan nosuch --help` prints `plan`'s help and exits 0, because CLI11 stops at the last valid node; `planar plan nosuch` without `--help` exits 2).
+- `2` — a root verb typed as a trailing word after a group or leaf (`planar task help`); `planar help task` is exempt and exits 0.
 
 ---
 
@@ -5213,13 +5262,15 @@ Planning pipeline spec commands for decomposing workbench planning documents int
 planar spec ingest <plan> [--apply] [--apply-removals] [--format text|json] [--json] [--scope <scope>] [--strict]
 ```
 
-**Description:** Read `tech-spec.md`, `roadmap.md`, and (when present) `test-spec.md` from the anchor plan's workbench directory, compute the proposed diff against the current database state, and (optionally) commit additions and updates.
+**Description:** Read the anchor plan's workbench artifacts, compute the proposed diff against the current database state, and (optionally) commit additions and updates. The work list is required: it is the `roadmap` artifact, or, when the anchor has no roadmap, the single artifact whose body holds `##` milestones with task bullets. With no such artifact the command refuses with `no work list`; with two or more and no roadmap it refuses as ambiguous. Decisions (`### <title>` under `## Decisions`) and open questions (`### <title>` under `## Open Questions`) are read from every artifact on the anchor, whatever its kind, and so are scenarios (`### Scenario:` under `## Scenarios`, with `**Verifies:**`). A title that appears in two artifacts is refused, because each row is keyed by its title. A `tech_spec` is not required.
 
 Default mode is **preview**: prints a tree-shaped diff and exits 0 without applying graph changes. `--apply` is required to commit changes.
 
 Apply mode is atomic per anchor plan. All derived rows for one anchor plan run inside one SQLite savepoint: child plans, tasks, decisions, test scenarios, links, optional removals, the anchor `draft` -> `active` flip, and the successful action audit either all commit or all roll back. A failed apply leaves no partial derived graph for that anchor and should not require workbench cleanup. When multiple `<plan>` arguments are supplied, each anchor has its own atomic boundary; one plan may apply successfully while another rolls back, and the command exits non-zero if any plan fails.
 
-A `coverage:` line follows the totals on every run. It reports how many tasks carry a `[slug:]`, how many slug-bearing tasks are verified by at least one test-spec scenario, and any orphan scenarios whose `**Verifies:**` line failed to parse. Slug collisions are reported separately. `--strict` promotes uncovered tasks, orphan scenarios, and slug collisions into a non-zero exit.
+A `coverage:` line follows the totals on every run. It reports how many tasks carry a `[slug:]`, how many slug-bearing tasks are verified by at least one test-spec scenario, and any orphan scenarios whose `**Verifies:**` line failed to parse. Slug collisions are reported separately. `--strict` refuses (exit 2) on a slug collision, and on a reference that resolves to no task: a scenario `**Verifies:** task:<slug>` or a roadmap `[depends: <slug>]` naming a slug that no roadmap bullet declares and no task in the anchor's tree holds. Uncovered tasks and orphan scenarios are reported as `warning:` lines on stderr and do not change the exit code, unless the anchor plan's effective policy sets `require_scenario_coverage = true`: then `--strict` refuses them too (exit 2), listing every uncovered task slug and orphan scenario and ending the line with `(policy require_scenario_coverage = true)`, and writes nothing. The policy is that of the anchor plan's scope (its association's `[associations."<slug>".policy]` table, else the top-level `[policy]` table, else the default `false`), read from the `config.toml` the invocation locates (`PLANAR_CONFIG_PATH`, else the default path); no environment variable overrides it. A `config.toml` whose policy cannot be applied refuses `--strict` (exit 2) with `plan <id>: --strict refused: the policy in config.toml cannot be applied: <findings>`. A plan whose policy scope cannot be read from the database refuses `--strict` the same way (exit 2) with `plan <id>: --strict refused: the policy scope of the plan could not be read (<reason>), so its policy cannot be applied`, where `<reason>` is `the plan's scope row does not exist` or `database query failed`. A preview or `--apply` without `--strict` never reads the policy.
+
+A linked `roadmap` artifact whose workbench file is missing fails the run, preview or apply, naming the file; no other artifact stands in for it. Any other linked artifact with no workbench file is a `warning:` on a preview and a failure on `--apply`, because applying without it would drop its decisions, questions and scenarios.
 
 `<plan>` may be a numeric plan id or a plan slug.
 
@@ -5240,7 +5291,7 @@ A `coverage:` line follows the totals on every run. It reports how many tasks ca
 | `--format text\|json` | Output format. `text` prints a tree-shaped diff; `json` emits a machine-readable JSON object. The JSON object carries a `coverage` field with the same data the text mode prints. | `text` |
 | `--json` | Shorthand for `--format json`. | off |
 | `--scope <scope>` | Select operator write scope for `--apply`. Required when cwd does not resolve to a scope that covers the anchor plan. | cwd-derived |
-| `--strict` | Reject the ingest (exit 1) when any slug-bearing task has no verifying scenario, any scenario has no parseable `**Verifies:**` line, or any proposed task slug collides with a live task. | off |
+| `--strict` | Reject the ingest (exit 2) when any proposed task slug collides with a live task, or a scenario `**Verifies:**` or a roadmap `[depends:]` names a slug that resolves to no task. Slug-bearing tasks with no verifying scenario and orphan scenarios (no parseable `**Verifies:**` line) are reported as warnings and exit 0. | off |
 
 **Output (human, `--format text`):**
 
@@ -5281,8 +5332,9 @@ Run with --apply to commit; add --apply-removals to cancel proposed removals.
 ```
 
 For pre-ingest review, this JSON is authoritative even when no live task or
-scenario rows exist. A non-empty `uncovered_task_slugs`, `orphan_scenarios`, or
-`slug_collisions` array is an ingest-readiness failure.
+scenario rows exist. A non-empty `slug_collisions` array makes `--strict`
+refuse, as does an unresolved reference. Non-empty `uncovered_task_slugs` and `orphan_scenarios` arrays exit 0
+under `--strict` and are reported as warnings; review them before `--apply`.
 
 **Schema effects:**
 
@@ -5298,9 +5350,9 @@ Writes (only with `--apply`, atomically per anchor plan):
 - `plans` — inserts child plans; updates anchor plan status (`draft` → `active` on first apply).
 - `tasks` — inserts or updates tasks; cancels orphan tasks (only with `--apply-removals`).
 - `decisions` — inserts or updates decisions.
-- `questions` — inserts H3 items under tech-spec `## Open Questions`; when the first non-blank body line begins with the case-sensitive `Resolution:` token, answers the new or existing question during the same apply.
-- `test_scenarios` — inserts or updates scenarios parsed from `test-spec.md`; also auto-drafts `Verify: <task title>` scenarios for non-trivial newly added tasks (task body contains at least two bullet lines).
-- `entity_links` — inserts `derives-from` links (plan→anchor, task→plan, decision→anchor, scenario→anchor), `touches` links from roadmap `[touches: ...]` annotations (task→repo), plus `task_touch_paths` rows for entries in `<repo-slug>:<path>` or bare-`<path>` form, and `verifies` links (scenario→task).
+- `questions` — inserts H3 items under `## Open Questions` of any artifact on the anchor; when the first non-blank body line begins with the case-sensitive `Resolution:` token, answers the new or existing question during the same apply.
+- `test_scenarios` — inserts or updates scenarios parsed from any artifact on the anchor; also auto-drafts a `Verify: <task title>` scenario for each newly added task that has no authored coverage.
+- `entity_links` — inserts `derives-from` links (plan→anchor, task→plan, decision→anchor, scenario→anchor), `touches` links from roadmap `[touches: ...]` annotations (task→repo), plus `task_touch_paths` rows for entries in `<repo-slug>:<path>` or bare-`<path>` form, and `verifies` links (scenario→task). It also writes the `cites` links (task→artifact) from each task to every anchor artifact of kind `product_spec`, `tech_spec`, `roadmap` or `test_spec` and to the selected work-list artifact, whatever its kind; they are reconciled on every apply, so a task gains a link when an artifact is added and keeps it on a re-apply.
 
 **Capture:**
 - Preview mode: one `session_entries` row with `prefix='read'` appended.
@@ -5308,8 +5360,11 @@ Writes (only with `--apply`, atomically per anchor plan):
 
 **Exit codes:**
 - `0` — success (preview or apply).
-- `1` — user error: plan not found, `--apply-removals` without `--apply`, malformed workbench files, `--strict` refused due to coverage gap.
-- `2` — system error: database failure, workbench filesystem I/O failure.
+- `1` — plan not found, a linked roadmap or (on `--apply`) another linked artifact with no workbench file, a failed apply.
+- `2` — no work list or an ambiguous one, a title that appears in two artifacts, `--apply-removals` without `--apply`, `--strict` refused due to a slug collision, an unresolved reference, or (under `require_scenario_coverage = true`) an uncovered task or orphan scenario.
+- `5` — `--apply` refused by the cross-scope guard.
+
+A single-plan run exits with the code of its own failure. A run over several plans exits `2` when any of them fails, whatever the reasons; each plan's reason is on standard error.
 
 ---
 
@@ -5362,242 +5417,6 @@ test-spec status for plan 42 (billing-export-csv)
 
 ---
 
-## Domain: `import`
-
-Import an existing repository's planning artefacts (tech specs, roadmaps, ADRs, backlog files, GitHub issues) into Planar's data model. A translator, not a generator: imports what is already there rather than drafting new documents from a goal statement.
-
-**Sibling verb.** `synthesize` is the synthesis counterpart to import's transcription. Use `import` for clean structured docs; use `synthesize` for messy / docs-only / mid-evolution repos. See [Domain: synthesize](#domain-synthesize) for the full surface, and [Transcription vs Synthesis](./concepts.md#transcription-vs-synthesis) for the conceptual split.
-
-See also: `spec ingest` (decompose workbench planning docs), `ext propagate` (push the imported tree to an external system).
-
----
-
-### `planar import <repo-root>`
-
-**Synopsis:**
-```
-planar import <repo-root> [--from-github] [--dry-run] [--strict]
-                            [--roadmap <path>]
-                            [--apply] [--apply-removals] [--scope <slug>]
-                            [--no-status-inference] [--interpret]
-                            [--accept-spec <slugs>] [--no-forward-specs] [--json]
-```
-
-**Description:** Walk the repository at `<repo-root>`, parse planning artefacts from the filesystem and git history, infer task completion status, build an ImportPlan, and (optionally) commit it to the database.
-
-Default mode is **preview**: prints a tree-shaped diff and exits 0 without writing anything. `--apply` is required to commit.
-
-`--dry-run` emits the ImportPlan as versioned JSON (schema version 1.0) instead of the human tree and never writes, regardless of `--apply`.
-
-Idempotency: items already present in the database (matched by title and source-path fingerprint) are reported as **Skipped** and never double-imported. Safe to re-run after new commits.
-
-**Arguments:**
-
-| Argument | Description |
-|----------|-------------|
-| `<repo-root>` | Path to the repository root to import. Required. Must be a directory. |
-
-**Options:**
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--from-github` | off | Also import open GitHub issues as tasks. Requires the `gh` CLI on PATH and a GitHub remote at the `origin`. If `gh` is not found, a warning is emitted and the flag is silently skipped. |
-| `--dry-run` | off | Emit JSON report instead of human preview. Never writes, regardless of `--apply`. |
-| `--strict` | off | Refuse to import ambiguous items (below the confidence threshold). Default (lenient) mode imports them as `status='todo'` with a warning annotation. |
-| `--roadmap <path>` | auto | Explicit path to the roadmap file. Overrides auto-discovery. Useful when the roadmap has a non-standard name or location. |
-| `--apply` | off | Commit the import to the database. Without this flag, preview only. |
-| `--apply-removals` | off | When applying, also remove entities that are gone from the source. |
-| `--scope <slug>` | cwd-derived | Scope for all created entities. Overrides cwd derivation for this invocation. |
-| `--no-status-inference` | off | Default every imported task to `status=todo`, `signal=no-inference`, `confidence=0`. Skips layers 2-3 (branch + git-log correlation) of status inference; the checkbox layer still runs because checkbox state is operator-explicit. Use for greenfield, docs-only, or fresh-fork repos where status correlation is unreliable by construction. |
-| `--interpret` | off | Run the optional LLM interpretation pass after the deterministic classifier (see the `planar-importer` agent). |
-| `--accept-spec <slugs>` | none | Non-interactive forward-spec selection — slug, comma-separated slugs, or `all`. |
-| `--no-forward-specs` | off | Skip forward-spec processing entirely. |
-
-**No >25% auto-done refusal.** This binary does not refuse an import in
-which a large share of inferred tasks would land as `status=done`, and
-neither `--trust-status-inference`, `--threshold` nor `--no-interpret`
-exists on it; passing any of them fails at parse time with exit 2. For an
-unreliable correlation, reach for
-`--no-status-inference` (which IS implemented) to default every task to
-`status=todo`, and `task reopen <id>` to recover any individually
-wrongly-marked tasks from an earlier import.
-
-**Output (human, preview mode):**
-
-```
-<repo-root>/
-  + plan       Phase 1 — Foundation         (4 tasks)
-  +   task     Add migrations               [done — git-log match]
-  +   task     Wire CLI parser              [todo]
-  + plan       Phase 2 — Adapters           (2 tasks)
-  +   task     Jira adapter                 [todo]
-  +   task     GitHub adapter               [todo]
-  + artifact   docs/tech-spec.md            [kind=tech_spec]
-  + decision   Vendor SQLite amalgamation   [from: docs/adrs.md#adr-0009]
-  ~ task       Add workbench archive        [skipped — already imported]
-
-7 additions, 1 skipped.
-Run with --apply to commit.
-```
-
-**Output (`--dry-run`, JSON schema version 1.0):**
-
-```json
-{
-  "schema_version": "1.0",
-  "anchor": {"title": "<repo-name>", "slug": "<slug>"},
-  "child_plans": [
-    {"title": "Phase 1 — Foundation", "slug": "phase-1-foundation"}
-  ],
-  "tasks": [
-    {"title": "Add migrations", "status": "done", "inferred_from": "git-log", "parent_plan": "phase-1-foundation"}
-  ],
-  "artifacts": [
-    {"title": "Tech Spec", "source_path": "docs/tech-spec.md", "kind": "tech_spec"}
-  ],
-  "decisions": [
-    {"title": "Vendor SQLite amalgamation", "source_path": "docs/adrs.md"}
-  ],
-  "ambiguous": [],
-  "warnings": []
-}
-```
-
-**Output (`--apply`):**
-
-```
-applied: 3 plans, 12 tasks, 4 artifacts, 2 decisions, 1 skipped
-anchor plan id: 87
-github links created: 5
-```
-
-The `github links created` line appears only when `--from-github` is set and issues were linked.
-
-**Schema effects:**
-
-Reads:
-- `associations`, `project_associations`, `projects` — cwd-derived scope resolution.
-- `plans`, `tasks`, `artifacts`, `decisions` — fingerprint queries to detect already-imported items.
-- Git log and branch list via shell (`git log`, `git branch --merged`).
-- GitHub Issues via `gh issue list` (only when `--from-github`).
-
-Writes (only with `--apply`):
-- `plans` — inserts the anchor plan and child plans (one per milestone).
-- `tasks` — inserts tasks with inferred status.
-- `artifacts` — inserts artifact rows for discovered planning documents.
-- `decisions` — inserts decision rows for ADRs and `## Decisions` headings.
-- `entity_links` — inserts `derives-from` links (child plan→anchor, task→plan, decision→anchor).
-- `external_links` — inserts `link_role='mirror'` rows for GitHub issues (only when `--from-github`).
-
-**Exit codes:**
-- `0` — success (preview, dry-run, or apply).
-- `1` — user error: `<repo-root>` not found or not a directory; `--strict` mode rejected ambiguous items.
-- `2` — system error: database failure, git shell failure, filesystem I/O failure.
-
-**Related:**
-- `planar spec ingest <plan>` — decompose workbench planning documents into a task graph for a feature already in Planar.
-- `planar-ext ext propagate <plan>` — propagate the imported tree to Jira or GitHub Issues.
-- `planar import <repo-root> --dry-run` — emit the ImportPlan as JSON without writing.
-- `planar synthesize <repo-root>` — sibling verb. Synthesizes fresh planning material from docs + code via an LLM pass instead of transcribing.
-
----
-
-## Domain: `synthesize`
-
-`planar synthesize <repo-root>` — synthesize fresh planning artifacts for a repo from existing docs + git log + source code via an LLM pass. Sibling of `import` (which transcribes existing docs verbatim).
-
-Use `synthesize` when:
-- Repo docs are scattered, mid-evolution, or contradicted by reality.
-- The repo is docs-only (no source code yet — greenfield).
-- You inherited a repo and want the LLM to assess what's actually there.
-- Multiple roadmaps of different eras exist.
-
-Use `import` instead when docs are clean and structured. See [Transcription vs Synthesis](./concepts.md#transcription-vs-synthesis).
-
----
-
-### `planar synthesize <repo-root>`
-
-**Synopsis:**
-```
-planar synthesize <repo-root> [--apply] [--apply-removals] [--scope <slug>]
-                                 [--code-layout <name>]
-                                 [--treat-as-greenfield] [--treat-as-nongreenfield]
-                                 [--accept-spec <slug>] [--no-forward-specs]
-                                 [--literal] [--dry-run] [--json]
-```
-
-**Description:** Walk the repo at `<repo-root>`, run the deterministic floor (artifact discovery + `codeprobe.Probe` over the source tree), hand a fingerprinted `synthesis.Request` to the vendor skill via the on-disk cache, then on a cache-hit re-invocation validate and merge the LLM `synthesis.Result` against the deterministic baseline.
-
-Default mode is **preview**: prints a tree-shaped diff and exits 0 without writing. `--apply` is required to commit additions and updates; `--apply --apply-removals` additionally soft-cancels removed entities.
-
-`--dry-run` narrows that further: there are no planning writes on the non-apply path to suppress, but a first run does stage `_pending.json` under `$PLANAR_HOME/cache/bootstrap-synthesis/<repo-slug>/`. `--dry-run` suppresses that one filesystem side effect and names the paths it would have used (task 6273, decision 1125).
-
-The LLM never runs in the CLI. The `planar` binary writes a synthesis Request to `$PLANAR_HOME/cache/bootstrap-synthesis/<repo-slug>/_pending.json` and exits 0 with an "Awaiting LLM synthesis" notice. The vendor skill reads the Request, runs the LLM at temperature 0, and writes the Result to `<cache-dir>/<fingerprint>.json`. The operator re-runs `planar synthesize <repo-root>`; the CLI finds the cached Result, validates it, merges it with the deterministic baseline, and emits the preview.
-
-**Arguments:**
-
-| Argument | Description |
-|----------|-------------|
-| `<repo-root>` | Path to the repository root to synthesize. Required. Must be a directory. |
-
-**Options:**
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--apply` | off | Commit additions and updates. |
-| `--apply-removals` | off | Commit removals (soft-cancel). Requires `--apply`. |
-| `--scope <slug>` | cwd-derived | Override scope resolution. |
-| `--code-layout <name>` | auto | Override layout detection. One of `swift`, `go`, `node`, `python`, `mixed`. |
-| `--treat-as-greenfield` | off | Force greenfield mode even when code is detected. Forces every task to land `status=todo`. |
-| `--treat-as-nongreenfield` | off | Bypass greenfield auto-detection. Use for non-conventional layouts where codeprobe under-detects. |
-| `--accept-spec <slug>` | interactive | Non-interactive forward-spec selection; `all` accepts every proposed forward spec. |
-| `--no-forward-specs` | off | Skip the forward-spec phase entirely. |
-| `--literal` | off | Delegate to `import` (transcription). Useful when you started with `synthesize` but realize the repo is clean enough for transcription. |
-| `--dry-run` | off | Stage nothing: skip the `_pending.json` write (and the cache directory that holds it) and report the paths that would have been written. Exit 0. Before task 6273 this flag was declared and never read, so it silently did the normal thing. |
-| `--json` | off | Machine-readable output. |
-
-**Workflow:**
-
-1. Operator runs `planar synthesize <repo-root>`.
-2. The CLI runs deterministic artifact discovery, corpus parsing, and code-evidence probing.
-3. The CLI writes the synthesis Request to `$PLANAR_HOME/cache/bootstrap-synthesis/<repo-slug>/_pending.json`.
-4. The CLI exits 0 with the "Awaiting LLM synthesis" message.
-5. Vendor skill reads the Request, runs the LLM at temperature 0, and writes the Result to `<cache-dir>/<fingerprint>.json`.
-6. Operator re-runs `planar synthesize <repo-root>`.
-7. The CLI reads and validates the cached Result, then merges it with the deterministic baseline.
-8. Operator reviews the preview; `--apply` commits.
-
-**Schema effects:**
-
-Reads:
-- `associations`, `project_associations`, `projects` — cwd-derived scope resolution.
-- `plans`, `tasks`, `artifacts`, `decisions` — fingerprint queries to detect already-synthesized items.
-- Source tree + git log (via `codeprobe`); no shell to `gh` (`synthesize` does not pull GitHub issues).
-
-Writes (only with `--apply`):
-- `plans` — inserts the anchor plan and per-phase child plans synthesized by the LLM.
-- `tasks` — inserts tasks with status grounded in code-evidence citations.
-- `artifacts` — inserts the synthesized `product_spec` / `tech_spec` / `roadmap` as primary artifacts. The existing planning docs are preserved on the same anchor plan as `kind=research` reference artifacts.
-- `decisions` — inserts decisions extracted from tech specs and LLM-inferred decisions (citation required).
-- `entity_links` — inserts `derives-from` links (child plan→anchor, task→plan, decision→anchor).
-
-**Legacy source schemes.** Artifacts created by `synthesize` (and by `import` for forward-spec seeds) carry a stored `source` of `pl-synthesize://<kind>` or `pl-forward-spec://<kind>`. These are provenance identifiers kept for compatibility with existing databases; they name no skill and are not command references. The synthesize handler branches on the `pl-synthesize://` prefix when it decides which artifacts survive `--apply-removals`, so the literals must not be renamed. The generated artifact bodies and the operator messages name `planar synthesize` instead.
-
-**Apply layer.** The Apply path is **shared with `import`** (the apply + diff helpers in `src/engine/importer/importer.cpp`). Both verbs converge on the same downstream pipeline.
-
-**Exit codes:**
-- `0` — success (preview, dry-run, apply, or cache-miss "awaiting synthesis").
-- `1` — user error: `<repo-root>` not found, conflicting flags, cached Result fails `synthesis.Validate`, confidence-floor refusal.
-- `2` — system error: database failure, filesystem I/O failure, cache I/O failure.
-
-**Related:**
-- [`agents/planar-synthesizer.md`](../agents/planar-synthesizer.md) — vendor-neutral role spec.
-- [Domain: `import`](#domain-import) — sibling transcription verb.
-- [Transcription vs Synthesis](./concepts.md#transcription-vs-synthesis) — conceptual split.
-
----
-
 ## Domain: `config`
 
 Manages the Planar configuration file at `~/.planar/config.toml` (overrideable
@@ -5607,7 +5426,7 @@ invocation.
 
 Resolution order (highest to lowest priority):
 
-1. Environment variable (e.g. `$PLANAR_WORKBENCH_ROOT`, `$PLANAR_VENDOR`).
+1. Environment variable (e.g. `$PLANAR_WORKBENCH_ROOT`, `$PLANAR_VENDOR`). Policy keys are the exception: no environment variable overrides them (see [The `[policy]` tables](#the-policy-tables)).
 2. Per-association section (`[associations."<slug>"]` in the config file).
 3. Top-level config file values.
 4. Embedded defaults (compiled into the binary from the engine config module).
@@ -5617,58 +5436,16 @@ Resolution order (highest to lowest priority):
 carry literal values in the config file. Use the `*_env` convention to name the
 environment variable instead.
 
-**Model routing (plan 540, extended plan 899).** The config carries per-vendor
-model **tier maps** (each tier a scalar or an ordered candidate list), a
-vendor+tier **work-type routing map**, and a vendor-independent **role→tier**
-map. The canonical tiers are `small`, `medium`, and `large`; the canonical
-work types are `schema`, `engine`, `architectural`, `cli`, `feature`, and
-`mechanical`:
-
-```toml
-[models.claude]
-small  = "claude-haiku-4-5"
-medium = "claude-sonnet-5-5"
-large  = ["claude-opus-5-5", "claude-fable-5-1"]
-
-[models.codex]
-small  = "gpt-5.6-luna"
-medium = "gpt-5.6-terra"
-# A tier value may be an ordered candidate list instead of a scalar;
-# list[0] is the tier default. Every other reader is scalar-compatible.
-large  = ["gpt-5.6-sol", "gpt-5.5"]
-
-[routing.codex.large]
-# work-type → candidate id (must be a member of the tier's candidate list
-# above). Unmapped work types fall back to the tier default (list[0]).
-schema        = "gpt-5.6-sol"
-architectural = "gpt-5.6-sol"
-feature       = "gpt-5.5"
-
-[roles]
-coder      = "medium"   # coder resolves to the active vendor's `medium` model
-reviewer   = "large"
-test-coder = "medium"
-sync-reconciler = "large"
-```
-
-Override any tier to re-route every role at that tier for that vendor, or any
-role to move it to a different tier. A `[role_vendors]` section (role→vendor,
-override-only) routes individual roles to a different vendor; unset roles use
-`[defaults].vendor`. `planar config validate` rejects a `[routing.<vendor>.<tier>]`
-entry naming a model id absent from that tier's candidate list — a stale or
-typo'd routing target is a configuration error, not a silent fall-through.
-`planar config show --effective` shows each resolved
-`models.<vendor>.<tier>` / `routing.<vendor>.<tier>.<work-type>` /
-`roles.<role>` / `role_vendors.<role>` key with its provenance. (There is
-no `planar models routing` / `planar models candidates` / `planar models
-list` — that discovery family was removed; `planar models resolve --role
-<role>` answers what tier a role gets and whether the packet or the static
-fallback produced it.) This is the **single authoritative routing source** — the
-skill-render Tier Table (hand-maintained in `agents/models.md`), the
-orchestrator's Phase 3 dispatch-preview routed-model column (`resolve(role,
-work_type)`; see the `planar-orchestrator` agent's Dispatch preview and model
-tiers), and other workflow callers all resolve through
-it; there is no separate `execute-config.toml`.
+**Model configuration keys.** The config file may carry per-vendor model
+tier maps (`[models.<vendor>]`, each tier a scalar or an ordered candidate
+list), work-type maps (`[routing.<vendor>.<tier>]`), a role-to-tier map
+(`[roles]`) and a role-to-vendor map (`[role_vendors]`). The canonical tiers
+are `small`, `medium` and `large`; the canonical work types are `schema`,
+`engine`, `architectural`, `cli`, `feature` and `mechanical`. Planar starts no
+model and no verb resolves these keys to a model; `planar config show
+--effective` lists each `models.*`, `routing.*`, `roles.*` and
+`role_vendors.*` key it finds with its provenance, and `planar config validate`
+does not check them against one another.
 
 #### The `[queue]` table
 
@@ -5699,6 +5476,81 @@ of a wrong type, and an unknown `[queue]` key, and names the key on each
 finding (`error: queue.stale_after: stale_after must not be negative, got
 "-5s"`).
 
+#### The `[policy]` tables
+
+Per-scope policy is a set of flat keys in an optional top-level `[policy]`
+table and in per-association `[associations."<slug>".policy]` tables. For
+each key the association table wins, then the top-level table, then the
+embedded default. **No environment variable overrides a policy key**, so the
+agent a policy governs cannot switch it off from its own environment
+(`PLANAR_REVIEW_REQUIRED=false` changes nothing).
+
+```toml
+[policy]
+review_required = true
+task_gate = ["make", "test"]
+use_queue = true            # required beside task_gate
+confirm_before = ["task done", "plan closeout"]
+
+[associations."org:acme".policy]
+require_model = true
+review_required = false     # beats the top-level value for this association
+```
+
+| Key | Type | Checked or shown at | Default |
+|-----|------|---------------------|---------|
+| `review_required` | bool | `complete` | `false` |
+| `task_gate` | argv array of strings, non-empty | `complete` | unset |
+| `require_model` | bool | coder `claim` / `pull` | `false` |
+| `confirm_before` | array of verb paths | the orchestrator brief only | `[]` |
+| `require_scenario_coverage` | bool | `spec ingest --strict` | `false` |
+| `use_queue` | bool | brief, `queue rule` (prints the mandate), conformance | `false` |
+
+A gate value is an argv array such as `["make", "test"]`, not a shell string.
+Gate evidence is a queued run, so `task_gate` requires `use_queue = true` in
+the same scope, judged on each scope's effective values: the `[policy]` table
+on its own, and each `[associations."<slug>".policy]` table on its own keys
+falling back to `[policy]` (an association that sets its own `task_gate`
+inherits `use_queue = true` from `[policy]`; one that inherits the gate and sets
+`use_queue = false` is refused). `planar config validate` refuses a gate
+without it, and `planar-agent brief` shows `policy.valid` as `false`:
+
+```
+error: policy.task_gate: gate evidence is a queued run, so use_queue = true is required in the same scope (add use_queue = true under [policy])
+```
+
+`confirm_before` entries are lowercase verb paths of one to four words (`"task
+done"`, `"plan closeout"`); `config validate` checks the spelling only, not
+that the verb exists. Planar never enforces the list: the brief shows it so the
+orchestrator knows which verbs wait for the operator.
+
+`complete` enforces `review_required` and `task_gate`, `claim` and `pull`
+enforce `require_model`, and `spec ingest --strict` enforces
+`require_scenario_coverage`; the sections of those verbs hold the rules. The
+other keys are read by the verbs named in the table.
+
+**Boundary rule.** A key is admitted only if it is a fact Planar can check at
+one verb, or only displays. A key that says what happens next (a step, retry,
+branch or condition) is workflow and is refused. `planar config validate`
+refuses every key outside the table above, in `[policy]` and in any
+`[associations."<slug>".policy]`, and names it:
+
+```
+error: policy.after_review: unknown policy key (policy keys are facts Planar can check at one verb; a key that says what happens next is workflow and is not accepted; known keys: review_required, task_gate, require_model, confirm_before, require_scenario_coverage, use_queue)
+```
+
+A value of the wrong type is refused the same way, naming the key and the
+type it expects (`error: policy.use_queue: must be a boolean (true or false)`).
+Both findings are printed together on stderr and the verb exits 1.
+
+`planar config show --effective` prints a `policy.<key>` row for each key with
+its source: `[embedded default]`, `[config file: <path>, policy]` for the
+top-level table, or `[per-association override: <path>,
+associations."<slug>".policy]` for an association table (select it with
+`--scope <slug>`). An unset `task_gate` prints `(unset)`. Each claim records
+a digest of the effective policy (SHA-256 of a canonical JSON form with fixed
+key order) so conformance grades a claim against the policy it ran under.
+
 ---
 
 ### `planar config show`
@@ -5716,7 +5568,7 @@ is sorted for snapshot-friendliness.
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--effective` | Show each key with its provenance (`[env: VAR]`, `[config file]`, `[embedded default]`, `[per-association override]`). | off |
+| `--effective` | Show each key with its provenance (`[env: VAR]`, `[config file]`, `[embedded default]`, `[per-association override]`; a `policy.*` row from a file also names the file and table). | off |
 | `--raw` | Print the user's config file contents verbatim. Empty output if the file is absent. | off |
 | `--defaults` | Print the embedded defaults file verbatim. Doubles as the "what keys exist" reference. | off |
 | `--scope <slug>` | Resolve as if the named association slug were active. | (none) |
@@ -5762,8 +5614,7 @@ planar config edit
 ```
 
 **Description:** Open the config file in `$EDITOR` (falling back to `$VISUAL`,
-then `vi`). If the file does not exist, a starter file is written first
-(equivalent to `planar config init`).
+then `vi`). If the file does not exist, a starter file is written first.
 
 **Schema effects:** None.
 
@@ -5788,7 +5639,8 @@ planar config validate
 - Sensitive-data invariant: keys matching the secret-name denylist must not carry literal values.
 - Cross-reference consistency (e.g. `auth = "token-env"` requires `token_env` to name an env var).
 - The `[queue]` table: every key within its range, no unknown key, and `stale_after` not shorter than `poll_interval` (see [The `[queue]` table](#the-queue-table)).
-- Unknown keys outside `[queue]` produce a **warning**, not an error, preserving forward-compatibility; an unknown key inside `[queue]` is refused (see above).
+- The `[policy]` and `[associations."<slug>".policy]` tables: every key one of the six admitted policy keys with the right type; a workflow-shaped or unknown key is refused by name (see [The `[policy]` tables](#the-policy-tables)).
+- Unknown keys outside `[queue]` and the policy tables produce a **warning**, not an error, preserving forward-compatibility; an unknown key inside `[queue]` is refused (see above).
 
 Each issue is printed with its line number and key path.
 
@@ -5809,38 +5661,6 @@ config validate: ok
 - `0` — no errors (warnings are printed but do not change the exit code).
 - `1` — one or more errors found, or the config file was not found (`error: config file not found: <path>`).
 - `2` — parse failure (unexpected argument or flag).
-
----
-
-### `planar config init`
-
-**Synopsis:**
-```
-planar config init
-```
-
-**Description:** Idempotently write a starter `config.toml` at the resolved
-config path if it does not already exist. Prints whether the file was created
-or already existed. Exit 0 either way.
-
-Called automatically by `planar init` before applying migrations.
-
-**Output (human):**
-```
-config init: created ~/.planar/config.toml
-```
-or:
-```
-config init: already exists ~/.planar/config.toml
-```
-
-**Schema effects:** None.
-
-**Capture:** None.
-
-**Exit codes:**
-- `0` — success (created or already existed).
-- `2` — filesystem error (directory not writable).
 
 ---
 
@@ -6042,7 +5862,7 @@ planar templates init [--force] [--json]
 **Description:** Idempotently extract the embedded baseline templates to
 `<templates-root>/default/<system>/<kind>.json`. Without `--force` an existing
 file is never overwritten. Reports the list of files written. Also called
-automatically by `planar init` (after `config init`, before `migrate apply`).
+automatically by `planar init` (after the config file is ensured, before `migrate apply`).
 
 **Options:**
 
@@ -6201,14 +6021,13 @@ List every recorded projection across both kinds and all vendors. The vendor col
 
 Test hook: when set, `planar local` uses this directory as the operator's `$HOME` for resolving `~/.planar/local/` and the per-vendor projection targets, and ignores `$CODEX_HOME`. Production use never sets this.
 
-## The editflow quartet: `edit` / `view` / `diff` / `review`
+## The editflow verbs: `edit` / `view` / `diff` / `review`
 
 Six entity families — `plan`, `task`, `question`, `decision`, `scenario`
-and `artifact` — each expose the same four editor-first verbs over their
-workbench file. Twenty-four leaves, one shared implementation
-(`handlers/drafting.cppm`): the bodies are identical modulo the family
-noun and its positional name, so they are documented once here rather
-than twenty-four times.
+and `artifact` — expose editor-first verbs over their workbench file.
+Seventeen leaves share one implementation (`src/cmd/planar/handlers/shared/drafting.cppm`): the
+bodies are identical modulo the family noun and its positional name, so they
+are documented once here.
 
 | verb | what it does |
 |------|--------------|
@@ -6225,24 +6044,25 @@ planar <family> diff   <id>
 planar <family> review <id> [--approve] [--request-changes] [--json]
 ```
 
-`<family>` is one of `plan`, `task`, `question`, `decision`, `scenario`,
-`artifact`. The positional is that family's id (`plan-id`, `task-id`, …).
-
-The twenty-four concrete leaves this covers:
+The positional is that family's id (`plan-id`, `task-id`, …). Not every
+family has every verb. The seventeen concrete leaves are:
 
 | family | leaves |
 |--------|--------|
-| `plan` | `planar plan edit`, `planar plan view`, `planar plan diff`, `planar plan review` |
+| `plan` | `planar plan view` |
 | `task` | `planar task edit`, `planar task view`, `planar task diff`, `planar task review` |
-| `question` | `planar question edit`, `planar question view`, `planar question diff`, `planar question review` |
-| `decision` | `planar decision edit`, `planar decision view`, `planar decision diff`, `planar decision review` |
-| `scenario` | `planar scenario edit`, `planar scenario view`, `planar scenario diff`, `planar scenario review` |
+| `question` | `planar question edit`, `planar question view` |
+| `decision` | `planar decision edit`, `planar decision view`, `planar decision review` |
+| `scenario` | `planar scenario edit`, `planar scenario view`, `planar scenario review` |
 | `artifact` | `planar artifact edit`, `planar artifact view`, `planar artifact diff`, `planar artifact review` |
+
+`planar plan edit`, `plan diff`, `plan review`, `question diff`,
+`question review`, `scenario diff` and `decision diff` were removed in plan
+1142; they fail as unknown subcommands at exit 2.
 
 ### The four verbs do NOT validate alike
 
-This asymmetry is operator-visible on every failing invocation, and is
-reproduced from the oracle deliberately rather than smoothed over:
+This asymmetry is operator-visible on every failing invocation:
 
 | verb | rejects `id <= 0`? | maps failures to prose? |
 |------|--------------------|-------------------------|
@@ -6251,30 +6071,25 @@ reproduced from the oracle deliberately rather than smoothed over:
 | `diff` | **yes** | **yes** |
 | `review` | **yes** | **yes** |
 
-So `planar question diff 0` exits 2 with `question id must be a positive
+So `planar artifact diff 0` exits 2 with `artifact id must be a positive
 integer, got 0`, while `planar question view 0` falls through to the
 resolver and reports a missing plan link instead. `view` and `edit` have
 no failure-mapping arms at all: a failure surfaces as the bare error tag.
 
 ### A nonexistent id reports differently per family
 
-`plan` and `task` resolve their anchor directly (`plans.parent_plan_id`,
-`tasks.plan_id`); the other four resolve theirs through `entity_links`.
-That changes the refusal text:
+`task` resolves its anchor directly (`tasks.plan_id`); the other families
+resolve theirs through `entity_links`. That changes the refusal text:
 
 ```
-planar plan diff 999      →  no plan with id 999
-planar task diff 999      →  no task with id 999
-planar question diff 999  →  question 999 is not linked to a plan; ...
+planar task diff 999       →  no task with id 999
+planar decision review 999 →  decision 999 is not linked to a plan; ...
 ```
 
 ### `--no-pull` and `--json` on `edit` are DECLARED AND INERT
 
 Both flags appear in `planar schema` and are accepted, and the handler
-reads neither. They exist because the oracle declares them and dropping
-them would break catalog parity; refusing them would reject an invocation
-the oracle accepts. Recorded here rather than left for an operator to
-discover — do not expect `edit --json` to produce JSON.
+reads neither. Do not expect `edit --json` to produce JSON.
 
 **Description:** `view` renders the entity to its workbench path. For
 `plan`, the ANCHOR plan renders to the feature's `README.md` and every
@@ -6311,254 +6126,6 @@ planar workbench edit <plan> [--editor <cmd>] [--json]
 
 **Exit codes:**
 - `1` — plan not found.
-
----
-
-## Domain: `models`
-
-Routing-model discovery, the advisory evals scorecard, and the operator
-candidate registry. Planar does NOT decide what model to use: it records
-the vendor and candidate an agent reports when it claims work, and never
-validates that string against a supported list. Everything here either
-reports what is installed, aggregates evidence after the fact, or manages
-operator-declared candidates.
-
-The subcommand set is exactly `evals`, `resolve`, `experiments`, `outcomes`
-and `registry`. The plan-540 discovery family — `models list`, `models
-refresh`, `models routing`, `models apply`, `models candidates` — was
-removed with the curated catalog and the `[models]` / `[roles]` config
-blocks (see `docs/concepts.md` § Model routing); every one of them now fails
-at parse time with exit 2. Tier→model presets live in the orchestration
-layer's `agents/models.md`, hand-maintained, and no `planar` verb writes
-them.
-
-### `planar models evals`
-
-**Synopsis:**
-```
-planar models evals [--vendor <vendor> --role <role> --tier <tier> --work-type <type>
-                     --complexity <complexity> --project <id> --validation-policy <v>
-                     --routing-policy <v>] [--min-samples <n>] [--quality-floor <f>] [--json]
-```
-
-**Description:** Read-only candidate ranking. It has two modes, selected by
-whether a non-empty `--vendor` is supplied:
-
-- **Cohort ranking (evidence-backed).** With `--vendor` set, the other seven
-  cohort flags (`--role`, `--tier`, `--work-type`, `--complexity`,
-  `--project`, `--validation-policy`, `--routing-policy`) are required, and
-  the command ranks candidates in that exact cohort over
-  declared-experiment terminal samples (`routing_terminal_samples`): sample
-  and success counts, the raw rate, the 95% Wilson lower bound,
-  gate-failure rate, and expected excess iterations. Candidates with fewer
-  than `--min-samples` (default 5) samples are labelled `insufficient_data`
-  and never ranked; candidates whose Wilson lower bound is below
-  `--quality-floor` (default 0.5) are excluded before any iteration or
-  gate-failure ordering, so a fast-but-wrong candidate cannot outrank a
-  slower correct one. "No recommendation" is a valid outcome and means keep
-  the configured default.
-- **Legacy scorecard.** With no `--vendor`, the command falls back to the
-  pre-evidence-plane aggregation over the `dispatch_shape:` /
-  `model_choice:` note convention in `session_entries`, joined with
-  terminal `agent_work_claims` status and `agent_actions(action_kind='test_coder')`
-  rows. It emits a per-`(work_type, candidate)` scorecard and preview-only
-  recommendations, counts malformed or pre-convention notes in
-  `legacy_dispatch_notes_skipped`, and reports `quality_gate_pass_fail=false`
-  in `signals_sourced` because that signal is not persisted. It is
-  inspectable but not evidence-backed.
-
-Both modes write nothing: no routing-map mutation, no database write, no
-config write. Applying a recommendation is a separate operator action in
-`agents/models.md`.
-
-**Options:**
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--vendor <vendor>` | Cohort vendor; a non-empty value selects cohort ranking. | none (legacy mode) |
-| `--role <role>` | Cohort role. Required with `--vendor`. | none |
-| `--tier <tier>` | Cohort tier: `small`, `medium`, `large`. Required with `--vendor`. | none |
-| `--work-type <type>` | Cohort work type. Required with `--vendor`. | none |
-| `--complexity <c>` | Cohort complexity: `bounded`, `standard`, `high-risk`. Required with `--vendor`. | none |
-| `--project <id>` | Cohort project id. Required with `--vendor`. | none |
-| `--validation-policy <v>` | Cohort validation policy version. Required with `--vendor`. | none |
-| `--routing-policy <v>` | Cohort routing policy version. Required with `--vendor`. | none |
-| `--min-samples <n>` | Minimum samples before a candidate is ranked. | 5 |
-| `--quality-floor <f>` | Wilson lower-bound floor below which a candidate is excluded. | 0.5 |
-| `--json` | Emit the ranking / scorecard as JSON. | off |
-
-**Schema effects:** Reads routing evidence tables (cohort mode) or
-`session_entries` / `agent_work_claims` / `agent_actions` (legacy mode).
-
-**Capture:** None (read-only).
-
-**Exit codes:** `0` on success; `2` when a cohort flag is missing or malformed with `--vendor` set; `1` for database or aggregation errors.
-
----
-
-### `planar models resolve`
-
-**Synopsis:**
-```
-planar models resolve --role <role> [--task <id>] [--plan <id>] [--fallback-tier <tier>] [--json]
-```
-
-**Description:** Resolve a role's routing tier from its authoritative
-packet, or report the fallback and why it was used. A fallback is always
-reported WITH its reason — an absent or unready packet is never presented
-as a derived classification.
-
-**Options:**
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--role <role>` | Required. One of `planner`, `spec-reviewer`, `ingestor`, `orchestrator`, `coder`, `test-coder`, `reviewer`, `research`, `janitor`. | none |
-| `--task <id>` | Task id; required for task-bound roles (coder, test-coder, reviewer, research, janitor), which resolve from the task's compiled profile. | none |
-| `--plan <id>` | Anchor plan id for pre-task roles (planner, spec-reviewer, ingestor, orchestrator), which resolve from a planning packet. | none |
-| `--fallback-tier <tier>` | Configured static fallback tier reported when the packet is absent or unready. | `medium` |
-| `--json` | Emit `{source: packet \| static_fallback, tier, reason, work_type, complexity}` as JSON. | off |
-
-`source: packet` means the tier came from the compiled profile;
-`static_fallback` names its reason (`no_packet`, `packet_not_ready`,
-`policy_not_ready`) and reports work type and complexity as null.
-
-**Schema effects:** Reads routing packet and policy tables.
-
-**Capture:** None (read-only).
-
----
-
-### `planar models experiments`
-
-**Synopsis:**
-```
-planar models experiments [--json]
-```
-
-**Description:** List declared routing experiments and how much evidence
-each has produced. Evidence volume is the point: `planar models evals`
-reports `insufficient_data` for an under-sampled cohort rather than a
-recommendation, and this is where you see which cohorts are thin.
-
-**Schema effects:** Reads the routing experiment tables.
-
-**Capture:** None (read-only).
-
----
-
-### `planar models outcomes`
-
-**Synopsis:**
-```
-planar models outcomes [--limit <n>] [--json]
-```
-
-**Description:** List recorded terminal outcomes, **including excluded
-ones and why they were excluded**. An outcome can be excluded from the
-scorecard (below an evidence floor, outside a declared experiment) and
-still be listed here with its exclusion reason, so a surprising evals
-result can be traced to the rows behind it. `--limit <n>` caps the rows
-shown (default 50).
-
-**Schema effects:** Reads the dispatch-outcome tables.
-
-**Capture:** None (read-only).
-
----
-
-### Domain: `models registry`
-
-Opaque operator candidates and host observations. "Opaque" is the
-contract: a candidate is an exact identifier string Planar stores and
-compares, never parses or normalises.
-
-| leaf | purpose |
-|------|---------|
-| `planar models registry list` | List registrations, bindings, and latest observations. |
-| `planar models registry add` | Register one exact opaque candidate identifier. |
-| `planar models registry update` | Update enabled state and deterministic fallback order. |
-| `planar models registry remove` | Remove a candidate when no immutable evidence references it. |
-| `planar models registry bind` | Allow one role and tier for a candidate. |
-| `planar models registry unbind` | Remove one explicit role and tier binding. |
-| `planar models registry observe` | Append an exact, versioned host capability observation. |
-| `planar models registry eligibility` | Report every independent eligibility gate and named exclusion reason. |
-| `planar models registry verify-identity` | Compare requested and actual spawn identity without aliasing. |
-| `planar models registry export` | Export the versioned registry compatibility document. |
-
-**Arguments and flags.** Bracketed entries are optional; every other flag is required.
-
-| leaf | arguments and flags |
-|------|---------------------|
-| `planar models registry list` | `[--json]` |
-| `planar models registry add` | `--vendor <text> --id <text> --order <n> [--disabled]` |
-| `planar models registry update` | `--candidate <n> --order <n> [--disabled]` |
-| `planar models registry remove` | `--candidate <n>` |
-| `planar models registry bind` | `--candidate <n> --role <text> --tier <text>` |
-| `planar models registry unbind` | `--candidate <n> --role <text> --tier <text>` |
-| `planar models registry observe` | `--candidate <n> --host <text> --version <n> --availability <text> --spawn-verification <text> --evidence-ref <text> --captured-at <text> --expires-at <text>` |
-| `planar models registry eligibility` | `--candidate <n> --host <text> --role <text> --tier <text> --now <text> [--override-supported] [--policy-permits]` |
-| `planar models registry verify-identity` | `--candidate <n> --actual-vendor <text> --actual-id <text>` |
-| `planar models registry export` | `[--json]` |
-
-**Three properties worth knowing before using these:**
-
-- **`remove` refuses while evidence references the candidate.** Recorded
-  outcomes are immutable, so a candidate that has produced any is not
-  removable — deregister it with `update` instead.
-- **`observe` APPENDS.** Observations are versioned and additive; a new
-  observation never rewrites an older one, which is what makes
-  `eligibility` able to explain itself historically.
-- **`eligibility` reports EVERY gate**, not just the first failure, and
-  names each exclusion reason. `verify-identity` exists because a host may
-  alias one candidate onto another; it compares requested against actual
-  without resolving aliases.
-
-**Schema effects:** `list`, `eligibility`, `verify-identity` and `export`
-read; `add`, `update`, `remove`, `bind`, `unbind` and `observe` write the
-registry tables.
-
-**Capture:** None.
-
----
-
-## Domain: `bench`
-
-Record and query benchmark run data — the measurement rig. A run is minted
-once, accumulates journal events and file touches, and is then closed with
-a terminal status. Nothing here changes planning state.
-
-| leaf | purpose |
-|------|---------|
-| `planar bench start` | Mint a new run record and print its `run_uid`. |
-| `planar bench event` | Append a journal event to a run. |
-| `planar bench touch` | Record a declared or actual file touch for a run. |
-| `planar bench harvest` | Harvest `git diff` as actual touches for a run/task. |
-| `planar bench finish` | Set the terminal status on a run. |
-| `planar bench show` | Show a run's full state (header + events + touches). |
-
-**Arguments and flags.** Bracketed entries are optional; every other flag is required. `bench start --task` is repeatable and limits the declared-touch snapshot to the given task ids; omitted, every plan task is snapshotted.
-
-| leaf | arguments and flags |
-|------|---------------------|
-| `planar bench start` | `<run-uid> --plan <n> --arm <text> --base-sha <text> --config-hash <text> [--config-json <text>] [--corpus-repo <text>] [--task <text>...]` |
-| `planar bench event` | `<run-uid> --kind <text> --seq <n> [--payload <text>]` |
-| `planar bench touch` | `<run-uid> --task <n> --path <text> --kind <text>` |
-| `planar bench harvest` | `<run-uid> --task <n> --worktree <text> [--base <text>] [--head <text>]` |
-| `planar bench finish` | `<run-uid> --status <text>` |
-| `planar bench show` | `<run-uid> [--json]` |
-
-**The declared-vs-actual distinction is the point.** `touch` records what a
-run SAID it would change; `harvest` records what it actually changed, read
-out of `git diff`. Comparing the two is why both exist — a run that touched
-files it never declared is the finding the rig is built to surface.
-
-`start` takes the `run_uid` as its required positional and prints it back; every other verb takes the same `run_uid`, so a session is
-normally `start` → repeated `event`/`touch` → `harvest` → `finish`.
-
-**Schema effects:** `show` reads; the other five write the benchmark run
-tables. No planning entity is read or written.
-
-**Capture:** None.
 
 ---
 
@@ -6708,23 +6275,6 @@ shell.
 
 ---
 
-### `planar skills`
-
-**Synopsis:**
-```
-planar skills
-```
-
-**Description:** **Retired.** Rendering and drift detection moved to the
-external renderer binary (plan 918 M5). Planar no longer renders
-vendor projections nor tracks their install-drift in-band. The command
-remains so that an operator running it gets told where the functionality
-went rather than a bare unknown-command error.
-
-**Capture:** None.
-
----
-
 ### `planar task cancel <task-id>`
 
 **Synopsis:**
@@ -6741,6 +6291,8 @@ planar task cancel <task-id> [--json] [--scope <scope>]
 **Description:** Cancel a task. `cancelled` is a terminal status, reachable
 from `todo` or `doing`; see the status lifecycle under `planar task`.
 Single-argument form only.
+
+**Claim-atomic guard:** Refuses, exit `1` and writing nothing, while the task has an active work claim. The verb has no `--force`; the message names the claim's token and the command that would succeed: `error: task <id> is claimed (token <token>); finish it with: planar-agent complete --claim <token> (or fail|release|block)`.
 
 **Schema effects:** Writes `tasks.status`.
 
@@ -6774,35 +6326,11 @@ planar plan divergence <plan-id> [--json]
 
 **Description:** Report the declared-vs-derived closure divergence for a
 plan's open tasks (decision D4). Declared closure is what the tasks say
-they touch; derived closure is what the graph implies. A divergence means
+they touch; derived closure is what the `closures` table holds (no verb on master writes it). A divergence means
 one of the two is wrong, and the report names which tasks disagree rather
 than silently reconciling them.
 
 **Schema effects:** Reads `tasks`, `entity_links`, and the closure tables.
-
-**Capture:** None (read-only).
-
----
-
-### `planar groups recommend <plan-id>`
-
-**Synopsis:**
-```
-planar groups recommend <plan-id> [--json] [--budget <n>] [--solver <name>]
-```
-
-**Options:**
-
-| Flag | Description |
-|------|-------------|
-| `--budget <n>` | Per-slice window budget, an unsigned 32-bit integer (default `128000`). An unparseable or out-of-range value is refused as invalid input. |
-| `--solver <name>` | Requested solver (`greedy` default, or `mtkahypar`). The recommendation's `solver` field reports the one that actually ran; `--solver mtkahypar` is accepted and degrades to `greedy` with `optimal_available:false` on this build, which ships greedy only. The solver arm lives on branch `dev/grouping-solvers` (decision 1293). An unknown value is refused. |
-
-**Description:** Recommend closure-minimizing task slices for a plan —
-groupings that keep each slice's touched surface as small as possible.
-Advisory: it proposes slices, it does not create or reorder anything.
-
-**Schema effects:** Reads `tasks` and the closure/touches tables.
 
 **Capture:** None (read-only).
 
@@ -6829,26 +6357,6 @@ note that link verbs are **deliberately unguarded** by the cross-scope
 guard, because `entity_links` edges legitimately cross scopes.
 
 **Schema effects:** Writes `entity_links`.
-
-**Capture:** Yes.
-
----
-
-### `planar workflow run`
-
-**Synopsis:**
-```
-planar workflow run <workflow> [--args <json>] [--local]
-```
-
-**Options:**
-
-| Flag | Description |
-|------|-------------|
-| `--local` | Restrict resolution to sandbox (local) workflows only. |
-
-**Description:** Run an installed workflow. See the `workflow` domain above
-for discovery and the workflow contract.
 
 **Capture:** Yes.
 
@@ -7032,14 +6540,12 @@ The `children` array is always present, even when empty (the empty-`global` sign
 ## Binary: `planar-agent`
 
 `planar-agent` is the agent-callable coordination binary. It owns coordination
-writes to `agent_work_claims`, `agent_actions`, `workflow_runs`,
-`context_records`, and the `routing_dispatch_*` authorization tables (behind
-`dispatch preview` / `dispatch confirm`), plus the bounded `tasks.status`
+writes to `agent_work_claims` and `agent_actions`, plus the bounded `tasks.status`
 transitions performed by atomic terminal operations. It also owns the queue
 tables in `planar.db` (`queue_entries`, `queue_history` and their compatibility
 marker `queue_schema`, behind `queue run`). Operator-recovery verbs (`reconcile`, `abort`) live
 here because the capability boundary tracks write ownership, not audience. See
-[Five-binary architecture](architecture.md#five-binary-architecture) for the
+[Four-binary architecture](architecture.md#four-binary-architecture) for the
 binary split.
 
 Schema-version handshake: `planar-agent` is a **consumer** of the schema, not its owner. Startup queries `schema_migrations.max(version)` and refuses with exit **7** when the live DB is older than the binary's embedded minimum. The remediation pointer ("run `planar init`") is printed to stderr.
@@ -7049,36 +6555,49 @@ Schema-version handshake: `planar-agent` is a **consumer** of the schema, not it
 ```text
 # Atomic operations — each wraps (claim lifecycle + action lifecycle +
 # task status transition) in a single BEGIN IMMEDIATE transaction.
-planar-agent pull       <plan-id> [--vendor <v>] [--vendor-session <vendor:id>] [--role coder] [--ttl <duration>] [--purpose <text>] [--base-ref <git-ref>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--metadata <json>] [--parent-action <action-id>] [--run <run-id>] [--stage <stage>] [--json]
+planar-agent pull       <plan-id> [--vendor <v>] [--vendor-session <vendor:id>] [--role coder] [--model <s>] [--ttl <duration>] [--purpose <text>] [--base-ref <git-ref>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--metadata <json>] [--parent-action <action-id>] [--json]
 planar-agent peek       <plan-id> [--json]
-planar-agent complete   --claim <token> [--summary <text>] [--as caller|engine] [--attempt <id>] [--override-supervisor] [--json]
-planar-agent fail       --claim <token> --reason <text> [--category usage_limit|context_limit|output_limit|tool_failure|validation|unknown] [--as caller|engine] [--attempt <id>] [--override-supervisor] [--json]
-planar-agent release    --claim <token> [--reason <text>] [--as caller|engine] [--attempt <id>] [--override-supervisor] [--json]
-planar-agent block      --claim <token> --blocker <task-id> [--reason <text>] [--as caller|engine] [--attempt <id>] [--override-supervisor] [--json]
+planar-agent brief      <plan-id> [--json]
+planar-agent complete   --claim <token> [--summary <text>] [--json]
+planar-agent fail       --claim <token> --reason <text> [--category usage_limit|context_limit|output_limit|tool_failure|validation|unknown] [--json]
+planar-agent release    --claim <token> [--reason <text>] [--json]
+planar-agent block      --claim <token> --blocker <task-id> [--reason <text>] [--json]
 
 # Direct claims — for orchestrator dispatch when the caller already knows the
 # target entity by id. Task claims atomically transition todo → doing unless
 # --no-transition is supplied; plan and plan-step state is never changed.
-planar-agent claim      --entity task:<id>|plan:<id>|plan_step:<id> [--vendor <v>] [--vendor-session <vendor:id>] [--role <r>] [--model <s>] [--ttl <duration>] [--purpose <text>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--no-transition] [--force] [--run <run-id>] [--stage <stage>] [--json]
-planar-agent heartbeat  --claim <token> [--ttl <duration>] [--status <text>] [--as caller|engine] [--attempt <id>] [--json]
-
-# Associate an already-acquired active claim with a workflow run (and
-# optional stage) after the fact, for claims taken before the run existed,
-# and/or hand it to the engine supervisor (plan 1033; see "Engine
-# supervision" below). At least one of --run or --supervisor.
-planar-agent claim-associate --claim <token> [--run <run-id> [--stage <s>]] [--supervisor caller|engine [--attempt <id>]] [--json]
+# A task that is not ready (its task packet lists a readiness reason such as
+# blocked_by_open_task, open_question_linked or proposed_decision_linked) is
+# refused at exit 1 with `error: claim: task <id> is not ready: <reasons>` and
+# the command that would succeed; nothing is written. --allow-unready claims it
+# anyway and writes one audit action naming the overridden reasons. `pull` skips
+# unready tasks instead (see "Readiness at claim time" below).
+planar-agent claim      --entity task:<id>|plan:<id>|plan_step:<id> [--vendor <v>] [--vendor-session <vendor:id>] [--role <r>] [--model <s>] [--ttl <duration>] [--purpose <text>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--no-transition] [--allow-unready] [--force] [--parent-action <action-id>] [--json]
+planar-agent heartbeat  --claim <token> [--ttl <duration>] [--status <text>] [--json]
 
 # `--model` records the model actually used, verbatim, as an OPAQUE STRING.
 # Planar does not decide, validate, or publish what is "supported": an
 # unrecognized value is stored, not rejected, and a vendor/model pair that
 # disagrees is recorded as given rather than corrected. The catalog and spawn
 # verification belong to the orchestration/host boundary. Omitting it is valid and
-# stores NULL — reporting is optional.
+# stores NULL — reporting is optional. `pull` and `claim` take it alike: it is
+# recorded on the claim and on the action the verb opens.
+#
+# `--parent-action <id>` (on `pull` and `claim`) wires the action the verb opens as a
+# child of that action in `planar-watch tree`. The id must be positive (exit 2) and
+# name an existing action (exit 1); a refusal writes nothing. A transitioning task
+# claim parents its `claim_check` marker; a `--no-transition` claim, or a plan or
+# plan_step claim, opens an `other` action under the parent instead (a marker would
+# tell `abort` the claim moved a task it did not), and the terminal verb closes it.
 
 # Nested action lifecycle — for sub-tool-calls or sub-phases inside a
 # claim. Optional; lightweight claims skip these.
 planar-agent action start  --claim <token> --kind <kind> [--entity <kind>:<id>] [--vendor-role <s>] [--repo-root <path>] [--no-locality-probe] [--metadata <json>] [--json]
 planar-agent action end    --action <id> [--outcome ok|error|aborted|timeout] [--summary <s>] [--json]
+
+# Review records — the reviewer's verdict on a claim, written from the reviewer's
+# own claim or vendor session. See "`planar-agent review`" below.
+planar-agent review     --claim <reviewed-token> --verdict approve|request-changes --summary <text> [--reviewer-claim <token>] [--vendor <s>] [--vendor-session <vendor:id>] [--json]
 
 # Vendor hook ingestion — translates hook events into the primitives.
 # M2 ships a skeleton handler; full adapter routing lands in M4.
@@ -7087,53 +6606,8 @@ planar-agent ingest     --vendor claude --event @<file|-> [--json]
 # Operator recovery — agent_* table writers, which is why they live on
 # planar-agent (not planar). The operator invokes them directly; vendor
 # hooks never do.
-planar-agent reconcile  [--dry-run] [--stale-after <duration>] [--plan <id>] [--category usage_limit|context_limit|output_limit|tool_failure|validation|unknown] [--override-supervisor] [--json]
-planar-agent abort      --claim <token> [--reason <text>] [--category usage_limit|context_limit|output_limit|tool_failure|validation|unknown] [--vendor <s>] [--vendor-session <vendor:id>] [--override-supervisor] [--json]
-
-# Workflow run lifecycle — used by an external workflow harness to manage
-# workflow_runs rows while staying DB-handle-free (decision 444). The caller
-# supplies the harness pid (not getpid()) so crash reconciliation probes the
-# right process. `abandoned` status is reserved for `reconcile`; `run end`
-# never writes it.
-#
-# `--pid` and `--ttl` are mutually exclusive supervision modes (decision
-# D11, task 6847): exactly one is required. A pid-bound run (`--pid`) is
-# probed for liveness by `reconcile`. A pid-less run (`--ttl`) carries a
-# lease in `expires_at`, extended by `run heartbeat`, and `reconcile`
-# abandons it only once that lease has lapsed — it is never pid-probed.
-# Supplying neither refuses at InvalidInput and writes no row.
-planar-agent run start     --plan <plan-id> --workflow <name> --run-id <identifier> (--pid <harness-pid> | --ttl <duration>) --repo-root <path> [--json]
-planar-agent run end       --run-id <identifier> --status completed|failed|interrupted [--json]
-planar-agent run heartbeat --run-id <identifier> --ttl <duration> [--json]
-
-# Run-scoped working-memory (context_records) — plan 585 task 3901.
-# Workers holding a run-associated claim write records via `context add`;
-# anyone can read via `context list`; `context resolve` drives the
-# active → consumed|superseded lifecycle (stage-close compaction calls these
-# primitives). `run_id`, `stage`, `session_id`, and `claim_id` are stamped
-# server-side from the claim row (decision 447) — the caller never sets them.
-# `kind` must be one of: finding | risk | artifact | followup | summary | capsule.
-# For a `capsule` kind, `--compiled-from <id,id,...>` records provenance back
-# to the raw record ids that were distilled (decision 446).
-# Records are append-only — no uniqueness constraint per Q599.
-planar-agent context add     --claim <token> --kind <kind> --body <text> [--compiled-from <id,...>] [--json]
-planar-agent context capsule --run <run-id> --stage <s> --body <text> [--compiled-from <id,...>] [--session <id>] [--json]
-planar-agent context list    --run <run-id> [--stage <s>] [--status active|consumed|superseded] [--kind <k>] [--json]
-planar-agent context resolve --status consumed|superseded (--id <record-id> | --run <run-id> --stage <s>) [--json]
-
-# Dispatch authorization — the two-phase routing handshake that writes
-# routing_dispatch_previews and routing_dispatch_snapshots (the
-# routing_dispatch_events ledger is read by `planar models evals`; nothing in
-# this tree appends to it). `preview` records the resolved candidate plus the packet / profile /
-# policy / capability digests it was resolved against and mints a
-# single-use token; `confirm` spends that token before --expires-at, and
-# refuses if any currently observed digest, candidate, or policy version
-# differs from the preview (drift is a refusal, not a warning). Every flag
-# is an opaque value the orchestration layer supplies; Planar compares and
-# never interprets them. Run `planar-agent dispatch preview --help` /
-# `dispatch confirm --help` for the full flag set.
-planar-agent dispatch preview --work-item <id> --project <id> --validation-policy <v> --routing-policy <v> --profile-rule <v> --vendor <s> --role <s> --tier small|medium|large --work-type <t> --complexity bounded|standard|high-risk --packet-digest <d> --profile-digest <d> --policy-digest <d> --capability-digest <d> --candidate <row-id> --host <id> --class fallback|default|override|declared_experiment --evidence-state evidential|observational --expires-at <rfc3339> [--task <id>] [--experiment <id>] [--claim <token>] [--claim-status <s>] [--json]
-planar-agent dispatch confirm --token <preview-token> --dispatch-key <key> --now <rfc3339> --packet-digest <d> --profile-digest <d> --policy-digest <d> --capability-digest <d> --candidate <row-id> --vendor <s> --role <s> --tier <t> --work-type <t> --complexity <c> --validation-policy <v> --routing-policy <v> [--claim <token>] [--claim-status <s>] [--reviewer <disposition>] [--decision confirmed|overridden] [--json]
+planar-agent reconcile  [--dry-run] [--stale-after <duration>] [--plan <id>] [--category usage_limit|context_limit|output_limit|tool_failure|validation|unknown] [--json]
+planar-agent abort      --claim <token> [--reason <text>] [--category usage_limit|context_limit|output_limit|tool_failure|validation|unknown] [--vendor <s>] [--vendor-session <vendor:id>] [--json]
 
 # Host-wide build and test queue (plan 1080). Everything after `--` is the
 # command; it runs in the caller's directory with the caller's environment.
@@ -7149,9 +6623,29 @@ planar-agent version
 planar-agent schema
 ```
 
-**Duration grammar:** `--ttl`, `--stale-after`, and `--interval` accept either a bare integer (interpreted as seconds for the `--ttl` / `--stale-after` surface; `--interval` follows the same default for back-compat with the legacy parser) or a number with an ISO-style suffix: `ns`, `us`, `ms`, `s`, `m`, `h`. Examples: `--ttl 600` (10 minutes), `--ttl 10m` (same), `--ttl 1h`, `--interval 500ms`. The implementation is the shared `cli.duration` helper.
+**Duration grammar:** `--ttl`, `--stale-after`, and `--interval` accept either a bare integer (interpreted as seconds for the `--ttl` / `--stale-after` surface; `--interval` follows the same default for back-compat with the legacy parser) or a number with an ISO-style suffix: `ns`, `us`, `ms`, `s`, `m`, `h`. Examples: `--ttl 600` (10 minutes), `--ttl 10m` (same), `--ttl 1h`, `--interval 500ms`. **Default lease:** `pull` and `claim` without `--ttl` take a lease of **7200 seconds (two hours)**; `--help` shows it as the default. A bare `heartbeat` does not use the default: it renews the length the claim already holds. The implementation is the shared `cli.duration` helper.
 
 **Terminal-verb envelope for a plan or plan_step claim (task 7118):** `release` is the only terminal verb that accepts a plan or plan_step claim (`complete`, `fail` and `block` refuse it with `ClaimNotOnTask`). Such a claim holds no task, so the response names none: `--json` emits `{"ok":true,"claim_token":"...","claim":{...},"task":null}` and the human line is `ok entity:<kind>:<id> claim_status:released`. A task claim's envelope (`"task":{...}`, `ok task:<id> status:<s> claim_status:<s>`) is unchanged. Before this fix the response looked up the task whose id equalled the plan's id and reported that unrelated row.
+
+**Policy-required review and gate on `complete`.** `complete` is the one terminal verb the policy holds to a requirement; `fail`, `release`, `block` and `abort` are never refused for policy. The check runs in the same transaction that would end the claim, so a refusal exits `1`, writes nothing, and leaves the claim `active` and the task `doing`. The policy is resolved for the claim's scope (the task's plan, then that plan's association, as `config show --effective --scope` does) from the `config.toml` the invocation locates (`PLANAR_CONFIG_PATH`, else the default path). No policy value is read from the environment, so an agent cannot relax it by setting a variable. With neither key set, or with no policy table in the file, `complete` is unchanged and reads nothing extra.
+
+- **`review_required = true`:** the claim's latest `review` action (see `planar-agent review`) must have verdict `approve` and have been written by a session other than the claim's. A claim with no review, a review whose verdict is NULL, a same-session review, or a latest review of `request-changes` is refused, and the message names which.
+- **`task_gate = ["make", "test"]`:** the host queue's history must hold a PASSING run (`outcome = exited` and `exit_code = 0`) whose `argv` equals the gate element by element (the decoded JSON arrays are compared: no shell splitting, no prefix match, no case folding, so `["make","test","-j"]`, `["make"]` and `["sh","-c","make test"]` do not count), whose `claim_token` is the completing claim's (recorded by `queue run --claim <token>`), and whose `cwd` is the claim's recorded repository root or its worktree path. Directories compare as absolute paths with symlinks resolved and no trailing separator; a run in a subdirectory does not count. A claim that recorded neither path (taken with `--no-locality-probe` outside a repository) can show no gate run, and the refusal says so.
+- **Unreadable policy:** a `config.toml` that does not parse, or whose policy tables `planar config validate` refuses, refuses `complete` with `the policy in config.toml cannot be applied: <findings>`, so a broken file never reads as "no policy".
+
+The refusal is one line naming the claim (first 8 token characters) and every unmet requirement, then the command that would succeed, exit `1`, `--json` tag `PolicyUnmet`:
+
+```
+error: complete: claim 1a2b3c4d cannot complete: review_required: no review with a verdict is recorded for this claim; task_gate: no passing queued run of the gate argv is recorded for this claim in its repository root or worktree
+  to record an approving review, run from a different session: planar-agent review --claim '<token>' --verdict approve --summary '<text>' --reviewer-claim '<other-token>'
+  to record the gate run, run from the claim's repository root or worktree: planar-agent queue run --claim '<token>' -- 'make' 'test'
+```
+
+**Policy at claim time: `require_model` and the recorded digest.** `claim` and `pull` read the policy of the claim's scope from the `config.toml` the invocation locates (`PLANAR_CONFIG_PATH`, else the default path), inside the claim's transaction, before contention and readiness are asked. The scope is the claimed entity's: a task's plan, then that plan's association; `pull <plan-id>` uses the plan itself; a `plan` claim uses that plan and a `plan_step` claim its step's plan; an entity with no association uses the top-level `[policy]` table. No environment variable is consulted.
+
+- **`require_model = true`:** a claim with `--role coder`, or a pull whose recorded action is a coder action, that passes no `--model`, or `--model ''`, is refused: exit `1`, `--json` tag `PolicyUnmet`, no claim, no action, no task change. The message names the flag: `error: claim: policy require_model = true: coder claims must say which model they use (add --model '<id>')` (`pull:` for a pull). A `pull` is bound by the action kind it records, not by the `--role` text: a pull with `--role coder`, with no `--role`, with a role Planar does not recognise, or with `--role review` or a supervision role records a coder action and is bound; a pull with any other recognised role (`reviewer`, `planner`, `test_coder` and the like) records that kind and is not. A `claim` is bound only when it names `--role coder`: any other role, and a claim that names no role, is not affected. The model is recorded verbatim and never checked against a list. The default is `false`, under which nothing is refused.
+- **The digest.** Every claim of every role and entity kind records `policy_digest(effective policy)` in `agent_work_claims.policy_digest` when it is taken (`pull` records it for the claim it takes), so conformance can grade a claim against the policy it ran under. The same effective values give the same digest; a changed value gives a different one. It is stored on the row and is not part of any `--json` envelope.
+- **A policy that cannot be applied** (a `config.toml` that does not parse, or whose policy tables `planar config validate` refuses) records no digest (NULL). A coder-bound claim or pull (the same ones `require_model` binds, above) is then refused (`claim: the policy in config.toml cannot be applied: <findings>`, exit `1`, tag `PolicyUnmet`), because the broken file might hold a `require_model`; every other claim goes ahead, so a broken file does not stop unrelated work.
 
 **Milestone diagnosis on `complete` (plan 1132, task 7383).** When a `planar-agent complete` promotes a milestone plan to `done` (the in-transaction roll-up flipped it; only `complete` can, because `fail` and `release` return the task to `todo` and `block` sets `blocked`), the verb diagnoses that milestone after its transaction commits, over the milestone's lifetime window, and appends the result to its own output:
 
@@ -7162,7 +6656,7 @@ planar-agent schema
 
 **`planar-agent heartbeat --ttl` semantics (task 6093):** Omitting `--ttl` **renews the lease length the claim currently holds** — a heartbeat on a claim taken with `--ttl 8h` sets the new expiry to eight hours from now. It never shortens the lease it was sent to preserve. Passing `--ttl` sets the lease absolutely from now, in either direction, so a deliberate re-TTL (longer or shorter) is still available; a subsequent bare heartbeat then renews *that* new length. The renewed length is derived from the stored `(last_heartbeat_at, lease_expires_at)` pair, which already encodes the current TTL — there is no stored-TTL column and no migration involved.
 
-Previously `--ttl` carried a hardcoded `600` default, so an omitted flag was indistinguishable from `--ttl 600` and silently cut a long lease to ten minutes. That made a faithfully-heartbeating long dispatch *more* likely to lose its claim than one that never heartbeated at all.
+Previously `heartbeat --ttl` carried a hardcoded `600` default, so an omitted flag was indistinguishable from `--ttl 600` and silently cut a long lease to ten minutes. That made a faithfully-heartbeating long dispatch *more* likely to lose its claim than one that never heartbeated at all.
 
 **`planar-agent heartbeat --status <text>` (plan 467 M1):** When `--status` is provided, `heartbeat` inserts a closed `heartbeat`-kind `agent_actions` row with the text in the `summary` column alongside the lease refresh. This makes current activity visible in `planar-watch ps` (`activity:"<summary>"` text column) and `planar-watch feed`. When `--status` is omitted no action row is written (pre-M1 behavior preserved). The payload is capped at **256 bytes**; oversize values exit with `InvalidInput`. An explicit `--status ""` (empty string) writes an action row with an empty summary — distinct from omission.
 
@@ -7185,7 +6679,9 @@ The foreground form is `queue run` with optional `--timeout <duration>`, `--wait
 
 `--vendor <name>` and `--role <name>` name the submitting agent, and are stored with the entry and its `queue_history` row so the operator can see which vendors and roles use the queue. Each is the flag when it is given and not empty, else the environment variable `PLANAR_VENDOR` or `PLANAR_ROLE` when it is set and not empty, else it is stored empty (no value; listings show it as absent). Planar does not guess either value, and neither flag has a format rule beyond that: the text is stored as given. The values carry over to a rejoined entry (see below) and to a nested run, which takes its own flags, or the inherited environment, since a nested command's environment is the submitter's.
 
-`--claim <token>` makes the submitter renew that claim at half its lease interval, from its first poll until its command ends: at every wait tick while the entry waits, and at every tick while the command runs. A renewal is the transaction `planar-agent heartbeat --claim <token>` runs without `--ttl` or `--status`, so the lease keeps the length it has, no action row is written, and an engine-supervised claim is refused as it is for any caller. The lease length is read from the claim at the first renewal, which is made at once, and again after every renewal, so a lease re-set with `heartbeat --ttl` sets the next cadence, so an unusable token or main database is reported at the start rather than when the lease is about to lapse. Claims live in the same `planar.db` as the queue, but they keep `planar-agent`'s **exact-version rule** while the queue itself tolerates an ahead database, so the renewal opens its own bounded connection, only when `--claim` is given, lazily, never creates the file (an absent file is a failed renewal) and never migrates it, and it refuses a schema on either side of the binary's. **Against an ahead `planar.db` every renewal therefore fails:** the submitter prints one `warning: queue: cannot renew the claim: ...; the command is not affected` line and the command still runs with its own exit status, but if the wait plus the run outlasts the claim's lease the claim lapses, and the agent's next heartbeat or terminal verb fails with `ClaimNotActive`. During a migration cycle run `queue run --claim` with the head binary (the build that migrated the file), or leave `--claim` out and heartbeat separately with it. A **failed renewal never stops the command** and never changes its exit status: an unresolvable, absent, schema-locked, ahead or busy database, an unknown, ended or lapsed claim, and an engine-supervised claim each write one `warning: queue: cannot renew the claim: <why>; the command is not affected` line to standard error (to the output file of a detached run), with or without `--notices`, once per distinct reason, and are tried again after the shorter of the renewal interval and five seconds. The database is opened as an existing file only (a file that goes missing is a failed renewal, never a created one), without touching its journal mode, and a lock on it is waited for at most one second per statement from the first statement on; an attempt that times out stops there, so a locked database costs the submitter about one second per attempt. A detached submitter renews; the invoked process returns its ticket before the database is opened and does not. A nested run renews the claim it is given on its own schedule. The token is recorded with the queue entry and is never printed.
+`--claim <token>` makes the submitter renew that claim at half its lease interval, from its first poll until its command ends: at every wait tick while the entry waits, and at every tick while the command runs. A renewal is the transaction `planar-agent heartbeat --claim <token>` runs without `--ttl` or `--status`, so the lease keeps the length it has and no action row is written. The lease length is read from the claim at the first renewal, which is made at once, and again after every renewal, so a lease re-set with `heartbeat --ttl` sets the next cadence, so an unusable token or main database is reported at the start rather than when the lease is about to lapse. Claims live in the same `planar.db` as the queue, but they keep `planar-agent`'s **exact-version rule** while the queue itself tolerates an ahead database, so the renewal opens its own bounded connection, only when `--claim` is given, lazily, never creates the file (an absent file is a failed renewal) and never migrates it, and it refuses a schema on either side of the binary's. **Against an ahead `planar.db` every renewal therefore fails:** the submitter prints one `warning: queue: cannot renew the claim: ...; the command is not affected` line and the command still runs with its own exit status, but if the wait plus the run outlasts the claim's lease the claim lapses, and the agent's next heartbeat or terminal verb fails with `ClaimNotActive`. During a migration cycle run `queue run --claim` with the head binary (the build that migrated the file), or leave `--claim` out and heartbeat separately with it. A **failed renewal never stops the command** and never changes its exit status: an unresolvable, absent, schema-locked, ahead or busy database, and an unknown, ended or lapsed claim each write one `warning: queue: cannot renew the claim: <why>; the command is not affected` line to standard error (to the output file of a detached run), with or without `--notices`, once per distinct reason, and are tried again after the shorter of the renewal interval and five seconds. The database is opened as an existing file only (a file that goes missing is a failed renewal, never a created one), without touching its journal mode, and a lock on it is waited for at most one second per statement from the first statement on; an attempt that times out stops there, so a locked database costs the submitter about one second per attempt. A detached submitter renews; the invoked process returns its ticket before the database is opened and does not. A nested run renews the claim it is given on its own schedule. The token is recorded with the queue entry and `queue run` never prints it.
+
+**Claim evidence (`--claim` on the history row).** When the entry ends, its `queue_history` row carries the `--claim` token verbatim in `claim_token`; a run without `--claim` leaves it `NULL`. The token is an opaque string: it is not checked against any claim when it is recorded, so a token no claim has is recorded as given. Every way an entry ends records it (exit, signal, timeout, cancel, wait timeout, a command that could not start, a reaped entry), foreground or `--detach`, nested or not. `queue status` and `planar-watch queue history --json` report it as `claim_token`. A gate is satisfied by a passing run recorded under the completing claim's token; checking that is the job of `complete`, not of `queue run`. **Retention.** A history row with a `claim_token` is exempt from the `history_days` prune while its claim's plan is open (`draft`, `active` or `paused`), but never for more than 90 days after the claim ended (its release time, or its lease expiry while it is still active). When the plan is `done` or `abandoned` the row is pruned like any other. The prune never discards evidence on uncertainty and never keeps it forever: when the claim cannot be found, its task or step has no plan, or the claim tables cannot be read (for example against a `planar.db` whose planning schema this build does not know), the row is kept for 90 days after its own `ended_at` and then follows the ordinary retention. Rows without a token follow `history_days` alone. The prune runs when `queue run` enqueues.
 
 `--notices` writes queue notices to standard error, one line each, in the form `queue: entry <seq> <what happened>`: `waiting at position <n>` (the entry's place among the waiting entries, counting from 1, when it first waits and each time its place changes; a rejoined entry says it again under its new number), `started`, and last, the outcome: `exited with code <n>`, `terminated by signal <n>`, `stopped at its run limit`, `cancelled`, `cancelled before its turn`, `removed at its wait limit`, `not started`, or, for an entry that ended without this submitter or that the queue gave up on, a short truthful text (`cancelled`, `ended as <outcome> without this submitter`, `ended without a history row`, `abandoned, rejoin limit reached`, `abandoned, could not be polled`, `abandoned, cannot observe the command's status`, `ended: cannot rejoin the queue`, `ended: store busy while rejoining`, `ended: cannot read the clock`). An entry whose start failed for a reason other than a missing or unexecutable program ends `abandoned` and says `abandoned, could not be started`. A notice describes what this submitter observed of its command, while `queue status` holds the entry's record, and the two can differ: a running entry that another process removed shows `exited with code <n>` in the notice but `abandoned` in its history. Every exit after the entry exists ends with one of these lines, written after any `error: queue: ...` line. The last line on standard error therefore names the sequence number and how the entry ended. Standard output is never written by the queue, with or without the flag, and without `--notices` the queue writes nothing to standard error on the happy path, so the stream is byte-identical to a direct run. `started` is written once the command has been spawned, so it is not ordered against the command's own output: the command's first bytes on standard error may come before it. The `warning: queue: ...` diagnostics of a degraded path (a failed signal, a configuration that could not be reloaded, a rejoin, a store that could not be reached) and the `error: queue: ...` lines are the documented exception: they are written with or without `--notices`.
 
@@ -7240,6 +6736,7 @@ The `--json` output is one object with exactly these fields, in this order. A fi
 | `waited_ms`, `ran_ms` | Durations: for an entry still in the queue, up to now |
 | `run_limit_ms`, `wait_limit_ms` | The limits in force, in milliseconds: `wait_limit_ms` is the `--wait-timeout` the entry was submitted with (`null` without one); `run_limit_ms` is its `--timeout` (default 30 minutes), recorded when the entry starts and `null` while it waits. An ended entry reports the values its history row copied. Both also read `null` wherever an older build (agent schema version 2, which has no limit columns) did the writing: a limit is `null` when such a build enqueued the entry (`wait_limit_ms`), started it (`run_limit_ms`), or ended it, including a reap by its poll (both, on the history row); and both are `null` for every entry and row while the store itself is still at version 2, which `queue status` reads without migrating it |
 | `slots`, `grace_ms` | The `[queue]` settings in force now, for an entry still in the queue; `null` when ended, or when the `[queue]` configuration cannot be used |
+| `claim_token` | The `--claim` token the run named, verbatim, or `null` for a run without one |
 
 **A successor is followed.** When the number asked for was reaped while its submitter was stopped and the submitter rejoined the queue (see above), its history row names the new number. `queue status` then describes the new entry (its `state`, `position` and so on, and its end once it has one), sets `superseded_by` to the new number and keeps `seq` as the number asked for. A chain of rejoins is followed to its end; a successor whose history was pruned ends the chain at the last row that exists.
 
@@ -7289,20 +6786,27 @@ Exit 124 can mean an observer deadline, recorded run timeout, or child exit 124.
 planar-agent queue rule
 ```
 
-`queue rule` prints the rule that tells an agent to send its builds and tests through the queue, so the operator can paste it into a project's own agent guide. It writes the text to standard output, byte for byte, and exits **0**. It takes no argument and no flag (there is no `--json`; the text is Markdown, and it begins with the `##` heading "Builds and tests go through the host queue").
+`queue rule` prints how to use the host queue, and, only where the operator's policy requires it, the instruction to send every build and test through it. It writes Markdown to standard output and exits **0**. It takes no argument and no flag (there is no `--json`).
 
-The text is one authored file, `src/lib/queuerule/queue-rule.md`, embedded into `planar-agent` at build time. It holds:
+The text has two parts, each one authored file embedded into `planar-agent` at build time.
 
-- what counts as a build or test command, with examples, and what does not;
-- the detached submit and status polling procedure; the bounded `queue wait` recipe is being adopted in the agent guidance alongside this reference contract;
+**The how-to** (`src/lib/queuerule/queue-rule.md`) is always printed. It begins with the `##` heading "Using the host queue" and holds:
+
+- the detached submit and the bounded `queue wait` recipe;
 - the instruction to pass `--vendor` and `--role`;
-- the instruction, for an agent that holds a task claim, to pass `--claim <token>` to `queue run` (detached and foreground) so the queue renews the claim while the entry waits and runs, in place of renewing it by hand between polls;
+- the instruction, for an agent that holds a task claim, to pass `--claim <token>` to `queue run` (detached and foreground) so the queue renews the claim while the entry waits and runs;
 - what to do on each outcome `queue status` reports;
-- the instruction to stop and report when a queue command exits **125**, and that the command must not then be run directly;
 - what a non-zero exit from the detached submit means (no ticket was issued) and the route for each code;
-- the check for a Planar without the queue (`planar-agent queue rule >/dev/null` exits non-zero), the fallback of running the command directly and telling the operator that Planar needs upgrading, and a table that sets this apart from exit 125. The check is `queue rule`, not `--help`: an older Planar answers an unknown command's `--help` with its general help and exits 0, so a `--help` check would pass where there is no queue. `queue rule` exits non-zero there and opens no database.
+- what an exit **125** refusal means, and to stop and report it;
+- the check that the installed Planar has the queue (`planar-agent queue rule >/dev/null`), which is `queue rule` and not `--help`: an older Planar answers an unknown command's `--help` with its general help and exits 0, so a `--help` check would pass where there is no queue.
 
-`queue rule` **opens no database**, and is the one queue verb that needs no `planar.db`. It reads no environment variable and no configuration file, so it prints the same text with `PLANAR_DB` unusable and with `HOME` and `PLANAR_DB` unset, and it creates nothing on disk.
+**The mandate** (`src/lib/queuerule/queue-mandate.md`) is printed after the how-to only when the caller's scope has `use_queue = true`. It begins with the `##` heading "Builds and tests go through the host queue", names the operator's policy as its source, and holds what counts as a build or test command (with examples, what is not queued, and "when unsure, queue it"), that a refusal is never bypassed by running the command directly, the fallback of running directly and telling the operator that Planar needs upgrading for a Planar that has no `queue` verb, and the table that sets that apart from a refusal. A final line `Source: operator policy use_queue = true (<config path>, [policy])` names the table that set it; an association's table reads `[associations."<slug>".policy]`.
+
+**The policy** is the one `planar-agent brief` shows: the `[policy]` table of `config.toml` (`PLANAR_CONFIG_PATH`, else `~/.planar/config.toml`), refined by the `[associations."<slug>".policy]` table of the caller's association, which wins; the shipped default is `use_queue = false`. No environment variable participates: `PLANAR_USE_QUEUE=1` changes nothing. The caller's association is derived from the working directory, as for every write verb.
+
+`queue rule` never fails on configuration. A config file that cannot be read or parsed, or a `[policy]` table with an unknown or mistyped key, prints the how-to and one final line `policy unreadable: <finding>`, grants no mandate, and exits 0. `planar config validate` reports the finding in full.
+
+`queue rule` **opens no database** unless some `[associations."<slug>".policy]` table sets `use_queue`, which is the only case where the working directory's association matters. Then it opens `planar.db` read-only (it never creates it and applies nothing) to find the association; if the database is unreachable, the working directory has no single association, or the schema is not this binary's, the top-level policy alone decides and a final line `scope not resolved (<reason>); only the top-level [policy] table was consulted` says so. With no config file, or with only a top-level policy, it prints the same text with `PLANAR_DB` unusable and with `HOME` and `PLANAR_DB` unset, and it creates nothing on disk.
 
 #### Known limits
 
@@ -7322,7 +6826,7 @@ These are accepted, and stated here so they are not rediscovered.
 
 #### The queue command guard
 
-`queue run` refuses a command that would start a model, because a model launcher queued behind builds and tests holds a slot for as long as a conversation lasts. The list is short and purpose-built (it is not derived from `planar-execute`'s host-function deny list): `claude`, `codex`, `gemini`, `copilot`, `aider`, `opencode` and `cursor-agent`.
+`queue run` refuses a command that would start a model, because a model launcher queued behind builds and tests holds a slot for as long as a conversation lasts. The list is short and purpose-built: `claude`, `codex`, `gemini`, `copilot`, `aider`, `opencode` and `cursor-agent`.
 
 - The guard matches the **basename** of the program, whole and without regard to ASCII case: `/usr/local/bin/claude`, `claude` and `Claude` are refused, while `codex-lint-report` and `claude_fixture` are queued, because a name that only contains a listed word is a different program. Case is ignored because macOS's default volumes are case-insensitive, where looking up `Claude` on `PATH` runs `claude`; the same folding applies to `env`. The refusal names the listed spelling (`claude`).
 - Before choosing the program the guard skips leading `NAME=value` assignments and a leading `env` (by basename) with its options and the assignments after it: the flags that need no value (`-i`, `-0`, `-v`), the ones that take a value, in their separate, attached and long forms (`-u NAME`, `-C DIR`, `-P PATH`, `-a NAME`, FreeBSD's `-L USER` and `-U USER` (macOS and GNU `env` reject them, so a command using one fails inside `env` before anything runs; the guard consumes their value anyway, which is harmless), and the long `--unset`, `--chdir` and `--argv0`), clustered short options such as `-iu NAME`, and the `--` that ends the options. The string given to `env -S` (or `--split-string`) is split on white space, honouring quotes, and read as the start of the command. The skipping repeats, so `env env claude` is refused too. A command that is only `env`, with nothing after it to run, has no program and is not refused.
@@ -7378,27 +6882,44 @@ Each code is checked against the built binary by `make exit-code-contract` where
 
 | Verb       | Transaction body |
 |------------|------------------|
-| `pull`     | SELECT next eligible task → INSERT `agent_work_claims (status=active)` → UPDATE `tasks.status='doing'` → INSERT `agent_actions`. Returns `{ok, no_work, claim_token, claim, task, action_id}`. No writes on no-eligible-task path. |
+| `pull`     | SELECT eligible tasks → skip each one the task packet reports unready → INSERT `agent_work_claims (status=active)` → UPDATE `tasks.status='doing'` → INSERT `agent_actions`. Returns `{ok, no_work, claim_token, claim, task, action_id}`. No writes on the no-ready-task path. |
 | `complete` | Verify claim active → UPDATE action ended_at + outcome='ok' → UPDATE task status='done' → UPDATE claim status='completed'. |
 | `fail`     | Same as complete with outcome='error', task status='todo', claim status='aborted', and `failure_category` set from `--category` (default `unknown`). |
 | `release`  | Same as fail with outcome='aborted', claim status='released'. (Distinct semantically from fail — "graceful give-up" vs "I tried and failed".) |
 | `block`    | INSERT `entity_links(from=task, to=blocker, relationship='depends-on')` → UPDATE task status='blocked' → UPDATE action ended_at + outcome='aborted' → UPDATE claim status='released'. |
 | `peek`     | Read-only: same SELECT as step 1 of pull; no writes. |
-| `reconcile`| (1) Claim sweep: SELECT expired active claims → UPDATE status='stale' and optional operator-supplied `failure_category`; a claimed task in `doing` returns to `todo` only when the claim has an ownership action and no active replacement. Direct-claim `claim_check` markers are closed as aborted; the existing ended-session sweep closes other orphaned actions. (2) Run sweep: SELECT running `workflow_runs` rows. A pid-bound row (`pid` set) is probed with `kill(pid,0)` → ESRCH ⇒ dead. A pid-less row (decision D11, task 6847) is NEVER pid-probed — it is dead only once `expires_at` has lapsed. Either way, dead ⇒ mark `abandoned` + set `ended_at`. Both sweeps run inside the same `BEGIN IMMEDIATE` transaction. `--dry-run` returns candidates + run_candidates without writing. `--plan <id>` scopes both sweeps to claims/actions/runs belonging to the given plan. |
+| `reconcile`| SELECT expired active claims → UPDATE status='stale' and optional operator-supplied `failure_category`; a claimed task in `doing` returns to `todo` only when the claim has an ownership action and no active replacement. The bookkeeping actions of a bare claim (the `claim_nest` action opened for `--parent-action`, and the `unready_override` audit row of `--allow-unready`) are not ownership evidence, so a stale `--no-transition` claim never changes the task status. Direct-claim `claim_check` markers and `claim_nest` actions are closed as aborted; the existing ended-session sweep closes other orphaned actions. The sweep runs inside one `BEGIN IMMEDIATE` transaction. `--dry-run` returns `candidates` without writing. `--plan <id>` scopes it to claims and actions belonging to the given plan. |
 | `abort`    | UPDATE claim status='aborted' + released_at + release_reason + optional operator-supplied `failure_category` → restore `doing` → `todo` only for a default direct task claim carrying its transactional `claim_check` marker → close that marker as aborted → INSERT audit `agent_actions` row naming the aborting session. Primitive `--no-transition` and pull claims retain their previous task-status behavior. |
+
+#### Readiness at claim time
+
+`pull` and `claim` ask the same readiness verdict as `task packet` and `plan next` (the packet reasons:
+`missing_title`, `invalid_task_status`, `missing_owning_plan`, `unresolved_citation`,
+`blocked_by_open_task`, `open_question_linked`, `proposed_decision_linked`), and they ask it inside the
+claim transaction. A question or decision linked concurrently therefore cannot slip past them. A `doing`
+task is ready only when its claim has lapsed; a live claim is `ClaimContention` first, before readiness
+is asked. Plans and plan steps are not subject to readiness.
+
+- `pull <plan-id>` skips an eligible task that is not ready and claims the next ready one. With none
+  ready it returns `no_work` and writes nothing. `--json` adds `"skipped_unready": <count>` and
+  `"unready": [{"task_id": <id>, "reasons": [...]}]` (the first 20; the count is never capped) to
+  `no_work` and to a pull that skipped a task. Text mode keeps stdout (`pulled ...` or `no_work`) and
+  prints `skipped N unready task(s): task:<id> (<reasons>); ...` on stderr. `peek` reports the same.
+- `claim --entity task:<id>` on an unready task exits 1 (like `ClaimContention` and `IllegalTransition`),
+  creates no claim, leaves `tasks.status` unchanged and prints `error: claim: task <id> is not ready:
+  <reason>[, <reason>...]`, a hint per reason and `planar-agent claim --entity task:<id> --allow-unready`.
+  With `--json` the stdout envelope's `tag` is `TaskNotReady`.
+- `claim --entity task:<id> --allow-unready` is open to any caller. It claims the task and writes exactly
+  one closed `agent_actions` row of kind `other` on the claim, with
+  `metadata = {"unready_override":true,"reasons":[...]}` and
+  `summary = "unready_override: <reasons>"`. A ready task claimed with the flag writes no such row.
 
 All write verbs open `BEGIN IMMEDIATE` so the writer lock blocks any concurrent claim attempt on the same row. The status-transition guard (`policy.status.check`) is consulted before each `UPDATE tasks SET status` — refusal rolls the transaction back and the claim keeps its previous state.
 
-Failure categories are terminal observations, not retry policy. Systemic
-capacity handling is implemented by the caller through
-`planar-execute run workflows/parallel-dispatch.lua --phase
-capacity_reconcile --args <json>`, not by a `planar` provider-capacity verb.
-That deterministic phase consumes supplied lane outcomes and emits a
-provider-scoped breaker/recovery packet; it performs no claim write, provider
-call, spawn, abort, reconcile, or persisted breaker reset. Use
+Failure categories are terminal observations, not retry policy. No
+`planar` verb handles provider-capacity failures. Use
 `planar-watch claims --plan <id> --status all --json` to inspect claims,
-`planar-agent reconcile --plan <id> --dry-run --json` to preview stale recovery,
-and `planar report --json` for aggregate `{provider,category,count}` rows.
+`planar-agent reconcile --plan <id> --dry-run --json` to preview stale recovery.
 
 ### JSON shapes
 
@@ -7406,86 +6927,136 @@ Stable across versions; new keys may be added, existing keys do not change name 
 
 | Verb          | Shape |
 |---------------|-------|
-| `pull`        | `{ok, no_work, claim_token?, claim?, task?, action_id?}` |
-| `peek`        | `{ok, no_work, task?}` |
+| `pull`        | `{ok, no_work, claim_token?, claim?, task?, action_id?}`; plus `skipped_unready` and `unready` on `no_work` and whenever a task was skipped |
+| `peek`        | `{ok, no_work, task?}`; plus `skipped_unready` and `unready` on `no_work` and whenever a task would be skipped |
 | `complete` / `fail` / `release` / `block` | `{ok, claim_token, claim, task}` |
 | `claim` / `heartbeat` | `{ok, claim_token, claim}` |
 | `action start` / `action end` | `{ok, action_id, action}` |
+| `review`      | `{ok, action_id, verdict, reviewed_claim, parent_action_id}` (`parent_action_id` is `null` when the reviewed claim has no action to hang under) |
+| `brief`       | `{brief_version, plan, anchor, counts, milestones, claims, wave, readiness, policy, confirm_before, protocol}`; see [`planar-agent brief`](#planar-agent-brief) |
 | `ingest`      | `{ok, sessions_created, claims_created, actions_created, events_processed}` |
-| `reconcile`   | `{ok, claims_marked_stale, actions_closed, runs_abandoned, candidates?, run_candidates?}` (`candidates` + `run_candidates` present only with `--dry-run`) |
+| `reconcile`   | `{ok, claims_marked_stale, actions_closed, candidates?}` (`candidates` present only with `--dry-run`; each is `{kind, id, claim}`) |
 | `abort`       | `{ok, claim_token, claim, aborting_session}` |
-| `run start`   | `{ok, run_id, run}` where `run` includes `id`, `plan_id`, `workflow_name`, `run_identifier`, `pid` (number or `null` for a pid-less lease-supervised run), `expires_at` (string or `null`), `repo_root`, `status:"running"` |
-| `run end`     | `{ok, run_id, status}` where `status` is the terminal status written |
-| `run heartbeat` | `{ok, run_id, expires_at}` — the run's new lease deadline |
 
-`ClaimRow` matches the `agent_work_claims` row shape with snake_case keys (including nullable `failure_category`, locality columns `repo_root`, `branch`, `head_sha_at_claim`, `dirty_at_claim`, worktree columns `worktree_id`, `worktree_path`, and workflow run correlation columns `run_id`, `stage`). `Task` matches `planar task show --json`. `ActionRow` matches `agent_actions` (including locality columns `head_sha`, `dirty`).
+`ClaimRow` matches the `agent_work_claims` row shape with snake_case keys, except `policy_digest`, which is stored but not emitted (including nullable `failure_category`, locality columns `repo_root`, `branch`, `head_sha_at_claim`, `dirty_at_claim`, worktree columns `worktree_id`, `worktree_path`, and the `run_id` and `stage` columns, which are always null). `Task` matches `planar task show --json`. `ActionRow` matches `agent_actions` (including locality columns `head_sha`, `dirty`).
+
+### `planar-agent brief`
+
+`brief <plan-id>` is the single entry point an orchestrator reads before it dispatches work in a plan: the plan's state, who holds which claim, which tasks may run in parallel now, which are ready, which policy applies, and the exact command templates of the claim protocol. It is read-only: the database is opened strictly read-only (`mode=ro`, so the driver refuses any write whatever the code does) and the verb writes nothing, not even a session row. The policy comes from the `[policy]` tables of the user's config file, resolved like `planar config`: `PLANAR_CONFIG_PATH`, else `$HOME/.planar/config.toml`. There is no environment override of a policy value.
+
+| Argument | Description |
+|----------|-------------|
+| `<plan-id>` | The plan: a milestone or an anchor. Required; an id only, as for `pull` and `peek`. |
+| `--json` | Emit the pinned JSON document below instead of text. |
+
+Text is the default and stays under 4 KB for a 20-task milestone. Placeholders in the claim templates are single-quoted for a POSIX shell and an embedded `'` is written `'\''`; a claim's worktree path is quoted the same way. A `gate` template appears only when the policy has `use_queue = true`: it is `planar-agent queue run --claim '<token>' -- <each task_gate element, quoted>`, or `-- <command>` when no `task_gate` is set. `confirm before:` is printed only when the policy sets `confirm_before`.
+
+```text
+brief v1 plan 2 m1 [active]
+tasks 23: todo 20 doing 2 blocked 0 done 1
+anchor: 1 p-anchor [active]
+milestones: 2 m1 [active] 1/23; 3 m2 [draft] 0/1;
+claims:
+  live #1 task:21 role=coder model=claude-opus worktree='/tmp/it'\''s a worktree' expires 2026-10-11T22:00:00.000Z
+  stale #2 task:22 role=reviewer model=- worktree=- expires 2026-10-11T19:00:00.000Z
+wave (12 parallel): 1 task-1; 2 task-2; ...; 14 task-14;
+serialized (9):
+  12 task-12: packet not ready: unresolved_citation
+  13 task-13: rule 1: blocked_by not-done task 14
+  ...
+ready: 17 of 20 unclaimed todo; not ready:
+  12 task-12: unresolved_citation
+  ...
+policy digest 3b63f137...; scope top-level (global_scope)
+  review_required=false [default]
+  use_queue=false [default]
+  ...
+confirm with the operator before: task done; plan closeout
+protocol (lease 7200s, heartbeat every 1h):
+  claim: planar-agent claim --entity task:<id> --role coder --model '<model>' --ttl 7200 --worktree '<path>'
+  heartbeat: planar-agent heartbeat --claim '<token>'
+  ...
+```
+
+**Plan scope.** For a milestone the counts, claims, wave and readiness cover that plan and its descendants; `anchor` names the root of its parent chain and `milestones` lists the anchor's children (siblings included) with their own counts. For an anchor the same fields aggregate every milestone beneath it: `anchor` is `null`, `counts` sums all milestones' tasks, `claims` lists every claim covering them, and the wave and readiness span all milestones (including a `draft` one). A plan with no tasks gives zero counts, `claims: none` and an empty wave.
+
+**A bad config file does not stop the brief.** If the policy tables have a refused key or a mistyped value, or the file is not valid TOML or cannot be read, the verb still exits 0: `policy.valid` is `false`, `policy.findings` lists each problem (`{key, message}`; a file-level problem has the key `config`), and each mistyped key falls through to the next layer's value. The text form prints an `INVALID config` line. Run `planar config validate` for the full report.
+
+`--json` writes one line, ending in a newline, with these top-level keys in this order. A key is never reordered, and `brief_version` (currently `1`) is bumped when a key is removed or changes meaning:
+
+| Key | Shape |
+|-----|-------|
+| `brief_version` | Integer. |
+| `plan` | `{id, slug, title, status}`. |
+| `anchor` | The same shape, or `null` when the plan is itself the anchor. |
+| `counts` | `{todo, doing, blocked, done, cancelled}` over the plan and its descendants. |
+| `milestones` | `[{plan, counts}]`, the anchor's children, ascending by id. |
+| `claims` | `[{claim_id, entity, state, role, model, worktree, vendor, expires_at, covered_tasks}]`; `state` is `live` or `stale`, live first. |
+| `wave` | `{fan_out_available, parallel, serialized}`; each task is `{id, slug, title, why}` with `why` as `[{rule, reason}]` (empty for a wave member). |
+| `readiness` | `[{id, slug, ready, reasons}]` for each unclaimed todo task. |
+| `policy` | `{association, scope_reason, valid, findings, digest, values, sources}`; `values` is `{confirm_before, require_model, require_scenario_coverage, review_required, task_gate, use_queue}` and `sources` maps each key to `{kind, section}`. |
+| `confirm_before` | The policy's verb paths, `[]` when unset. The text form prints them with the policy section as `confirm with the operator before: <path>; <path>`, plus a protocol note line, only when the list is not empty. |
+| `protocol` | `{lease_ttl_secs, heartbeat_every_secs, templates}` with `templates` as `[{name, command}]`. |
+
+The `schema` catalog entry for `brief` pins the flag, the positional, the examples and the exit codes (`planar-agent schema`); a golden test pins the JSON bytes.
+
+| Exit | When |
+|------|------|
+| `0` | The brief was written, including when the config file is invalid. |
+| `1` | No plan has the id (`error: brief: plan <id> not found`), the database does not exist or cannot be opened, or a usage error (a missing or non-numeric id, an unknown flag). |
+| `2` | The plan id is not a positive integer (for example `0`). |
+| `7` | The schema is behind or ahead of this binary. |
+
+### `planar-agent review`
+
+`review` records one reviewer's verdict on a claim as an `agent_actions` row of kind `review`. It is run under the **reviewer's** own claim or vendor session, never the coder's: the verb is refused when the caller's session is the reviewed claim's session, so a claim cannot vouch for its own work. The reviewed claim may be active or ended, since a review can follow a return or a `complete`. It records evidence; it does not change the claim, the task or any status. `complete` reads it only when the scope's policy sets `review_required`.
+
+| Flag | Description |
+|------|-------------|
+| `--claim <token>` | The claim under review. Required. |
+| `--verdict approve\|request-changes` | The verdict. Required; stored on the action's `verdict` column. |
+| `--summary <text>` | What the review found, stored as the action's summary. Required. |
+| `--reviewer-claim <token>` | The reviewer's own claim. Its `vendor_session` is the caller's session, and the review belongs to that claim's session. |
+| `--vendor-session <id>` | The reviewer's vendor session id (for example `claude:s2`), used when no reviewer claim is named. When both are given the reviewer claim's session wins. |
+| `--vendor <name>` | Vendor tag recorded on the review when no reviewer claim names one (default `planar-agent`). |
+| `--json` | Emit `{ok, action_id, verdict, reviewed_claim, parent_action_id}`. |
+
+The caller's session must be identifiable: pass `--reviewer-claim` or `--vendor-session`. The reviewed claim's session is its `vendor_session`. When the reviewed claim has none (it was taken without `--vendor-session`), a bare session id cannot be compared with nothing, so the review is accepted only under a `--reviewer-claim` whose claim carries a vendor session; the reviewer claim's token must also differ from the reviewed token, and its session row from the reviewed claim's.
+
+What it writes, in one transaction: a closed action (`outcome` `ok`) of kind `review` with `claim_id` set to the **reviewed** claim, so the reviews of a claim are found by that claim; `parent_action_id` set to the reviewed claim's earliest non-review action, so `planar-watch tree` draws the verdict under the work it judges (a claim with no action at all gets a root review action, and the text output says so); `session_id` the reviewer's session; and `metadata` `{"reviewer_session":"…","reviewer_claim":"…"}` (a key is left out when unknown). The reviewed claim's `planar-watch ps` activity does not show the verdict, and `reconcile` does not count a review as proof that the claim moved its task.
+
+| Exit | When |
+|------|------|
+| `0` | Recorded. Text: `review recorded: action <id> verdict <v> for claim <first 8 token characters>`. |
+| `1` | The reviewed claim or the reviewer claim does not exist (the message names the token); or the caller's session is the reviewed claim's session (`ReviewerNotIndependent`; run the review under a different claim or session than the coder's). Nothing is written, not even a session row. |
+| `2` | `--verdict` missing or not `approve` / `request-changes`; `--summary` missing; or neither `--reviewer-claim` nor `--vendor-session` was given. The database is not opened. |
+| `7` | The schema is behind or ahead of this binary. |
+
+`action start --kind review` is refused (exit 2) and `pull --role review` records a `coder` row, so the verb above is the only writer of review records. Engine code reads them with `reviews_for_claim`.
 
 ### `planar-agent reconcile` flags
 
-`reconcile` sweeps expired claims, orphaned actions, and dead workflow run pids. All flags are optional; without filters the sweep is global.
+`reconcile` sweeps expired claims and orphaned actions. All flags are optional; without filters the sweep is global. The `runs_abandoned` and `run_candidates` keys were removed with engine supervision; before that, the sweep abandoned runs only for engine-supervised claims.
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--dry-run` | Report candidates without writing. Returns the same JSON shape as a live run, with `candidates` and `run_candidates` arrays populated. | off |
+| `--dry-run` | Report candidates without writing. Returns the same JSON shape as a live run, with the `candidates` array populated. | off |
 | `--stale-after <duration>` | Additional grace period beyond the lease expiry before marking a claim stale. Accepts bare integer (seconds) or a suffixed duration (`10m`, `1h`, `500ms`). Useful for giving agents a small window to heartbeat after lease expiry before the reconciler fires. | `0` |
-| `--plan <id>` | Scope both the claim sweep and the run sweep to claims/actions/runs belonging to the given plan id. When omitted, the sweep is global (all plans). | (global) |
+| `--plan <id>` | Scope the sweep to claims and actions belonging to the given plan id. When omitted, the sweep is global (all plans). | (global) |
 | `--category <value>` | Record a closed failure category on every claim made stale by this sweep. Accepted values: `usage_limit`, `context_limit`, `output_limit`, `tool_failure`, `validation`, `unknown`. Dry-run never writes it. | (null) |
 | `--json` | Emit a JSON result object. | off |
 
 **JSON shape:**
 ```json
-{"ok":true,"claims_marked_stale":2,"actions_closed":1,"runs_abandoned":0}
+{"ok":true,"claims_marked_stale":2,"actions_closed":1}
 ```
 
 With `--dry-run`:
 ```json
-{"ok":true,"claims_marked_stale":0,"actions_closed":0,"runs_abandoned":0,"candidates":[{"claim_token":"...","claimed_at":"..."}],"run_candidates":[]}
+{"ok":true,"claims_marked_stale":0,"actions_closed":0,"candidates":[{"kind":"task","id":42,"claim":{"claim_token":"...","claimed_at":"..."}}]}
 ```
 
 ---
-
-### Engine supervision (plan 1033 D3/D4)
-
-A claim is **caller-supervised** until `claim-associate --supervisor engine
---attempt <id>` hands it to the engine supervisor (decision 1007). A
-caller-supervised claim — every claim nobody associates — takes every verb
-exactly as before, and a claim never goes back: `--supervisor caller` on an
-engine claim is refused.
-
-On an **engine-supervised** claim the engine alone extends the lease and
-issues the one terminal verb, acting as `--as engine --attempt <id>` with
-the attempt the claim is associated with:
-
-| Verb | Caller (no `--as`) | `--as engine --attempt <associated>` | `--as engine`, other attempt |
-|---|---|---|---|
-| `heartbeat` | only with `--status` and no `--ttl`: records the status, lease **unchanged** | extends the lease | `AttemptMismatch` |
-| `complete` / `fail` / `release` / `block` | `SupervisorMismatch`, unless `--override-supervisor` | lands once; a repeat after it landed is exit 0 with no change | `AttemptMismatch` |
-| `claim-associate --supervisor engine` | same attempt: no-op; new attempt: moves the claim to it | — | — |
-
-**Recovery leaves engine work to the engine** (task 6489). `reconcile`
-skips expired engine-supervised claims and dead-pid `engine = 'centurion'`
-runs — their recovery is the Centurion host's — and reports them: JSON gains
-`skipped_engine_claims` / `skipped_engine_runs`, text gains a `skipped
-(engine-supervised; ...)` block, both emitted only when something was
-skipped, so a caller-only sweep prints exactly what it always did. `abort`
-on an engine claim is `SupervisorMismatch`. `--override-supervisor` on
-either takes the work over and logs one `supervisor_override` action per
-engine claim. `planar-watch claims` renders an expired engine claim that
-reconcile left alone as `status:lapsed (engine)` (it appears under
-`--status stale` and `--status all`).
-
-`--as engine` on a caller claim is `SupervisorMismatch`. Every refusal is
-`error: <verb>: <Tag>` at exit 1 and leaves claim, task and lease untouched.
-Flag misuse is refused before anything is written, at exit 2: `--as engine`
-without `--attempt`, `--attempt` without `--as engine`, `--override-supervisor`
-with `--as engine`, and `claim-associate` with neither `--run` nor
-`--supervisor`.
-
-Each supervised write leaves one closed `agent_actions` row:
-`claim_associate` (association or a new attempt), `claim_terminal` (the
-engine's terminal verb), `supervisor_override` (an operator override). These
-kinds are written only by these verbs — `action start --kind` refuses them
-and `pull --role` treats them as unknown (falls back to `coder`).
 
 ### Locality flags
 
@@ -7495,15 +7066,6 @@ and `pull --role` treats them as unknown (falls back to `coder`).
 - `--no-locality-probe` — short-circuit; records locality columns as NULL.
 
 Per-action-kind defaults: planner / coder / reviewer / test_coder probe; heartbeat / tool_call skip. The probe runs `git symbolic-ref`, `git rev-parse HEAD`, and `git status --porcelain` against the resolved root; any subprocess failure (non-git directory, missing `git`, error exit) records `unknown` rather than refusing the claim.
-
-### Workflow run correlation flags (`pull` and `claim`)
-
-`pull` and `claim` accept two optional flags for associating a claim with an external workflow harness run (decision 450). Decision 1007 (plan 1033) permits the run these flags correlate against to be driven by an external workflow harness, a host-native workflow, or a background agent rather than only the model orchestrator — see `agents/methodology.md` § Worktrees and `docs/concepts.md` § Worktree.
-
-- `--run <run-id>` — integer id of the `workflow_runs` row to link on the claim. Set by the external harness when dispatching a worker inside a run. Omit for interactive operator claims (leaves `run_id` NULL on the row).
-- `--stage <stage>` — free-text stage name (e.g. `code`, `review`, `plan`) recorded on the claim. Requires `--run`; omitting `--stage` while passing `--run` leaves `stage` NULL. The `context add --claim <token>` verb (task 3901) stamps `run_id` and `stage` server-side from the claim row — the worker passes only `--claim` (decision 447).
-
-Claims acquired without `--run`/`--stage` behave byte-for-byte as before (no behavior change, no default values). The columns are nullable; existing callers and tools that do not pass these flags are unaffected.
 
 ### Entity-ref parser (`claim --entity`)
 
@@ -7521,12 +7083,11 @@ Claims acquired without `--run`/`--stage` behave byte-for-byte as before (no beh
 
 ### Capability boundary
 
-A process invoked as `planar-agent` writes only to `agent_work_claims`,
-`agent_actions`, `workflow_runs`, and `context_records`, plus `tasks.status`
+A process invoked as `planar-agent` writes only to `agent_work_claims`
+and `agent_actions`, plus `tasks.status`
 inside atomic coordinated operations with status guards, and, in `planar.db`
 itself, `queue_entries` and `queue_history` (through `queue run` and `queue cancel`). It
-never writes plan, decision, question, scenario, artifact, annotation, or
-feedback-triage rows. A vendor hook configured with only `planar-agent` on its
+never writes plan, decision, question, scenario, artifact, or annotation rows. A vendor hook configured with only `planar-agent` on its
 PATH therefore has a bounded planning-state blast radius. `queue run` also
 executes the command its caller names; the queue is a coordination aid, not a
 security boundary.
@@ -7535,7 +7096,7 @@ security boundary.
 
 ## Binary: `planar-watch`
 
-`planar-watch` is the human-facing **read-only viewer** for live agent activity. Third of Planar's now-five binaries to be added (plan 85 M8). See `docs/architecture.md` § "Five-binary architecture" for the binary split. Note: `planar-watch` is the scriptable NDJSON streaming viewer; `planar explore` is reserved for launching Planar Explorer and is not yet implemented (bare `planar` prints the root help) — see [Domain: `explore`](#domain-explore).
+`planar-watch` is the human-facing **read-only viewer** for live agent activity. See `docs/architecture.md` § "Four-binary architecture" for the binary split. Note: `planar-watch` is the scriptable NDJSON streaming viewer; bare `planar` prints the root help.
 
 Schema-version handshake: `planar-watch` is a **consumer** of the schema, not its owner. Startup queries `schema_migrations.max(version)` and refuses with exit **7** when the live DB is older than the binary's embedded minimum (same code `planar-agent` uses; remediation message "run `planar init`").
 
@@ -7543,7 +7104,7 @@ Schema-version handshake: `planar-watch` is a **consumer** of the schema, not it
 
 A process invoked as `planar-watch` performs **no writes**. Two defenses:
 
-1. The command tree (`src/cmd/planar-watch/`) registers exactly eleven read verbs — `feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `run`, `sync-events`, `queue`, `diagnose` — plus the conventional `version` / `completion` / `schema` helpers. There is no write verb anywhere in the tree.
+1. The command tree (`src/cmd/planar-watch/`) registers exactly ten read verbs — `feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `sync-events`, `queue`, `diagnose` — plus the conventional `version` / `completion` / `schema` helpers. There is no write verb anywhere in the tree.
 2. The bootstrap calls `db::connection::open_read_only` which opens the DB via `sqlite3_open_v2(..., SQLITE_OPEN_READONLY, ...)`. The SQLite driver itself returns `SQLITE_READONLY` on any attempted `INSERT` / `UPDATE` / `DELETE` / DDL — verified by the `a read-only connection refuses a write` unit test in `src/lib/db/db.t.cpp`. The `queue` verb reads a second store, the agent database, through the same kind of handle (`planar.db.agentdb::open_agent_db_read_only_at`); `capability.t.cpp` asserts that handle refuses a write and that running the verb leaves the store's bytes and modification time unchanged.
 
 A vendor hook or operator script configured with only `planar-watch` on its PATH cannot modify the database under any circumstances.
@@ -7606,10 +7167,6 @@ planar-watch log      (--task <id> | --plan <id> | --entity <kind:id> | --sessio
 
 # Orchestrator → sub-agent topology forest (M4 addition, plan 467).
 planar-watch tree     [--root-session <id>] [--follow] [--interval <D>]
-
-# Workflow run observability (plan 585 addition).
-planar-watch run list [--plan <id>] [--status running|completed|failed|interrupted|abandoned] [--arm wf|op|all] [--json]
-planar-watch run show <id> [--json]
 
 # Sync-event ledger (plan 638 addition — read-only view over sync_events).
 planar-watch sync-events [--plan <id>] [--system <slug>] [--entity <kind:id>] [--outcome <value>] [--since <ISO8601>] [--limit <n>] [--json]
@@ -7689,36 +7246,7 @@ Each row shows the same columns as `ps`: `scope`, `vendor`, `activity`, `worktre
 
 **Implementation:** `tree()` in `src/cmd/planar-watch/handlers/shared/live.cpp` (plan 467 M4, tasks 3064–3067).
 
-### `planar-watch run` — workflow run observability (plan 585)
-
-Read-only view of run tables. `list` covers both the `workflow_runs` table (context-plane, wf-arm) and the `runs` table (op/workflow-arm, op-arm). `show` drills into wf-arm runs (with context_records); op-arm run detail is via `planar run show <run_uid>`.
-
-**`run list [--plan <id>] [--status <s>] [--arm wf|op|all] [--json]`**
-
-Lists runs from one or both source tables, newest first. All filters combine with AND when supplied.
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--plan <id>` | Restrict to runs associated with the given plan id. | unset (all plans) |
-| `--status <s>` | Restrict by run status: `running`, `completed`, `failed`, `interrupted`, `abandoned`. | unset (all statuses) |
-| `--arm <a>` | Source table filter: `wf` (workflow_runs / context-plane runs written by `planar-agent run start`), `op` (runs table / op-arm runs written by `planar run start`), `all` (both). | `all` |
-| `--json` | Emit a single JSON object `{generated_at, runs:[RunRow]}`. | false (human text) |
-
-Each `RunRow` in the JSON output carries a `source` field (`"wf"` or `"op"`) indicating which table the row came from, followed by `engine` (plan 1033 task 6493): `"embedded"` or `"centurion"` for a `wf` row (a pre-migration-00038 row reads `"embedded"`), `null` for an `op` row, whose table has no engine. `plan_id` is `null` for a workflow run bound to no plan (allowed since migration 00038) — never `0`. The text line gains `engine:<e>` after `source:` (`-` for an op row) and prints `plan:-` for a plan-less run. For `wf`-source rows, `planar-watch run show <id>` provides context_records. For `op`-source rows, `planar run show <run_identifier>` provides journal events.
-
-**`run show <id> [--json]`**
-
-Shows the full `workflow_runs` row for `<id>` (wf-arm only) plus all `context_records` for that run, grouped by stage (alphabetical ascending) then ordered by `created_at` ascending within each stage. Exits non-zero when the run id is not found.
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--json` | Emit `{run: RunRow, context_records: [ContextRecord]}`. | false (human text) |
-
-Human text format for `run show`: prints run metadata (id, plan_id, status, pid, workflow, `engine:<e>`, timestamps, identifier, repo_root), followed by context records indented under `[stage: <name>]` section headers. The `body` field is previewed at up to 80 bytes with `…` when truncated.
-
-**Implementation:** `src/cmd/planar-watch/handlers/run/run.cpp` (plan 585, task 3906; op-arm inclusion added task 4349; engine and nullable plan task 6493).
-
-**Engine supervision in `claims` and `feed` (plan 1033 task 6493).** Every claim object `claims --json` and `feed --json` emit carries `"supervisor":"caller"|"engine"` and `"attempt_id"` immediately after `stage` — a claim never handed to the engine reads `"supervisor":"caller","attempt_id":null`, the keys are never omitted. `ps`, `log` and `planar-agent`'s payloads keep the lean claim object. In text, an engine claim's `claims` line gains `supervisor:engine  attempt:<id>` before `token:` (a caller claim's line is unchanged), an expired engine claim reads `status:lapsed (engine)`, and a `feed` line for one of the supervision action kinds (`claim_associate`, `claim_terminal`, `supervisor_override`, `run_submitted`, `run_reconciled`) appends the kind.
+**`supervisor` and `attempt_id` in `claims` and `feed`.** Every claim object `claims --json` and `feed --json` emit carries `"supervisor"` and `"attempt_id"` immediately after `stage`, and the keys are never omitted. No verb hands a claim to an engine any more, so a claim reads `"supervisor":"caller","attempt_id":null`. `ps`, `log` and `planar-agent`'s payloads keep the lean claim object.
 
 ### `planar-watch sync-events` — per-row view over sync_events (plan 638)
 
@@ -7849,6 +7377,7 @@ SEQ  OUTCOME    RESULT    ENDED                 WAITED  RAN    NOTES            
 | `enqueued_at`, `started_at`, `ended_at` | Wall-clock milliseconds |
 | `waited_ms`, `ran_ms` | Durations, from the recorded times |
 | `run_limit_ms`, `wait_limit_ms` | The limits in force; `null` when no limit applies |
+| `claim_token` | The `--claim` token the run named, verbatim; `null` for a run without one |
 
 **Schema effects:** Reads `queue_history` in `planar.db`. No writes; the database is never created or migrated.
 
@@ -7864,21 +7393,21 @@ Like `queue`, this verb follows every other `planar-watch` verb's main-database 
 
 ### `planar-watch diagnose` — check recorded orchestration state (plan 1132)
 
-Evaluates the recorded state against Planar's documented orchestration rules and prints what it finds. It reads only: the handle is `SQLITE_OPEN_READONLY`, and the verb refuses to run on a writable one. It records nothing; persisting findings as incidents is a separate `planar-agent` step. The checks are a closed, versioned catalog (`catalog_version`), each with a stable id; this release ships the framework, the claim-liveness checks (including `heartbeat-gap`), the dispatch checks, `action-unended`, `handoff-stale`, `apply-without-preview`, `cli-failure-cluster`, `claim-failure-cluster` and `sync-conflict-unresolved`, and further checks are added one at a time.
+Evaluates the recorded state against Planar's documented orchestration rules and prints what it finds. It reads only: the handle is `SQLITE_OPEN_READONLY`, and the verb refuses to run on a writable one. It records nothing; persisting findings as incidents is a separate `planar-agent` step. The checks are a closed, versioned catalog (`catalog_version`), each with a stable id; this release ships the framework, the claim-liveness checks (including `heartbeat-gap`), `action-unended`, `handoff-stale`, `apply-without-preview`, `cli-failure-cluster`, `claim-failure-cluster` and `sync-conflict-unresolved`, and further checks are added one at a time.
 
 **Claim checks.** `claim-lease-lapsed` (an `active` claim past its lease that heartbeated, on a `doing` task or on a plan or plan step that is not finished; decision 1384 added the coordination claims, such as an orchestrator's claim on a plan), `claim-process-died` (an `active` claim past its lease that never heartbeated after `claimed_at`), `claim-superseded-active` (an `active` claim on a terminal task, plan or step, or a task claim behind a later exclusive claim on the same task that is no longer `active`; `error`; a plan or step claim is superseded only by a finished plan or step, because orchestrator sessions re-claim a plan one after another and an earlier lapsed claim behind a later ended one is `claim-lease-lapsed`'s, so the two checks never both report a plan or step claim; the evidence names the claim, its entity, the later claim and the claim's lease expiry and the later claim's release time; the fingerprint names only the claim and its entity, so the later claim appearing later is the same incident), `task-doing-unclaimed` (a `doing` task with no `active` claim whose lease runs to the evaluation instant or later) and `claim-closed-by-reconcile` (a claim that ended `stale` inside the window; `info`). The first four describe the state at the evaluation instant and ignore the window start; only the event is bounded by the window. A lease expiring exactly at the evaluation instant is still live.
 
 **Heartbeat gaps.** `heartbeat-gap` (decisions 1345 and 1381) treats `claimed_at`, each `heartbeat` action row and the claim's `last_heartbeat_at` as heartbeat points (a plain heartbeat or a `queue run --claim` renewal writes no row, only `last_heartbeat_at`). The lease is `lease_expires_at - last_heartbeat_at`. A gap between two points is `info` when strictly beyond half the lease, however long: a recorded heartbeat is written only while the lease is live, so a gap that ends in one is not a lapse. A `warning` is the trailing stretch from the last point to the release (a terminal claim) or to the evaluation instant (an active claim) when it is strictly beyond the lease. A claim that ended `stale` has no trailing warning (decision 1384, amending 1381): `claim-closed-by-reconcile` already reports it, and its release is the time of the reconcile sweep, not of the lapse, so the stretch measured the sweep cadence. Its gaps between recorded heartbeats are still `info`. Evidence is row timestamps only.
 
-**Dispatches and open actions.** A claim is a *dispatch* only when an orchestrator dispatch record exists for it (decisions 1344 and 1349): a `routing_dispatch_previews` row with the claim's task and claim token, or a `routing_dispatch_snapshots` row for the claim's task confirmed between `claimed_at` and the claim's end (its release, or its lease expiry while it is still `active`). A claim with neither is a direct claim, an agent doing its own work, and no dispatch check ever reports it. `dispatch-no-role-action` (`warning`, an event; an `error` until the calibration of decision 1384, because the work happened and only the role row is missing) reports a dispatch whose claim is no longer live (terminal, or `active` with an expired lease) and that has no `coder`, `reviewer` or `test_coder` action tied to the claim, or tied to its task and started inside the claim's lifetime; it waits for the claim to end because a live claim can still start its action, and it is bounded by the window on the claim's end. The evidence names the claim, its task, the lowest preview bound to it and the lowest snapshot that confirms it, and is timed by the claim's end; the fingerprint names only the claim and its task, so a record appearing later is the same incident. The names of the actions the claim did run are not part of a finding. `dispatch-unconfirmed` (`warning`, an event) reports a dispatch that has a preview bound to its claim and no snapshot confirming it: no preview of the claim was spent on one, and none exists for the task inside the claim's lifetime. A first preview abandoned beside a confirmed second one is a confirmed dispatch. It is reported once the claim has ended or a role action has started, since a live claim that has only been previewed can still be confirmed; the evidence names the claim, its task and its newest preview, is timed by that preview's `created_at`, and is bounded by the window on it. `dispatch-confirmed-late` (`warning`, an event) reports a dispatch whose earliest confirming snapshot was confirmed strictly after the first role action tied to the claim started; a confirm at the same instant is in time. A role action written with the claim itself is bookkeeping, not a spawn (decision 1384): a preview is bound to the claim's token, so it always follows the claim, and an action that started before that preview was created is ignored (one at the instant the preview was created counts). A dispatch with no preview bound to its claim, confirmed from a snapshot alone, has no preview to anchor on, so the claim itself is the anchor and an action at or before `claimed_at` is ignored. `dispatch confirm --now` stores the caller's RFC 3339 text, which has no fraction, so both timestamps are compared as instants. The evidence names the claim, its task, that snapshot and that action and is timed by the action's `started_at` and the snapshot's `confirmed_at`, in the stored millisecond format; the window bounds the confirm. Both dispatch checks fingerprint on the claim and its task. `action-unended` (`warning`, a state) reports an action with no `ended_at` whose claim is terminal or past its lease, naming the action, its claim and the claim's entity and timed by the action's `started_at`. Unlike the other state checks it is bounded by the window (decision 1384): an action is reported only when it started inside the window or its claim ended inside it (a claim ends at its release, else at its lease expiry), so an old backlog of dead claims is not repeated on every run; `--days` widens it. The recovery hint is `planar-agent action end --action <id> --outcome aborted`, which closes the row whatever state its claim is in (it does not look at the claim). `planar-agent reconcile` does not: it closes only a stale claim's `claim_check` marker, so any other open action on a dead claim stays reported until `action end` closes it. None of these checks needs an input beyond the planning, claim, action and routing tables.
+**Open actions.** `action-unended` (`warning`, a state) reports an action with no `ended_at` whose claim is terminal or past its lease, naming the action, its claim and the claim's entity and timed by the action's `started_at`. Unlike the other state checks it is bounded by the window (decision 1384): an action is reported only when it started inside the window or its claim ended inside it (a claim ends at its release, else at its lease expiry), so an old backlog of dead claims is not repeated on every run; `--days` widens it. The recovery hint is `planar-agent action end --action <id> --outcome aborted`, which closes the row whatever state its claim is in (it does not look at the claim). `planar-agent reconcile` does not: it closes only a stale claim's `claim_check` marker, so any other open action on a dead claim stays reported until `action end` closes it. It needs no input beyond the planning, claim and action tables. The two dispatch checks of earlier releases, `dispatch-no-role-action` and `dispatch-confirmed-late`, read the routing dispatch preview and snapshot tables; migration 00043 dropped those tables, the checks were retired with them, and naming either with `--check` is an unknown check (exit 2).
 
 **Applies without a preview.** `apply-without-preview` (`warning`, an event) reads the capture log, `cli_invocations`: it reports a `spec ingest` invocation whose `args_shape` has the whole flag `--apply` (not `--apply-removals`) when no earlier `spec ingest` invocation without `--apply` exists from the window start to that apply. A plan-scoped run (`--plan`) also looks one hour before the window start for that preview (decision 1384): `spec ingest --apply` is what creates the plan, and the plan-lifetime window starts at the plan's creation, so the preview that preceded the apply by moments would otherwise fall outside it and every ingested plan would report one finding. An unscoped run has no such anchor and keeps the plain window. The exit status of neither side matters: a preview that exited non-zero still ran, and a failed apply was still attempted. One preview precedes every later apply. The evidence is the invocation's row reference and its `recorded_at`; the arguments are never part of a finding. **Positional-shape limit:** the capture log keeps flag names and only the arity of a positional (`<pos:1>`), never its value, so the check cannot tell which plan a preview or an apply named; a preview of any plan satisfies an apply of any other. The log has no plan column either, so `--plan` changes the window (and the one-hour look-back above) and nothing else. The input is named `cli_log`: it is `disabled` (reason `cli_log-off`) when `[introspection].cli_log` is off, which is the default, and then the check does not run and reports nothing rather than reading rows an earlier logging period left behind, without degrading the outcome. It is `unavailable` (reason `cli_log-config-unknown`) when the config file path cannot be resolved or the file cannot be parsed, which makes the outcome `partial` whenever the check is selected.
 
-**Failure clusters.** `cli-failure-cluster` (`warning`, an event) reports one `verb_path` with at least three failures of the same `error_category` whose `recorded_at` is inside the window and inside one 24-hour span of it (inclusive: failures exactly 24 hours apart count; decision 1384). The `usage` category is never counted: a usage error is the caller's mistake, and on the calibration database 33 of 63 clusters were usage and 56 of 63 spanned a day or more, because a count over a whole 30-day window fires for any busy verb. The members of a finding are the failures that lie in some qualifying 24-hour span; overlapping spans are one cluster, and failures outside every span are not members. The fingerprint does not depend on the window or the spans, so a narrower or wider run over the same failures keeps it. Its fingerprint is `cli-failure-cluster|<verb_path>|<error_category>|global`, and every failure in a qualifying span is a member of the cluster (the finding's evidence lists them, and the text line names the fingerprint and the member count). The scope part is always `global`: `cli_invocations` has a `scope_slug` column, but the capture writer never fills it, so no invocation has a scope to share. It reads the same `cli_log` input as `apply-without-preview`, so it is not run with the log off. A `verb_path` is part of the fingerprint, so a row written before write-time catalog checking cannot carry prose into it: rows are dropped before counting unless the path has the shape the writer produces (at most two tokens, each a lower-case word, a number, `word:number` with letters, hyphens or underscores in the word, or the `<unknown>` placeholder; the empty path of a bare `planar` call names no verb and forms no cluster). The recovery hint depends on the category (for the CLI cluster `validation` points at `planar <verb> --help`, `scope` at `planar scope show`, `db` at `planar health`, `internal` at `planar report`, and so on; for the claim cluster each failure category names its own next step after `planar-watch claims --status all`). **Limit:** `planar-watch` cannot read the `planar` command tree, so it has no catalog predicate, and a legacy row whose path is word-shaped but not a real verb is still counted there; `planar report`'s `<unrecognized>` mask has the predicate and does not share this gap. `claim-failure-cluster` (`warning`, an event) reports at least three claims that ended inside the window (by `released_at`) with the same `failure_category` other than `unknown` (set by `planar-agent fail --category`; a claim that ended without a category is not a failure here). Its fingerprint is `claim-failure-cluster|failure_category=<value>|<scope>`, where the scope is the members' common entity scope (`repo:<slug>` or `assoc:<slug>`, from the task, or the plan for a plan or plan-step claim) and `global` when they differ or any has none. It needs no input. For both, a narrower and a wider window over the same members keep one fingerprint and the same member identities (each member's id and row timestamp); `--plan` restricts claims to the plan and its descendants and changes only the window for the capture log.
+**Failure clusters.** `cli-failure-cluster` (`warning`, an event) reports one `verb_path` with at least three failures of the same `error_category` whose `recorded_at` is inside the window and inside one 24-hour span of it (inclusive: failures exactly 24 hours apart count; decision 1384). The `usage` category is never counted: a usage error is the caller's mistake, and on the calibration database 33 of 63 clusters were usage and 56 of 63 spanned a day or more, because a count over a whole 30-day window fires for any busy verb. The members of a finding are the failures that lie in some qualifying 24-hour span; overlapping spans are one cluster, and failures outside every span are not members. The fingerprint does not depend on the window or the spans, so a narrower or wider run over the same failures keeps it. Its fingerprint is `cli-failure-cluster|<verb_path>|<error_category>|global`, and every failure in a qualifying span is a member of the cluster (the finding's evidence lists them, and the text line names the fingerprint and the member count). The scope part is always `global`: `cli_invocations` has a `scope_slug` column, but the capture writer never fills it, so no invocation has a scope to share. It reads the same `cli_log` input as `apply-without-preview`, so it is not run with the log off. A `verb_path` is part of the fingerprint, so a row written before write-time catalog checking cannot carry prose into it: rows are dropped before counting unless the path has the shape the writer produces (at most two tokens, each a lower-case word, a number, `word:number` with letters, hyphens or underscores in the word, or the `<unknown>` placeholder; the empty path of a bare `planar` call names no verb and forms no cluster). The recovery hint depends on the category (for the CLI cluster `validation` points at `planar <verb> --help`, `scope` at `planar scope show`, `db` at `planar health`, `internal` at `planar health`, and so on; for the claim cluster each failure category names its own next step after `planar-watch claims --status all`). **Limit:** `planar-watch` cannot read the `planar` command tree, so it has no catalog predicate, and a legacy row whose path is word-shaped but not a real verb is still counted there. `claim-failure-cluster` (`warning`, an event) reports at least three claims that ended inside the window (by `released_at`) with the same `failure_category` other than `unknown` (set by `planar-agent fail --category`; a claim that ended without a category is not a failure here). Its fingerprint is `claim-failure-cluster|failure_category=<value>|<scope>`, where the scope is the members' common entity scope (`repo:<slug>` or `assoc:<slug>`, from the task, or the plan for a plan or plan-step claim) and `global` when they differ or any has none. It needs no input. For both, a narrower and a wider window over the same members keep one fingerprint and the same member identities (each member's id and row timestamp); `--plan` restricts claims to the plan and its descendants and changes only the window for the capture log.
 
 **Unresolved sync conflicts.** `sync-conflict-unresolved` (`warning`, a state) reports an external-scope `sync_events` row with outcome `conflict` and a link that no later event for the same link has ended. An event ends it when its outcome is `ok`, `noop` or `success` (a clean sync, including the `ok` event `planar-ext sync resolve` writes) or `resolved-fs`/`resolved-db`; an `error`, `partial` or `failure` ends nothing, and when the last attempt after the conflict errored the hint says to run `planar-ext sync pull <link>` again before resolving. Of several conflicts on one link only the latest is reported, because `sync resolve` accepts only a link's latest event. **Workbench conflicts are not reported**, nor is any event without a link: a workbench sync writes a new conflict row on every run, `sync resolve` refuses a link-less event, and a deleted link nulls `link_id`, so such a row would stay a finding permanently; covering them is a separate follow-up. The incident is the link's, not the event's: the fingerprint is `sync-conflict-unresolved|external_link:<id>|global`, because every `sync pull` on a still-conflicting link writes a new conflict event. The finding's entity is the latest `sync_event:<id>` (the `sync resolve` target), with the `external_link:<id>` in its evidence, timed by that event's `at`, so each new conflict is a new occurrence of the same incident. The check describes the state at the evaluation instant and ignores the window start. `--plan` reaches a link through its task or plan; a link to any other entity appears only without `--plan`. It needs no input.
 
-**Stale handoffs.** `handoff-stale` reports a `pending` or `validated` handoff more than 24 hours old at the evaluation instant (a handoff exactly 24 hours old is not stale). The cutoff is the one `planar health` and `planar report` apply, shared through `planar.core.thresholds`. A handoff is skipped when its task is `done` or `cancelled`, or when the task has a claim, in any status, taken after the handoff was created (decision 1384): the work moved on without consuming the handoff, which made 15 of 16 findings on the calibration database artifacts. A handoff whose snapshot has no task is still reported. It describes the state at the evaluation instant and ignores the window start; `--plan` reaches a handoff through its snapshot's task, so a handoff whose snapshot has no task appears only without `--plan`.
+**Stale handoffs.** `handoff-stale` reports a `pending` or `validated` handoff more than 24 hours old at the evaluation instant (a handoff exactly 24 hours old is not stale). The cutoff is the one `planar health` applies, shared through `planar.core.thresholds`. A handoff is skipped when its task is `done` or `cancelled`, or when the task has a claim, in any status, taken after the handoff was created (decision 1384): the work moved on without consuming the handoff, which made 15 of 16 findings on the calibration database artifacts. A handoff whose snapshot has no task is still reported. It describes the state at the evaluation instant and ignores the window start; `--plan` reaches a handoff through its snapshot's task, so a handoff whose snapshot has no task appears only without `--plan`.
 
 **Synopsis:**
 ```
@@ -7959,23 +7488,6 @@ planar-watch log --json:
           | "claim_aborted" | "claim_stale",
       at: ISO8601,
       claim: ClaimRow }
-
-planar-watch run list --json:
-  { generated_at: ISO8601,
-    runs: [RunRow] }
-  RunRow: { id, plan_id, workflow_name, run_identifier, pid,
-            repo_root, started_at, ended_at: ISO8601|null,
-            status: "running"|"completed"|"failed"|"interrupted"|"abandoned",
-            source: "wf"|"op" }
-
-planar-watch run show <id> --json:
-  { run: RunRow,
-    context_records: [ContextRecord] }
-  ContextRecord: { id, run_id, stage, session_id, claim_id,
-                   kind: "finding"|"risk"|"artifact"|"followup"|"summary"|"capsule",
-                   body, status: "active"|"consumed"|"superseded",
-                   compiled_from: string|null, created_at: ISO8601 }
-  Records are grouped by stage (alphabetical asc) then ordered by created_at asc.
 ```
 
 `ClaimRow` matches the canonical shape from `engine.runtime.agentactivity.json.writeClaim` (snake_case keys mirroring the `agent_work_claims` columns, including the locality columns `repo_root`, `branch`, `head_sha_at_claim`, `dirty_at_claim` and the worktree columns). `ActionRow` mirrors `agent_actions`. `Plan` matches `planar plan show --json`.
@@ -8006,21 +7518,16 @@ Each `--follow` verb installs a SIGINT handler that flips an atomic flag. The po
 ## Introspection: `schema` (all planning-state binaries)
 
 Every Planar binary — `planar`, `planar-agent`, `planar-watch`, `planar-ext`
-(decision 998, added when `planar-ext` was extracted) and, since decision
-1030 (D18, plan 1033 M0, task 6486), `planar-execute` — exposes a `schema`
+(decision 998, added when `planar-ext` was extracted) — exposes a `schema`
 verb that prints a deterministic flat JSON catalog of its entire command
 tree: each command's full path, subcommands, aliases, positionals, and flags
-(with inherited flags merged in). Output is always JSON. `planar-execute`'s
-catalog describes its hand-rolled `run` surface without moving the parser
-onto CLI11; its frozen Lua host-function manifest is a separate surface,
-still covered by unit tests rather than by the catalog.
+(with inherited flags merged in). Output is always JSON.
 
 ```sh
 planar schema
 planar-agent schema
 planar-watch schema
 planar-ext schema
-planar-execute schema
 ```
 
 ### Narrowing the catalog: `--command` and `--compact`
@@ -8040,499 +7547,12 @@ planar schema --compact
 planar-agent schema --compact --command "queue status"
 ```
 
-`planar-execute` reads the same two flags in its own parser (`--command=<path>` is accepted too) and takes the same exit code.
-
 `planar`, `planar-agent`, `planar-watch` and `planar-ext` each also expose a
 `version` verb (`planar version`, `planar-agent version`, `planar-watch version`,
-`planar-ext version`) that prints the binary's version, commit, and compiler;
-`planar-execute` has none.
+`planar-ext version`) that prints the binary's version, commit, and compiler.
 
 <!-- surface-lint-ignore surface-path-missing: names the deleted-with-zig/ source cli_usage_lint was ported from, for history -->
-The catalog is built from the command tree at startup (no DB access), so the verb is a pure read. It is intended for structured consumers — LLM tool routers, editor integrations, and the schema-driven first pass of `make cli-usage-check`, which validates that authored agent/skill/doc surfaces never reference a flag a binary does not expose (implemented as the `cli_usage_lint` C++ tool under `src/tools/`, ported from the Zig tree's `tools/cli_usage_lint.zig` at task 6402). All five binaries are passed to that pass. The same target then runs the semantic authored-surface validator (`surface_lint`); use `make surface-lint` to run that semantic pass alone. Its finding codes, including the host-queue rule's `surface-queue-command` and `surface-queue-marker-invalid` and the `queue-lint-ignore` line and region markers that exempt text from them, and the retired-reference rule's `surface-retired-reference` and `surface-retired-ref-marker-invalid`, are listed in [architecture.md](architecture.md#authored-surface-validation).
-
----
-
-## Binary: `planar-execute`
-
-The deterministic, spawn-free Lua workflow engine (plan 633; plan 1033 is
-turning it into a client over a Centurion host, and its verb shape is kept
-through that change). It holds **no SQLite handle** and reaches Planar state
-only by shelling `planar` / `planar-agent` from inside a workflow. Unlike the
-other four binaries it parses its own arguments and writes its usage banner
-to **stderr** — on `--help` too, where stdout stays empty. The exit codes
-are its own, not the `planar` table above: a bare invocation and every usage
-failure exit `2`, an unreadable workflow, undecodable `--args`, an
-unusable engine selection, or a failed phase exits `1`, and `--help` /
-`schema` / `profile show` exit `0`. Nothing else is produced:
-every refusal, with its exact stderr line, is pinned as a fixture under
-`src/cmd/planar-execute/golden/errors/` (plan 1033 M0), and that test also
-asserts the observed exit-code set is exactly `{0, 1, 2}`.
-
-### The Centurion client verbs (plan 1033 M2)
-
-> **These verbs require a Centurion-enabled build** (the
-> `dev/centurion-integration` branch). This build does not link the Centurion
-> client, and it refuses each of them. The refusal comes after argument
-> parsing, so a malformed invocation is still a usage failure (exit `2`). It
-> comes before a profile is resolved or any state is written, and it prints
-> `planar-execute: planar-execute was built without the Centurion engine` on
-> stderr, nothing on stdout, and exits `1`. That is the code a durable
-> refusal maps to, because only a different build changes the answer. The
-> rest of this section describes the verbs as a Centurion-enabled build runs
-> them.
-
-`planar-execute` is becoming a CLIENT of a Centurion daemon (decision 1007 /
-1075). These verbs act on the daemon serving one execution profile
-(`[execute.profiles.<name>]`, default `default`); only `submit` ever STARTS a
-daemon, because for an inspection verb a daemon that is not running is the
-answer rather than a reason to start one.
-
-- `planar-execute submit <bundle> [--input <json>] [--profile <name>]` — start a bundle run,
-  follow it to a terminal state, and print its result JSON on stdout. Exit `0`
-  when the run completes, `1` when it ends badly or is durably refused, and
-  **`75`** when the daemon refused in a way that stays replayable (a draining
-  host, a transient refusal) — "come back later" is not "the work failed", and
-  a caller that cannot tell them apart records a failure that never happened.
-- `planar-execute status [<run-id>] [--profile <name>] [--json]` — one run's durable
-  projection, or the profile itself (state directory, socket, whether a daemon
-  is serving) when no run is named. A daemon that is down is a normal answer
-  here, exit `0`.
-- `planar-execute follow <run-id> [--from <cursor>] [--profile <name>]` — stream the run's
-  committed events, one JSON object per line, resuming after the last event
-  this client accepted. `--from` overrides that remembered cursor; `--from 0`
-  replays from the beginning.
-- `planar-execute cancel <run-id> [--profile <name>] [--json]` — stop a run this profile
-  admitted. It needs no console session (Centurion ADR-0057).
-- `planar-execute host status|drain|stop [--profile <name>]` (`--json` on `host status` only) — report who is serving
-  the profile; refuse new submissions while letting running work finish; or ask
-  the daemon to stop, which it does by draining under Centurion's bounded
-  shutdown. `drain` is a Planar-side admission gate: Centurion exposes no "stop
-  admitting" operation, so what Planar stops is its own submitting.
-
-#### The installed daemon
-
-This build installs no daemon. On a Centurion-enabled build, `centuriond` is
-installed BESIDE the Planar binaries — `make build` copies it into `./bin/`
-and `install.sh` writes `$PLANAR_HOME/bin/centuriond` — because
-`planar-execute` resolves it as its own sibling, the same rule `cli.planar(...)`
-uses for `planar`. What runs is the daemon that shipped with this client, not
-whatever a `PATH` names first.
-
-It is a STOCK Centurion daemon built from the pinned archive (Planar decision
-1075): Planar never patches or forks it, and configuration is the whole
-Planar-specific input. Its migrations and a `build-identity.json` — the tag,
-commit, archive digest, whether it came from a source build or a release
-binary, and the binary's own digest — live under
-`$PLANAR_HOME/share/centurion/`. That identity is one element of the
-compatibility tuple a client compares before joining a daemon another client
-started.
-
-The workflow BUNDLE a daemon runs is not installed yet: publishing
-`workflows/*.lua` with the Lua prelude and the command policy is plan 1033 M3
-(tasks 6510 / 6514), and until it lands a profile points `bundle` at a
-directory the operator supplies.
-
-#### Provider configuration
-
-`[execute.profiles.<name>.providers.<vendor>]` is passed to the daemon when
-Planar starts one. The pinned Centurion declares exactly one provider, its
-CLIProxyAPI model transport, so `<vendor>` must be `cliproxyapi` and its keys
-are:
-
-| Key | Reaches the daemon as |
-|-----|-----------------------|
-| `base_url` | `--model-base-url` |
-| `trusted_hostnames` | `--trusted-http-hostname` |
-| `api_key` | `CENTURION_CLIPROXYAPI_API_KEY` in its environment |
-
-The credential goes in the ENVIRONMENT and never in the argument vector:
-arguments are visible in every process listing on the machine. An unknown
-vendor or an unknown key is **refused by name**, and no daemon is started —
-passing it through would leave an operator believing a setting took effect
-that the daemon never saw. A richer per-vendor provider schema is Centurion's
-own plan 1045 and does not exist yet (Planar decision 1146).
-
-### `planar-execute run <workflow.lua> --phase <name>`
-
-Load the workflow in the sandbox, register the deterministic host surface
-(`cli` / `git` / `fs` / `flow` / `ctx`), call the named phase, and print the
-workflow's `flow.result(table)` payload as JSON on stdout.
-
-- `<workflow.lua>` — required positional; the workflow file path.
-- `--phase <name>` — required; the phase function to invoke.
-- `--args <json>` — JSON blob exposed to the phase as `ctx.args` (default `""`, which is an empty table). Any JSON value is accepted, not only an object: an array or a string becomes `ctx.args` as-is. Text that is not JSON, or JSON with trailing bytes, is refused before the workflow loads with `planar-execute: args error: --args is not valid JSON` (nesting deeper than 200 levels: `--args is nested too deeply`) and exit `1`.
-- `--worktree <dir>` — directory the `git` / `fs` host functions are confined to (default `""`).
-- `--sandbox-root <dir>` — root bounding every `fs` path the workflow may touch (default `""`).
-- `--engine <embedded|centurion>` — execution engine (plan 1033, decision 1017). Any other value is a usage failure, exit `2`. See [Engine selection](#engine-selection) below.
-
-An unrecognised `--flag`, a second bare positional, a flag with no value, or
-a missing `--phase` all print the usage and exit `2`; `run --help` is one of
-those, not a help request. `planar workflow run <name>` (see the `workflow`
-domain below) resolves a workflow by name and execs this verb with the same
-flags.
-
-### Engine selection
-
-Decision 1007 moves workflow execution to a Centurion host; until plan 1033's
-cutover the embedded runner stays the default, and both are selectable by
-name. The first of these that is set wins:
-
-1. `--engine <embedded|centurion>` on `run`.
-2. `$PLANAR_EXECUTE_ENGINE` (an empty value counts as unset).
-3. The `execute.engine` config key (`[execute] engine = "…"` in
-   `~/.planar/config.toml`), read by running the sibling
-   `planar config show --json` — `planar-execute` has no config reader of
-   its own. `planar config show` lists the key with its provenance.
-4. `embedded`.
-
-Tier 3 costs one `planar` process and is skipped whenever tier 1 or 2 is
-set. An invalid env or config value is refused before the workflow loads
-(`planar-execute: PLANAR_EXECUTE_ENGINE must be embedded or centurion, got:
-…`, or `execute.engine must be … (config file)`), exit `1`. `centurion`
-resolves but is refused at dispatch until the host lands in plan 1033 M2:
-`planar-execute: engine 'centurion' is not available yet (<source>); the
-Centurion host lands in plan 1033 M2`, exit `1`, nothing on stdout. The
-selection never changes `run`'s stdout.
-
-### Command policy (`workflows/command-policy.json`)
-
-Under the Centurion engine (plan 1033, tech-spec D2/D14) a workflow reaches
-`planar`, `planar-agent`, `planar-watch` and `git` only through Centurion's
-stock `command.exec` activity, and only for a `(binary, verb path)` listed in
-this closed policy, which ships with the workflow bundle. Each entry carries
-an `effect` (`idempotent` for a read, `reconcilable` for a write whose outcome
-recovery can re-establish), a `cwd` rule (`any` for a command that addresses
-its target by id or token, `workspace` for one that must run inside the
-registered lane workspace), and `used_by`, the workflows that call it.
-`planned_workflows` names workflows not shipped yet (the M4
-claim-supervision workflow); their entries must become used once they are.
-
-Two gates keep it honest. `src/cmd/planar-execute/handlers/shared/policy.t.cpp` extracts
-every host call from the shipped workflows (`cli.*`, the `ctx.*` reads, and
-`git.*`) and fails if one resolves to no entry, if an entry is unused, or if
-an entry's `used_by` is not exactly the workflows that use it; it also
-requires every Planar entry a shipped workflow uses to pass the embedded
-engine's own allowlist, until the embedded runner is retired. `make
-cli-usage-check` fails when an entry names a verb path that is not a runnable
-leaf in the live schema catalogs. Nothing enforces the policy at run time
-until the Centurion host lands (M2/M3); the embedded engine still enforces
-its own allowlist.
-
-### `planar-execute profile show [--profile <name>] [--json]`
-
-Print the resolved engine (with the provenance that chose it) and the
-resolved **execution profile** on stdout, exit `0`. `--profile` defaults to
-`default`. Text is `key: value` lines (`engine`, `engine_source`, `profile`,
-`configured`, `state_dir`, `planar_db`, one `allowed_root:` per root or
-`allowed_roots: -`, `idle_grace_seconds`, `command_policy`, `bundle`, one
-`provider.<vendor>.<key>:` per setting or `providers: -`); `--json` is
-`{"engine":…,"engine_source":…,"profile":{"name":…,"configured":…,"state_dir":…,"planar_db":…,"allowed_roots":[…],"idle_grace_seconds":…,"command_policy":…|null,"bundle":…|null,"providers":{…}}}`.
-Any other `profile` shape prints the usage and exits `2`.
-
-A profile (plan 1033 task 6494, tech-spec D10) is the unit a Centurion host
-runs for — one host per profile, identified by its canonical state
-directory. It is configured as
-
-```toml
-[execute.profiles.<name>]
-state_dir          = "~/.planar/execute/<name>"   # default: $PLANAR_HOME/execute/<name>, else ~/.planar/execute/<name>
-planar_db          = "~/.planar/planar.db"        # default: $PLANAR_DB, else ~/.planar/planar.db
-allowed_roots      = ["~/code"]                   # default: none
-idle_grace_seconds = 300                          # default 300
-command_policy     = "…"                          # default: unset
-bundle             = "…"                          # default: unset
-
-[execute.profiles.<name>.providers.<vendor>]
-<key> = "…"                                       # passed to Centurion verbatim
-```
-
-`default` always exists; unconfigured, it is exactly the defaults. Every
-path is `~`-expanded, made absolute and canonicalised (`weakly_canonical`,
-since the state directory may not exist yet), so two profiles whose
-`state_dir` is a path and a symlink to it report the same identity. The
-profile is read like every other `planar-execute` setting, through the
-sibling `planar config show --json` (whose resolver surfaces every
-`execute.profiles.*` key the file sets). Every configured profile is
-validated, not only the one asked for; an unknown key (`unknown key
-'execute.profiles.x.state_dirr' in <config file>`), a profile name that is
-not configured, `allowed_roots` that is not an array, or an
-`idle_grace_seconds` that is not a positive integer is refused naming the
-config file, exit `1`.
-
-### `planar-execute schema`
-
-Print the flat JSON catalog for this binary — the same envelope
-(`schemaVersion`, `layout`, `root`, `commands`) the other four emit — on
-stdout, exit `0`, nothing on stderr. Added by decision 1030 so
-`cli_usage_lint` polices authored references to `planar-execute` verbs; the
-catalog is a description of the hand-rolled parser, pinned against it by
-test, not a second parser.
-`--command <path>` and `--compact` narrow the output as described under
-[Introspection: `schema`](#introspection-schema-all-planning-state-binaries); an
-unknown path exits `2` with the message on stderr.
-
----
-
-## Domain: `run`
-
-Operational run-record surface for Planar-native workflow execution. Run records track a workflow's lifecycle — start, streamed journal events, and a terminal finish — and are queryable via `planar run show`. The `run` domain uses `arm=op` (the operational arm), distinguishing it from the measurement-rig `planar bench` surface (which uses `arm=strict`, `arm=eligibility`, etc. and additionally tracks declared/actual file touches and git-diff harvests).
-
-Both `planar run` and `planar bench` write to the same `runs` + `run_events` tables (migration `00025_runs`). The read surface is shared: `planar-watch run list` / `planar-watch run show` display records from both. The `run` domain does NOT manage claims — claim lifecycle is `planar-agent pull` / `complete` / `fail` / `release`. Use `planar run` to bracket the outer workflow trace; claims inside the workflow use `planar-agent`.
-
-Note: `runs`/`run_events`/`run_touches` are distinct from the context-plane tables `workflow_runs`/`context_records` (migration `00022`), which are written by `planar-agent run start/end` and `planar-agent context` — not by `planar run`/`bench`.
-
----
-
-### `planar run start`
-
-**Synopsis:**
-```
-planar run start --plan <plan-id> [--workflow <name>] [--json]
-```
-
-**Description:** Mint a new operational run record for the named plan and print its `run_uid` (a stable string identifier) as JSON. The run starts in `running` status. The caller uses `run_uid` for all subsequent `event` and `finish` calls.
-
-**Options:**
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--plan <plan-id>` | Plan id to associate the run with. | Required. |
-| `--workflow <name>` | Human-readable workflow name (free-form). When supplied, it is recorded as the `workflow_name` on the run row. | (none) |
-| `--json` | Emit a JSON object. | off |
-
-**Output (`--json`):**
-```json
-{"run_uid":"run-2026-06-14-abc123","plan_id":7,"arm":"op"}
-```
-
-**Schema effects:** Inserts into `runs(run_uid, plan_id, arm, status='running', started_at)`. When `--workflow <name>` is supplied the name is stored as the `arm` value instead of the default `"op"`.
-
-**Capture:** None.
-
-**Exit codes:**
-- `0` — success.
-- `1` — plan id not found or invalid integer.
-
----
-
-### `planar run event <run-uid>`
-
-**Synopsis:**
-```
-planar run event <run-uid> --kind <kind> [--payload <text>] [--json]
-```
-
-**Description:** Append a journal event to the named run. The sequence number is auto-incremented server-side. Repeat for each meaningful step during workflow execution.
-
-**Arguments:**
-
-| Argument | Description |
-|----------|-------------|
-| `<run-uid>` | Run uid returned by `run start`. |
-
-**Options:**
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--kind <kind>` | Event kind (free-form label, e.g. `step`, `note`, `error`). | Required. |
-| `--payload <text>` | Optional event payload body. | none |
-| `--json` | Emit a JSON result object. | off |
-
-**Output (`--json`):**
-```json
-{"ok":true,"run_uid":"run-2026-06-14-abc123","seq":1,"kind":"step"}
-```
-
-**Schema effects:** Inserts into `run_events(run_uid, seq, kind, payload, at)`.
-
-**Capture:** None.
-
-**Exit codes:**
-- `0` — success.
-- `1` — run uid not found or run is already in a terminal status.
-
----
-
-### `planar run finish <run-uid>`
-
-**Synopsis:**
-```
-planar run finish <run-uid> --status <status> [--json]
-```
-
-**Description:** Set the terminal status on a run. After `finish`, no further `event` calls are accepted.
-
-**Arguments:**
-
-| Argument | Description |
-|----------|-------------|
-| `<run-uid>` | Run uid returned by `run start`. |
-
-**Options:**
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--status <status>` | Terminal status. Accepted values: `completed`, `aborted`, `error`. | Required. |
-| `--json` | Emit a JSON result object. | off |
-
-**Output (`--json`):**
-```json
-{"run_uid":"run-2026-06-14-abc123","status":"completed"}
-```
-
-**Schema effects:** Updates `runs(status, ended_at)`.
-
-**Capture:** None.
-
-**Exit codes:**
-- `0` — success.
-- `1` — run uid not found; or run is already in a terminal status; or `--status` value is not one of the accepted values.
-
----
-
-### `planar run show <run-uid>`
-
-**Synopsis:**
-```
-planar run show <run-uid> [--json]
-```
-
-**Description:** Show a run's full state — header metadata and all journal events in sequence order.
-
-**Arguments:**
-
-| Argument | Description |
-|----------|-------------|
-| `<run-uid>` | Run uid returned by `run start`. |
-
-**Options:**
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--json` | Emit a JSON object with `run` header and `events` array. | off |
-
-**Output (human):**
-```
-run run-2026-06-14-abc123  plan:7  status:completed
-  started:  2026-06-14T10:00:00Z
-  ended:    2026-06-14T10:05:30Z
-  workflow: my-workflow
-
-events:
-  1  step     "Started coder dispatch"
-  2  step     "Coder cycle complete"
-  3  note     "Integration tests passed"
-```
-
-**Output (`--json`):**
-```json
-{
-  "run_uid":"run-2026-06-14-abc123","plan_id":7,"arm":"op","status":"completed","started_at":"2026-06-14T10:00:00Z","ended_at":"2026-06-14T10:05:30Z",
-  "events": [
-    {"id":1,"seq":1,"kind":"step","payload":"Started coder dispatch","created_at":"2026-06-14T10:00:01Z"},
-    {"id":2,"seq":2,"kind":"step","payload":"Coder cycle complete","created_at":"2026-06-14T10:04:00Z"},
-    {"id":3,"seq":3,"kind":"note","payload":"Integration tests passed","created_at":"2026-06-14T10:05:00Z"}
-  ]
-}
-```
-
-**Schema effects:** Reads `runs`, `run_events`. No writes.
-
-**Capture:** None (read-only).
-
-**Exit codes:**
-- `0` — success.
-- `1` — run uid not found.
-
----
-
-## Domain: `report`
-
-### `planar report [--days <n>] [--tail <n>] [--json]`
-
-**Description:** Emit the diagnostic bundle: invocation aggregates, failure tail, closed claim-failure category aggregates, and always-on health metrics. Reads `cli_invocations` (when CLI logging is enabled) plus the always-on observability tables (`agent_actions`, `sync_events`, `agent_work_claims`, `handoffs`) and renders a structured diagnostic bundle.
-
-When `[introspection].cli_log` is off (the default), the invocation and failure sections render "logging disabled" instead of counts — the operator is never shown fabricated zeros. The always-on sections (`actions`, `sync`, `claims`, `claim_failure_categories`, `handoffs`, `health`, schema version) render normally in either case. JSON output also includes `introspection_preview` with bounded `signals`, per-adapter `coverage`, and `warnings`, collected read-only from the effective `[introspection.transcripts]` paths. A failed adapter degrades only its own coverage; other adapters still contribute. Successful commands are coverage observations, not gap findings; only explicit invalid-flag/help-bounce evidence is normalized as `gap`.
-
-**Privacy:** The bundle's queries (`src/engine/introspect/introspect.cpp`) select counts, closed categories, provider identities, verb paths, statuses, timestamps and coverage counters. They read no entity `title`, `body` or `summary` column, no release reason or action summary, no scope slug, no path-bearing column, and never the `args_shape` column, so flag lists are never shown. A verb path is recorded, and shown, only when the live CLI tree names it at that depth; a structured operand in the second slot (digits or `word:digits`, such as `resume 6073` or `tree plan:42`) is kept as typed, at any length. The writer records `<unknown>` and `--<unknown>` for anything else, and `planar report` renders a stored verb path the live tree does not name (an older row) as `<unrecognized>`; stored rows are never purged. This is not a guarantee about the whole report: the `introspection_preview` signals are derived from transcripts and the capture log, and a finding filed from the bundle can carry free text, and neither is structurally redacted. The operator reviewing the full text before anything is posted is the redaction boundary. The claim-failure aggregate includes only `aborted`/`stale` terminals; a null category on those legacy or uncategorized recovery rows is reported as `unknown`. Completed and released claims are non-failure terminals and are excluded.
-
-**Flags:**
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--days <n>` | int | 30 | Window in days. Must be a positive integer. |
-| `--tail <n>` | int | 20 | Number of failure-tail rows to include, in the text output and in the JSON `failure_tail`. Must be a positive integer. |
-| `--json` | bool | false | Emit stable machine-readable JSON. |
-
-**JSON wire format (`--json`):** Top-level fields are the contract consumed by downstream agents and skills:
-
-| Field | Type | Notes |
-|-------|------|-------|
-| `version` | string | The build's version token: the second token of the `planar version` line, which is the 12-character git sha (with `+dirty` appended for a dirty tree), or `dev` for a build without version metadata. Never the program name. |
-| `schema_version` | integer | Max schema_migrations version applied. |
-| `health` | string | `"ok"` or `"degraded"`. |
-| `window` | integer | The `--days` value queried. |
-| `logging_enabled` | boolean | Whether `[introspection].cli_log` is on. `false` means `invocations`, `failures` and `failure_tail` are empty because nothing was captured, not because nothing failed. |
-| `invocations` | array | Per-verb-path aggregate rows; empty array when logging disabled or no data. |
-| `failures` | array | Per-error-category failure counts; empty array when logging disabled or no data. |
-| `failure_tail` | array | The `--tail` most recent failed invocations, newest first, as `{verb_path, error_category, exit_code, recorded_at}` rows: the same rows the text output prints under `[failure tail]`. Empty array (never absent) when logging is disabled or no invocation failed. |
-| `actions` | array | Agent-action outcome aggregates (always-on). |
-| `sync` | array | Sync-event outcome aggregates (always-on). |
-| `claims` | object | `{stale_claims, never_consumed}` (always-on). |
-| `claim_failure_categories` | array | Stable `{provider, category, count}` rows for aborted/stale claims in the window, ordered by provider then the closed category order. Null categories aggregate as `unknown`; empty windows emit `[]`. |
-| `handoffs` | object | `{stale_handoffs, never_consumed}` (always-on). `never_consumed` counts handoffs created in the window that were never transitioned to `consumed` status (distinct from `stale_handoffs`, which counts only `pending`/`validated` handoffs older than 24 h). |
-| `reopens` | integer | Count of `task_reopens` rows created in the window (always-on). |
-
-Empty windows emit empty arrays, never nulls or missing fields.
-
-**Capture-log byte cap:** The 4 MiB retained budget (what the preview keeps and normalizes; the transcript read budget is separate, below) is split four ways: Claude, Codex and Copilot transcripts each get a quarter, and the `cli_log` adapter gets what the transcript adapters leave, never less than a quarter. When the window's `cli_invocations` rows would exceed its budget, the reader takes the newest rows first, stops before the budget would be exceeded, and hands them to the preview oldest first. `introspection_preview` then lists `cli_log` as `observed` and adds `{"vendor":"cli_log","kind":"byte_cap","count":<n>}` to `warnings`, where `count` is the number of rows left unread (always the oldest ones). A window that fits the budget exactly is not truncated and carries no warning. The `cli_adapter_failed` warning and an `unavailable` `cli_log` row are reserved for a read that genuinely failed.
-
-**Transcript scan (read wide, keep narrow):** Two budgets apply. The **read budget**, `[introspection].transcript_scan_bytes` (an integer above 0; default `67108864`, 64 MiB), bounds the bytes streamed from disk across the enabled transcript vendors. It is split evenly among them; a vendor with less to read than its share leaves the rest to the others. The **retained budget** is the fixed 4 MiB above and bounds what is kept and normalized. A value that is not an integer above 0 is a configuration error naming the key: `planar report`, `planar config show` and `planar config validate` refuse it (exit 2 for the first two).
-
-Each vendor scans only files modified inside the `--days` window, newest modification time first, ties broken by path, each file forward one line at a time. A file that does not fit the vendor's remaining read budget is skipped and counted rather than stopping the scan, so one large file does not hide the files after it. The one exception is the newest file: when it alone exceeds the read budget, its tail is read, starting at the first complete line, because the live session is usually the newest and largest file. The file-count cap is unchanged.
-
-A line is **kept** only if it contains `planar` and is that vendor's call shape (a Claude assistant `tool_use` or a Codex `function_call` whose command is a planar invocation, a failed Codex `CommandExecution` of one, a Copilot `tool.execution_start` of one), or if it carries the call id of a call kept earlier in the same file (a Claude `tool_result`, a Codex `function_call_output`, a Copilot `tool.execution_complete`). Every other line is discarded without being stored, copied or logged. A line longer than 1 MiB is skipped unread. Up to 4096 call ids are pending per file; a call past that is still kept, but its result cannot be paired. Reaching the retained budget stops that vendor's scan with a `byte_cap` warning carrying `"reason":"retained"`; reaching the read budget (a file skipped or the newest read from its tail) adds a `byte_cap` warning with `"reason":"scanned"`. Warnings without a reason carry no `reason` key.
-
-Each `introspection_preview.coverage` row (and the text report's coverage line) carries these counters, in this order, after `bytes_read`:
-
-| Counter | Meaning |
-|---------|---------|
-| `bytes_read` | Alias of `bytes_retained`, which is what it measured when every byte read was kept. |
-| `files_partial` | Files read from their tail only. |
-| `files_skipped_cap` | Files not read because the file, read-budget or record cap left no room, or the vendor's scan had stopped. The warning matching the cap that stopped it (`byte_cap`, `file_cap` or `record_cap`) accompanies a skipped or partial file. |
-| `files_skipped_window` | Files not read because their modification time is before the window. |
-| `bytes_scanned` | Bytes streamed from disk for the vendor, kept or not. A tail read counts the tail. |
-| `bytes_retained` | Bytes of the lines kept, newlines excluded. At most the vendor's share of the retained budget. |
-| `lines_oversize` | Lines longer than 1 MiB, skipped unread. |
-| `results_unpaired` | Results whose call was not kept: the call fell before the start of a tail read, or its id was past the pending cap. Only a tail read can miss a call, so a whole-file read never counts one. A result for a call that was seen and is not a planar call is not counted. |
-
-The `scanned`, `normalized`, `ignored`, `malformed` and `capped` counters describe the kept lines, plus one more class: a line that mentions `planar` but is not valid JSON or is a broken envelope of the vendor's format is dropped, not stored, and counted in `scanned` and `malformed` (with the `malformed` warning), so a changed vendor format does not read as a clean scan. Any other discarded line is in none of them. The counters are `0` for `cli_log` and for a disabled vendor. An unavailable vendor reports the files it skipped before every read failed.
-
-**Transcript recognition:** A transcript signal is a failed `planar` command, and its verb path comes from the same live-CLI catalog rule the capture log uses (a token the tree names, a structured operand in the second slot, otherwise `<unknown>`), so typed words, flag values and prose never reach a signal.
-
-- **Claude:** a `Bash` `tool_use` paired with an `is_error: true` `tool_result`.
-- **Codex:** an `event_msg` `item_completed` of type `CommandExecution` with a non-zero `exit_code` or `status: "failed"`. The `command` array is either an argv or a shell wrapper (`bash -lc "<script>"`). The older `schema_version`/`command_execution` records are still read. `custom_tool_call` and `custom_tool_call_output` records are validated and otherwise ignored. A `function_call` of a planar command and its `function_call_output` are kept by the scan (so they count in `scanned` and `ignored`) but yield no signal; a successful `CommandExecution` is discarded by the scan.
-- **Recognized command shapes:** `planar ...`, `./bin/planar ...`, `build/*/bin/planar ...` and any path ending in `/planar`, with `env`/`NAME=value` prefixes. The command may be a chain, but planar must be its last step, so the recorded exit status is planar's: a step joined by `;` may be anything, and every step joined to planar by `&&` must be `cd`, `pushd`, `export` or `NAME=value` only. A pipeline (`|`), command substitution, a here-document, a background job, a second planar step, or planar followed by another step (`planar ... && make test`) is not attributed to a verb.
-- **Copilot:** only `*.jsonl` files under the session-state path are read. When the directory holds none (the installed Copilot CLI writes YAML, Markdown and JSON metadata there), the Copilot row is `unavailable` and `warnings` carries `{"vendor":"copilot","kind":"unsupported_layout","count":1}`. Copilot's `session-store.db` and logs are not read.
-
-**Exit codes:**
-
-| Code | Meaning |
-|------|---------|
-| 0 | Bundle rendered successfully (including "logging disabled" path). |
-| 2 | Invalid flag value (`--days` or `--tail` must be a positive integer) or an invalid `[introspection].transcript_scan_bytes`; no partial bundle is emitted. |
-| 1 | Database error. |
-
-**Example:**
-
-```
-planar report
-planar report --days 7 --tail 5
-planar report --json
-planar report --days 14 --json
-```
-
-**Schema effects:** Read-only. Touches `cli_invocations`, `agent_actions`, `sync_events`, `agent_work_claims`, `handoffs`, `schema_migrations`, `tasks`, `context_snapshots`. No writes.
+The catalog is built from the command tree at startup (no DB access), so the verb is a pure read. It is intended for structured consumers — LLM tool routers, editor integrations, and the schema-driven first pass of `make cli-usage-check`, which validates that authored agent/skill/doc surfaces never reference a flag a binary does not expose (implemented as the `cli_usage_lint` C++ tool under `src/tools/`, ported from the Zig tree's `tools/cli_usage_lint.zig` at task 6402). All four binaries are passed to that pass. The same target then runs the semantic authored-surface validator (`surface_lint`); use `make surface-lint` to run that semantic pass alone. Its finding codes, including the retired-reference rule's `surface-retired-reference` and `surface-retired-ref-marker-invalid`, are listed in [architecture.md](architecture.md#authored-surface-validation).
 
 ---
 
@@ -8546,145 +7566,24 @@ planar report --days 14 --json
 
 ---
 
-## Domain: `explore`
-
-### `planar explore [--plan <id>] [--task <id>] [--scope <s>] [--plain]`
-
-**Description:** Reserved for launching Planar Explorer, a separate project that presents a read-only view of the planning graph. Not yet implemented: the command prints its own help page and exits 0. It does not open the database.
-
-**Flags:**
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--plan <id>` | Reserved: seed initial focus on the given plan ID. | unset |
-| `--task <id>` | Reserved: seed initial focus on the given task ID. | unset |
-| `--scope <s>` | Reserved: seed the scope filter. | cwd-derived |
-| `--plain` | Print the help page. This is currently the only behavior. | off |
-
-**Schema effects:** None.
-
----
-
-## Domain: `workflow`
-
-Discovery layer for user-authored and shipped Lua workflows for `planar-execute`. Both subverbs are **read-only filesystem scans** — they never open SQLite.
-
-**Shipped workflows** are sourced from `$PLANAR_HOME/workflows/` (default `~/.planar/workflows/`, populated by `install.sh`). **Sandbox workflows** live at `~/.planar/local/workflows/` and are marked `local`.
-
-### `@meta` block convention
-
-Every workflow file may declare a machine-parseable metadata block in a Lua long-string comment at the very top of the file:
-
-```lua
---[[ @meta
-name: finalize-closeout
-description: Deterministic closeout gate — never force-closes.
-phases: closeout
-seam: planar run start/event/finish, planar plan closeout
---]]
-```
-
-Rules:
-- The opening line must be `--[[ @meta` (no leading whitespace).
-- Key/value pairs are `key: value` (plain scalars; no nesting).
-- The block closes with `--]]` on its own line.
-- Unknown keys are silently skipped.
-- A missing block is not an error — `workflow list/show` fall back to the filename stem as the name.
-
-### `planar workflow list [--local] [--json]`
-
-**Description:** List every discovered workflow across shipped and sandbox directories, sorted by name.
-
-**Flags:**
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--local` | Show only sandbox workflows (`~/.planar/local/workflows/`). | off |
-| `--json` | Emit one JSON object per line (NDJSON). | off |
-
-**Behavior:**
-- Without `--local`, shipped workflows are listed first, then sandbox workflows.
-- When a workflow has a `@meta` block with a `name:` field, that name is used; otherwise the filename stem (sans `.lua`) is used.
-- An absent directory (no workflows installed yet) is silently treated as empty.
-
-**Text output columns:** `name`, `kind` (`shipped` or `local`), `phases`, `description`.
-
-**JSON shape (one object per line):**
-```json
-{"name":"finalize-closeout","kind":"shipped","path":"/…/workflows/finalize_closeout.lua","filename":"finalize_closeout.lua","meta_found":true,"description":"…","phases":"closeout","seam":"…"}
-```
-
-**Exit codes:**
-- `0` — success (including zero results).
-- `1` — directory scan error (unreadable dir).
-
-### `planar workflow show <name> [--json]`
-
-**Description:** Resolve a workflow by name and print its `@meta` fields and source path. Name matching uses the effective name (see `@meta` convention above). Shipped directories are searched before sandbox.
-
-**Positional:**
-
-| Argument | Description | Required |
-|----------|-------------|----------|
-| `<name>` | Workflow name to resolve. | yes |
-
-**Flags:**
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--json` | Emit a single JSON object. | off |
-
-**Behavior:**
-- The `<name>` argument is matched against each workflow's effective name (the `name:` field from `@meta`, or the filename stem).
-- Shipped directories are searched before sandbox directories.
-- Exits `1` (not found) when no workflow with that name exists.
-
-**Text output:**
-```
-name:        finalize-closeout
-kind:        shipped
-path:        /…/workflows/finalize_closeout.lua
-meta:        present
-description: Deterministic closeout gate — never force-closes.
-phases:      closeout
-seam:        planar run start/event/finish, planar plan closeout
-```
-
-**JSON shape:**
-```json
-{"name":"finalize-closeout","kind":"shipped","path":"…","filename":"finalize_closeout.lua","meta_found":true,"description":"…","phases":"closeout","seam":"…"}
-```
-
-**Exit codes:**
-- `0` — workflow found.
-- `1` — workflow not found.
-
-### Sandbox directory
-
-The sandbox directory `~/.planar/local/workflows/` mirrors the `~/.planar/local/skills/` model: it is user-machine-local state, never committed to the repo, and is created on demand. Place any `.lua` file there to author and test a workflow before promoting it to the repo's `workflows/` directory. See [Recipe 28 — Author and graduate a workflow](workflows.md#recipe-28--author-and-graduate-a-workflow) in `docs/workflows.md`.
-
-**`PLANAR_WORKFLOWS_DIR` env var:** When set, overrides the shipped workflows directory. Used by the integration test harness to point `workflow list/show` at a temporary directory seeded with fixture workflows.
-
----
-
 ## Command Index
 
 For quick reference, all documented commands grouped by domain:
 
 | Domain | Commands |
 |--------|----------|
-| `init` | `init` (calls `config init` and `templates init` before applying migrations) |
-| `config` | `config show`, `config show --effective`, `config show --raw`, `config show --defaults`, `config edit`, `config validate`, `config init`, `config path` |
+| `init` | `init` (ensures the config file, then calls `templates init`, before applying migrations) |
+| `config` | `config show`, `config show --effective`, `config show --raw`, `config show --defaults`, `config edit`, `config validate`, `config path` |
 | `templates` | `templates list`, `templates show`, `templates render`, `templates validate`, `templates init`, `templates path` |
 | `tree` | `tree` |
-| `scope` | `scope show`, `scope suggest` (`scope use`/`pop`/`clear` removed in plan 153 M5) |
-| `assoc` | `assoc list`, `assoc create`, `assoc add`, `assoc remove`, `assoc members`, `assoc detect` |
+| `scope` | `scope show`, `scope suggest` |
+| `assoc` | `assoc list`, `assoc create`, `assoc add`, `assoc remove`, `assoc members` |
 | `plan` | `plan create`, `plan show`, `plan list`, `plan update`, `plan descendants`, `plan step add`, `plan step done`, `plan step skip`, `plan step link`, `plan link` |
-| `task` | `task add`, `task show`, `task list`, `task update`, `task edit`, `task view`, `task diff`, `task review`, `task done`, `task reopen`, `task block`, `task link`, `task facts stage`, `task touches add`, `task touches remove` |
-| `question` | `question add`, `question answer`, `question wontfix`, `question list`, `question show`, `question edit`, `question view`, `question diff`, `question review`, `question link` |
-| `scenario` | `scenario add`, `scenario verify`, `scenario list`, `scenario show`, `scenario edit`, `scenario view`, `scenario diff`, `scenario retire` |
-| `decision` | `decision add`, `decision accept`, `decision supersede`, `decision withdraw`, `decision list`, `decision show`, `decision edit`, `decision view`, `decision diff` |
-| `artifact` | `artifact add`, `artifact show`, `artifact list`, `artifact update`, `artifact edit`, `artifact view`, `artifact diff`, `artifact link` |
+| `task` | `task add`, `task show`, `task list`, `task update`, `task edit`, `task view`, `task diff`, `task review`, `task done`, `task reopen`, `task block`, `task link`, `task packet`, `task touches add`, `task touches remove` |
+| `question` | `question add`, `question answer`, `question wontfix`, `question list`, `question show`, `question edit`, `question view`, `question link` |
+| `scenario` | `scenario add`, `scenario verify`, `scenario list`, `scenario show`, `scenario edit`, `scenario view`, `scenario review`, `scenario retire` |
+| `decision` | `decision add`, `decision accept`, `decision supersede`, `decision withdraw`, `decision list`, `decision show`, `decision edit`, `decision view`, `decision review` |
+| `artifact` | `artifact add`, `artifact show`, `artifact list`, `artifact update`, `artifact edit`, `artifact view`, `artifact diff`, `artifact review`, `artifact link` |
 | `document` | `document project`, `document validate-range` |
 | `annotate` | `annotate add`, `annotate show`, `annotate list`, `annotate capabilities`, `annotate update`, `annotate remove`, `annotate tag`, `annotate resolve`, `annotate dismiss`, `annotate archive`, `annotate bulk-resolve`, `annotate bulk-dismiss`, `annotate bulk-archive`, `annotate verify`, `annotate sweep` |
 | `promote` | `promote`, `demote` |
@@ -8696,185 +7595,13 @@ For quick reference, all documented commands grouped by domain:
 | `resume` | `resume`, `resume validate` |
 | `handoff` | `handoff`, `handoff create`, `handoff validate`, `handoff list`, `handoff show`, `handoff consume`, `handoff abandon` |
 | `capture` | `capture session`, `capture end`, `capture commits`, `capture note`, `capture command`, `capture file`, `capture snapshot` |
-| `audit` | `audit trail`, `audit session`, `audit commits`, `audit publish-decision`, `audit handoff-readiness` |
+| `audit` | `audit trail`, `audit session`, `audit commits`, `audit handoff-readiness` |
 | `health` | `health` |
-| `models` | `models evals`, `models resolve`, `models experiments`, `models outcomes`, `models registry list\|add\|update\|remove\|bind\|unbind\|observe\|eligibility\|verify-identity\|export` |
 | `links` | `links add`, `links list`, `links remove`, `links trail` (no `links update`) |
-| `report` | `report [--days <n>] [--tail <n>] [--json]` |
 | `search` | `search <query>` |
-| `explore` | `explore [--plan <id>] [--task <id>] [--scope <s>] [--plain]` |
 | `spec` | `spec ingest` |
 | `test-spec` | `test-spec status` |
-| `import` | `import <repo-root>` |
-| `synthesize` | `synthesize <repo-root>` |
 | `local` | `local list`, `local link`, `local unlink`, `local import`, `local migrate` |
 | `--help` | `--help` / `-h` on any node (no `help` verb) |
-| `run` | `run start`, `run event`, `run finish`, `run show` |
-| `workflow` | `workflow list`, `workflow list --local`, `workflow show <name>` |
-| `feedback` | `feedback triage list`, `feedback triage show`, `feedback triage set` |
-| `schema` | `schema` (also on `planar-agent` and `planar-watch`) |
+| `schema` | `schema` (also on `planar-agent`, `planar-watch` and `planar-ext`) |
 | `update` | `update`, `update --check`, `update --version <tag>` |
-## Domain: `closure`
-
-Derived-closure extraction: given a task's touched `(repo, path)` seeds, walk
-the source with tree-sitter and persist the files that task's work actually
-reaches. `closure compute` does the walk and writes; `closure show` reads back
-what was written.
-
-Rows are classified by `role`:
-
-| Role | Meaning |
-|------|---------|
-| `modify` | A seed path itself — the file the task touches directly. |
-| `reference` | Reached from a seed by a direct source reference. |
-| `transitive` | Reached only through another reference. |
-
-**SQLite tables:** reads `task_touch_paths` for seeds and `projects.root_path`
-to resolve them against a checkout; writes the closure rows `closure show`
-reads back.
-
----
-
-### `planar closure compute <task-id>`
-
-**Synopsis:**
-```
-planar closure compute <task-id> [--scope <slug>] [--json]
-```
-
-**Description:** Run the extractor over a task's seeds and persist the closure.
-Seeds come from `task_touch_paths`, so a task with no touched paths has nothing
-to walk and is refused rather than silently writing an empty closure.
-
-Seed paths are resolved against `projects.root_path`, which is why a project
-registered with a path that does not match your checkout produces an empty or
-wrong result — see the association-less-repo advisory under
-[`task touches add`](#planar-task-touches-add-task-id-repo-slug---path-p).
-
-**Scope guard:** Refuses when the operator's resolved write scope disagrees
-with the task's, using the membership-aware comparison (see
-[Cross-scope guard](#cross-scope-guard); strict equality here was widened to
-match the other guarded verbs by decision 1121).
-
-**Arguments:**
-
-| Argument | Description |
-|----------|-------------|
-| `<task-id>` | The task whose seeds to walk (integer). |
-
-**Options:**
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--scope <slug>` | Write-scope override for the cross-scope guard. | cwd-derived |
-| `--json` | Emit the row-count summary as JSON. | off |
-
-**Output:** A count summary — seeds walked, and rows written per role.
-
-**Exit codes:**
-- `0` — closure computed and persisted.
-- `1` — the task has no seeds, or a query failed.
-- `5` — cross-scope guard refusal.
-
----
-
-### `planar closure show <task-id>`
-
-**Synopsis:**
-```
-planar closure show <task-id> [--json]
-```
-
-**Description:** Read back a task's persisted closure rows. Read-only; it never
-recomputes, so a task whose closure was never computed reads back empty rather
-than triggering a walk.
-
-**Arguments:**
-
-| Argument | Description |
-|----------|-------------|
-| `<task-id>` | The task whose closure to read (integer). |
-
-**Options:**
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--json` | Emit the rows as JSON. | off |
-
-**Exit codes:**
-- `0` — rows rendered (including none).
-- `1` — query failure.
-
----
-
-## Domain: `feedback`
-
-Migration `00028_feedback_triage` stores deterministic operator triage for
-findings associated with the plan whose slug is `planar-feedback`. One row
-targets exactly one task or question. Partial unique indexes enforce one row per
-finding; a delete trigger resets dependents of a deleted duplicate target to
-`disposition=untriaged` and clears their duplicate reference without deleting
-their evidence or reproduction state. This is local planning state:
-`feedback triage` never writes agent tables and never posts to an external
-system.
-
-```text
-planar feedback triage list [--plan <id>] [--severity <info|low|medium|high|critical>]
-  [--disposition <value>] [--json]
-planar feedback triage show <task:id|question:id> [--json]
-planar feedback triage set <task:id|question:id> --severity <value>
-  --disposition <value> --reproduction <value>
-  [--duplicate-of <task:id|question:id>] [--evidence <redacted-text>]
-  [--scope <slug>] [--json]
-```
-
-**Scope guard on `feedback triage set`:** it refuses when the operator's
-resolved write scope disagrees with the OWNING entity's, using the
-membership-aware comparison — an operator scope `assoc:<org>` covers a finding
-on a `repo:<member>` task. `list` and `show` are reads and are unguarded. See
-[Cross-scope guard](#cross-scope-guard); `feedback triage set` is one of the
-ten verbs in that table.
-
-Disposition values are `untriaged`, `needs-reproduction`, `accepted`,
-`retained-question`, `dismissed`, `reported-external`, and `duplicate`.
-Severity values are `info`, `low`, `medium`, `high`, and `critical`.
-Reproduction values are `not-run`, `reproduced`, `not-reproduced`, and
-`inconclusive`. `duplicate` requires `--duplicate-of`; all other dispositions
-forbid it. Duplicate targets must already have triage state, belong to the same
-feedback plan, and may not form self-links or cycles. `set` is scope guarded,
-performs only the operator-confirmed local update, and never posts externally.
-
-`list` may filter by numeric plan id, severity, and disposition; it emits an
-ordered JSON array. `show` and `set` emit one object. The stable row fields are:
-
-```json
-{
-  "id": 7,
-  "finding": "task:42",
-  "plan_id": 12,
-  "severity": "high",
-  "disposition": "accepted",
-  "reproduction_status": "reproduced",
-  "duplicate_of": null,
-  "evidence_summary": "redacted retry trace",
-  "created_at": "2026-07-13T12:00:00.000Z",
-  "updated_at": "2026-07-13T12:00:00.000Z"
-}
-```
-
-Only `set` writes, using an upsert keyed by the task/question finding. Tasks
-must have `plan_id` pointing to the feedback plan. Questions must have exactly
-one `derives-from` plan link, and that plan must be the feedback plan. Evidence
-is stored as supplied in `evidence_summary`; callers are responsible for
-passing redacted text.
-
-**Exit codes:**
-
-- `0` — read or operator-confirmed set succeeded; an empty list is `[]`.
-- `1` — finding/triage row not found, missing or ambiguous feedback-plan
-  membership, cross-plan duplicate, duplicate cycle, database, or other
-  operational failure.
-- `2` — malformed finding reference, invalid enum, missing required flag,
-  invalid duplicate flag combination, or other CLI input failure.
-- `5` — `set` refused a cross-scope write; change cwd or pass the matching
-  explicit `--scope`.

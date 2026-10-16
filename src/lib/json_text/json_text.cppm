@@ -8,7 +8,7 @@
 /// both need has exactly two legal shapes: duplicated per bucket, or extracted
 /// downward into a layer-1 base library (D19 — the same move that produced
 /// `scope_ref`). Duplication was the standing choice, and
-/// `engine/workflows/render.cpp` wrote the rule down explicitly: extracting is
+/// the removed `engine/workflows/render.cpp` (task 7453) wrote the rule down explicitly: extracting is
 /// "worth doing once a THIRD bucket needs it rather than on the second".
 ///
 /// That threshold had been passed several times over when it was written. The
@@ -18,10 +18,12 @@
 ///     engine/closure/store.cpp        engine/planning/annotation.cpp
 ///     engine/grouping/load.cpp        engine/runtime/capture.cpp
 ///     engine/ingest/render.cpp        engine/promotion/promotion.cpp
-///     engine/models/render.cpp
 ///     engine/planning/test_spec_status.cpp
 ///     engine/runs/render.cpp
-///     engine/workflows/render.cpp
+///     engine/workflows/render.cpp (removed, task 7453)
+///
+/// (`engine/closure`, `engine/grouping` and `engine/runs` were extracted to
+/// branch `dev/grouping-solvers` by plan 1142, task 7469.)
 ///
 /// The seven `append_json_string` copies really were behaviorally identical
 /// (two spell the C0 test `c < 0x20` and five spell it `c <= 0x1F`, which is
@@ -86,7 +88,7 @@ export auto json_string(std::string_view text) -> std::string;
 // shortest-round-trip-in-fixed-notation algorithm, plus a fifth site that
 // had never implemented it at all. ONLY ONE OF THEM WAS CORRECT:
 //
-//   src/engine/execute/manifest.cpp  `format_double`      (correct)
+//   src/engine/execute/manifest.cpp (since removed)  `format_double`  (correct)
 //   src/cmd/planar/handlers/search.cpp   `format_zig_float`   (WRONG --
 //       it never stripped the `+` from `to_chars(scientific)`'s `e+NN`,
 //       and `std::from_chars` REJECTS a leading `+` rather than skipping
@@ -98,10 +100,10 @@ export auto json_string(std::string_view text) -> std::string;
 //   src/lib/json_dom/json_dom.cpp        `format_double`      (WRONG --
 //       plain `std::to_chars` default, so `1.375e-06` where the correct
 //       site prints `0.000001375`; task 6261)
-//   src/engine/models/render.cpp     `json_number`        (WRONG --
+//   (removed) models render          `json_number`        (WRONG --
 //       `std::format("{}", v)`, scientific notation AND a bare `inf`;
 //       tasks 6186/6261)
-//   src/engine/models/legacy.cpp     `json_number`        (WRONG --
+//   (removed) models legacy          `json_number`        (WRONG --
 //       the same `std::format("{}", v)` body; feeds `approval_rate` and
 //       `avg_iterations`. Non-finite is unreachable there (the
 //       denominator is a dispatch count of at least one), so it was not a
@@ -135,8 +137,9 @@ export auto json_string(std::string_view text) -> std::string;
 ///
 /// NOT JSON-SAFE. Non-finite input returns Zig's bare spellings — `inf`,
 /// `-inf`, `nan` — none of which is legal JSON. That is deliberate: the Lua
-/// manifest surface in `engine/execute` renders these values outside a JSON
-/// document and its pins require exactly those three strings. Every JSON
+/// manifest surface in the removed `engine/execute` rendered these values
+/// outside a JSON document, and its pins required exactly those three
+/// strings. Every JSON
 /// emitter must go through append_json_double() instead.
 /// @param value The value to render.
 /// @return The decimal text, with no exponent.

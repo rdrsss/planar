@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "id": "breaks-coder-model",
+  "description": "Rule 3: under require_model a coder claim records no model.",
+  "policy": {
+    "require_model": true
+  },
+  "tasks": [
+    {
+      "title": "nameless",
+      "final": "done"
+    }
+  ],
+  "claims": [
+    {
+      "task": 1,
+      "status": "completed",
+      "role": "coder",
+      "model": null,
+      "session": "coder",
+      "parent_action": true
+    }
+  ],
+  "expected": {
+    "conforms": false,
+    "violations": [
+      {
+        "rule": 3,
+        "entity": "claim:1"
+      }
+    ]
+  }
+}

@@ -2,23 +2,22 @@
 // @brief Diagnose workflow scenarios through the real binaries, end to end (plan 1132, task 7385).
 //
 // Each case builds a scratch database with `planar` (anchor plan, milestone plan, tasks) and
-// `planar-agent` (claim, dispatch preview and confirm, action, heartbeat, complete), then reads the
+// `planar-agent` (claim, action, heartbeat, complete), then reads the
 // same findings from the three places an operator meets them: `planar-watch diagnose --json` on the
 // anchor and on the milestone, the `planar-agent complete` that promotes the milestone to `done`
 // (its `diagnose` key), and `planar plan closeout --dry-run --json` on the anchor. The three must
 // agree, exactly:
 //
-//   * the 7335 shape: a dispatch previewed and confirmed whose claim completes with no coder
-//     action is one `dispatch-no-role-action` warning;
 //   * the 7337 shape: a lapsed claim left active behind a recovery claim that finished the task
 //     is a `claim-superseded-active` error, with its open claim_check marker as an `action-unended` warning;
 //   * an action left open under a claim that lapsed and was reconciled is one `action-unended` warning beside the info event
 //   `claim-closed-by-reconcile`;
-//   * a direct claim doing its own work, and a healthy orchestrated run, give no finding.
+//   * a direct claim doing its own work, and a healthy run with a coder action and heartbeats, give
+//     no finding.
 //
-// The one write outside a verb is TIME TRAVEL: a lease cannot be waited out, so a lease timestamp
-// is moved afterwards. Dispatch previews need a routing candidate no verb creates; that row is the
-// only one inserted by hand.
+// Writes outside a verb are TIME TRAVEL: a lease cannot be waited out, so a lease timestamp is moved
+// afterwards. The dispatch checks this file once drove read the routing dispatch tables migration
+// 00043 dropped; they were retired with them.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -71,10 +70,9 @@ struct world {
       planar({"task", "add", std::format("Task {}", i), "--plan", "2"});
     }
     planar({"plan", "update", "1", "--status", "active"});
-    sql("insert into routing_candidates (vendor, candidate_id, fallback_order) values ('claude', 'candidate', 0)");
   }
 
-  /// TIME TRAVEL and the routing candidate: the only writes made outside a verb.
+  /// TIME TRAVEL: the only writes made outside a verb.
   auto sql(std::string_view statement) -> void {
     auto conn = planar::db::connection::open((root / "planar.db").string());
     REQUIRE(conn.has_value());
@@ -108,93 +106,6 @@ struct world {
   auto start_action(std::string const& token, std::string const& kind, int task_id) -> void {
     planar_agent({"action", "start", "--claim", token, "--kind", kind, "--entity", std::format("task:{}", task_id),
                   "--no-locality-probe"});
-  }
-
-  static auto now_text(int offset_seconds = 0) -> std::string {
-    return std::format("{:%Y-%m-%dT%H:%M:%SZ}", std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now() +
-                                                                                         std::chrono::seconds{offset_seconds}));
-  }
-
-  /// The orchestrator's dispatch, in its order: preview (no claim yet) then confirm. Synthetic digests, consistent.
-  auto dispatch(int task_id) -> void {
-    auto const got = planar_agent({"dispatch",
-                                   "preview",
-                                   "--task",
-                                   std::to_string(task_id),
-                                   "--work-item",
-                                   std::format("w{}", task_id),
-                                   "--project",
-                                   "1",
-                                   "--validation-policy",
-                                   "v1",
-                                   "--routing-policy",
-                                   "r1",
-                                   "--profile-rule",
-                                   "p1",
-                                   "--vendor",
-                                   "claude",
-                                   "--role",
-                                   "coder",
-                                   "--tier",
-                                   "medium",
-                                   "--work-type",
-                                   "feature",
-                                   "--complexity",
-                                   "standard",
-                                   "--packet-digest",
-                                   "pk",
-                                   "--profile-digest",
-                                   "pf",
-                                   "--policy-digest",
-                                   "po",
-                                   "--capability-digest",
-                                   "cp",
-                                   "--candidate",
-                                   "1",
-                                   "--host",
-                                   "host",
-                                   "--class",
-                                   "default",
-                                   "--evidence-state",
-                                   "evidential",
-                                   "--expires-at",
-                                   "2099-01-01T00:00:00Z"});
-    auto const at  = got.out.find("preview:");
-    REQUIRE(at != std::string::npos);
-    auto const start = got.out.find_first_not_of(' ', at + 8);
-    auto const token = got.out.substr(start, got.out.find_first_of(" \n", start) - start);
-    planar_agent({"dispatch",
-                  "confirm",
-                  "--token",
-                  token,
-                  "--dispatch-key",
-                  "key-" + token,
-                  "--now",
-                  now_text(-60),
-                  "--packet-digest",
-                  "pk",
-                  "--profile-digest",
-                  "pf",
-                  "--policy-digest",
-                  "po",
-                  "--capability-digest",
-                  "cp",
-                  "--candidate",
-                  "1",
-                  "--vendor",
-                  "claude",
-                  "--role",
-                  "coder",
-                  "--tier",
-                  "medium",
-                  "--work-type",
-                  "feature",
-                  "--complexity",
-                  "standard",
-                  "--validation-policy",
-                  "v1",
-                  "--routing-policy",
-                  "r1"});
   }
 
   /// `check entity severity` for each finding in a diagnose result object, sorted.
@@ -250,24 +161,6 @@ using findings = std::vector<std::string>;
 
 } // namespace
 
-TEST_CASE("the 7335 shape: a confirmed dispatch whose claim completes with no coder action is one warning",
-          "[cmd][watch][diagnose][workflow][integration][7385]") {
-  world w{1};
-  w.dispatch(1);
-  auto const token = w.claim(1);
-  // The claim is live and may still start its action.
-  CHECK(w.watch_findings(1).empty());
-
-  auto const at_complete = w.complete_findings(token);
-  REQUIRE(at_complete.has_value());
-  CHECK(w.text("select status from plans where id = 2") == "done");
-  findings const expected{"dispatch-no-role-action claim:1 warning"};
-  CHECK(*at_complete == expected);
-  CHECK(w.watch_findings(1) == expected);
-  CHECK(w.watch_findings(2) == expected);
-  CHECK(w.closeout_findings() == expected);
-}
-
 TEST_CASE("the 7337 shape: a lapsed claim left active behind the claim that finished the task is an error and its open marker",
           "[cmd][watch][diagnose][workflow][integration][7385]") {
   world      w{1};
@@ -311,10 +204,9 @@ TEST_CASE("an action left open on a claim that lapsed and was reconciled is one 
   CHECK(w.closeout_findings() == expected);
 }
 
-TEST_CASE("a direct claim doing its own work gives no dispatch finding anywhere",
-          "[cmd][watch][diagnose][workflow][integration][7385]") {
+TEST_CASE("a direct claim doing its own work gives no finding anywhere", "[cmd][watch][diagnose][workflow][integration][7385]") {
   world w{2};
-  // Task 1 with a coder action, task 2 with none: neither is a dispatch.
+  // Task 1 with a coder action, task 2 with none.
   auto const first = w.claim(1);
   w.start_action(first, "coder", 1);
   w.planar_agent({"heartbeat", "--claim", first});
@@ -330,10 +222,9 @@ TEST_CASE("a direct claim doing its own work gives no dispatch finding anywhere"
   CHECK(w.closeout_findings().empty());
 }
 
-TEST_CASE("a healthy orchestrated run, preview to complete, gives no finding anywhere",
+TEST_CASE("a healthy run, claim to complete with a coder action and a heartbeat, gives no finding anywhere",
           "[cmd][watch][diagnose][workflow][integration][7385]") {
-  world w{1};
-  w.dispatch(1);
+  world      w{1};
   auto const token = w.claim(1);
   w.start_action(token, "coder", 1);
   w.planar_agent({"heartbeat", "--claim", token});

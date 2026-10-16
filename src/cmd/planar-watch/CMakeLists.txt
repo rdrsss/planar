@@ -32,9 +32,8 @@
 #            it). Break-probed by swapping `open_read_only` for `open`.
 #
 # This target links `planar_db` deliberately: the read-only invariant is
-# about HOW the handle is opened, not about having none. The binary that
-# has none is planar-execute, and that one is enforced by
-# cmake/architecture.cmake instead.
+# about HOW the handle is opened, not about having none. The one binary that
+# held no handle at all (planar-execute) was removed with its guard.
 #
 # --- verb subset -----------------------------------------------------------
 #
@@ -65,13 +64,10 @@
 #
 # `feed` landed at task 6039 — it is the default verb (a bare `planar-watch`
 # renders it, matching the oracle) and its snapshot rendering lives in
-# `handlers/feed.cppm`. `run` and `sync-events`, two of the oracle's twelve
-# verbs, remain unported:
+# `handlers/feed.cppm`. `run` (task 7458) was removed outright with the
+# workflow-run recording it read; `sync-events`, one of the oracle's twelve
+# verbs, remained unported at this milestone:
 #
-#   run           `run list` / `run show`, over `workflow_runs` +
-#                 `context_records`. A different bucket entirely
-#                 (`engine_runs`), not agentactivity — it was gated by this
-#                 milestone only by association.
 #   sync-events   Its query is over `sync_events` joined to `external_links`,
 #                 both reachable from the ported `engine_external` bucket;
 #                 what it borrowed from `ps` — the `generated_at` emitter —
@@ -110,7 +106,6 @@ planar_binary(planar_watch
     handlers/plans/command.cppm
     handlers/log/command.cppm
     handlers/tree/command.cppm
-    handlers/run/command.cppm
     handlers/sync_events/command.cppm
     handlers/queue/command.cppm
     handlers/diagnose/command.cppm
@@ -128,7 +123,6 @@ planar_binary(planar_watch
     handlers/shared/follow.cppm
     handlers/shared/ledger.cppm
     handlers/shared/live.cppm
-    handlers/run/run.cppm
     handlers/sync_events/syncevents.cppm
     handlers/queue/render.cppm
     handlers/queue/queue.cppm
@@ -148,7 +142,6 @@ planar_binary(planar_watch
     handlers/shared/follow.cpp
     handlers/shared/ledger.cpp
     handlers/shared/live.cpp
-    handlers/run/run.cpp
     handlers/sync_events/syncevents.cpp
     handlers/queue/render.cpp
     handlers/queue/queue.cpp

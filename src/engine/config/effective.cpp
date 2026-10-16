@@ -12,8 +12,8 @@ module;
 module planar.engine.config.effective;
 
 import std;
+import planar.engine.config.policy;
 import planar.engine.config.toml;
-import planar.json_text;
 
 namespace planar::engine::config {
 
@@ -286,48 +286,26 @@ void resolve_models_routing_roles(const env_view& env, const toml_map& file_map,
   }
 }
 
-/// @brief Surface every `execute.profiles.<name>.<key>` the config FILE sets,
-/// verbatim, so `planar-execute` can read its execution profiles through
-/// `planar config show --json` (plan 1033 task 6494; it holds no config
-/// reader of its own — see the `execute.engine` pick below).
-///
-/// File-only, like the custom-role sweep: profiles have no embedded default
-/// and no env override here (the defaults are `planar-execute`'s). Values
-/// are rendered losslessly for a machine reader: strings verbatim, integers
-/// in decimal, booleans as `true` / `false`, and an ARRAY as a JSON array
-/// text (`["~/a","/b"]`), because the `, `-joined form other array keys use
-/// cannot carry a path that contains a comma. Validation is the consumer's:
-/// an unknown key is surfaced, not dropped, so `planar-execute` can refuse
-/// it by name.
-void resolve_execute_profiles(const toml_map& file_map, effective_map& eff) {
-  constexpr std::string_view prefix = "execute.profiles.";
-  for (const auto& [key, value] : file_map) {
-    if (!key.starts_with(prefix)) {
-      continue;
-    }
-    std::string text;
-    switch (value.kind_) {
-    case toml_value::kind::string:
-      text = value.string_;
+/// @brief Record the six `policy.<key>` rows. Reads no environment variable:
+/// policy must not be switchable from the environment of the agent it governs.
+void resolve_policy_rows(const toml_map& file_map, std::optional<std::string_view> assoc_slug, effective_map& eff) {
+  const auto policy = resolve_policy_lenient(file_map, assoc_slug);
+  for (const auto key : policy_keys) {
+    const auto& source = policy.sources.at(std::string(key));
+    auto entry = value_with_source{.value = render_policy_value(policy.values, key), .source_ = provenance::embedded_default};
+    switch (source.kind) {
+    case policy_source_kind::embedded_default:
       break;
-    case toml_value::kind::integer:
-      text = std::to_string(value.int_);
+    case policy_source_kind::top_level:
+      entry.source_ = provenance::config_file;
+      entry.section = source.section;
       break;
-    case toml_value::kind::boolean:
-      text = value.bool_ ? "true" : "false";
-      break;
-    case toml_value::kind::array:
-      text = "[";
-      for (std::size_t i = 0; i < value.array_.size(); ++i) {
-        if (i > 0) {
-          text += ',';
-        }
-        json_text::append_json_string(text, value.array_[i]);
-      }
-      text += ']';
+    case policy_source_kind::association:
+      entry.source_ = provenance::assoc_override;
+      entry.section = source.section;
       break;
     }
-    record(eff, key, std::move(text), provenance::config_file);
+    eff[std::format("policy.{}", key)] = std::move(entry);
   }
 }
 
@@ -438,15 +416,6 @@ auto resolve(std::optional<std::string_view> file_content, const env_view& env, 
 
   const bool         introspection_cli_log        = pick_bool("introspection.cli_log", file_map, *def_map, eff, false);
   const std::int64_t introspection_retention_days = pick_int("introspection.retention_days", file_map, *def_map, eff, 90);
-  const std::int64_t introspection_scan_bytes =
-      pick_int("introspection.transcript_scan_bytes", file_map, *def_map, eff, 67'108'864);
-  const bool claude_enabled  = pick_bool("introspection.transcripts.claude_enabled", file_map, *def_map, eff, true);
-  const bool codex_enabled   = pick_bool("introspection.transcripts.codex_enabled", file_map, *def_map, eff, true);
-  const bool copilot_enabled = pick_bool("introspection.transcripts.copilot_enabled", file_map, *def_map, eff, true);
-  const auto claude_path     = pick_str("introspection.transcripts.claude_path", "", env, std::nullopt, file_map, *def_map, eff);
-  const auto codex_path      = pick_str("introspection.transcripts.codex_path", "", env, std::nullopt, file_map, *def_map, eff);
-  const auto copilot_path    = pick_str("introspection.transcripts.copilot_path", "", env, std::nullopt, file_map, *def_map, eff);
-
   // `[queue]` (plan 1080, task hq-config). Recorded only in `eff`, so
   // `config show --effective` reports the values and their provenance; the
   // typed, range-checked view is `planar.engine.config.queue`, which the
@@ -457,14 +426,7 @@ auto resolve(std::optional<std::string_view> file_content, const env_view& env, 
   static_cast<void>(pick_str("queue.grace", "", env, std::nullopt, file_map, *def_map, eff));
   static_cast<void>(pick_int("queue.history_days", file_map, *def_map, eff, 30));
 
-  // `planar-execute`'s engine selector (plan 1033, task 6485, decision 1017).
-  // Recorded only in `eff`, not in the `config` struct: `planar` itself never
-  // acts on it. `planar-execute` holds no config reader (engine_config
-  // reaches `db`, which its execute-carrier guard forbids), so it reads this
-  // key from `planar config show --json` — which is why the key has to be
-  // picked here at all: an unpicked key never reaches that view.
-  static_cast<void>(pick_str("execute.engine", "PLANAR_EXECUTE_ENGINE", env, std::nullopt, file_map, *def_map, eff));
-  resolve_execute_profiles(file_map, eff);
+  resolve_policy_rows(file_map, assoc_slug, eff);
 
   return resolved{
       .cfg =
@@ -502,18 +464,8 @@ auto resolve(std::optional<std::string_view> file_content, const env_view& env, 
                   },
               .introspection =
                   introspection_config{
-                      .cli_log               = introspection_cli_log,
-                      .retention_days        = introspection_retention_days,
-                      .transcript_scan_bytes = introspection_scan_bytes,
-                      .transcripts =
-                          transcripts_config{
-                              .claude_enabled  = claude_enabled,
-                              .claude_path     = claude_path,
-                              .codex_enabled   = codex_enabled,
-                              .codex_path      = codex_path,
-                              .copilot_enabled = copilot_enabled,
-                              .copilot_path    = copilot_path,
-                          },
+                      .cli_log        = introspection_cli_log,
+                      .retention_days = introspection_retention_days,
                   },
           },
       .effective = std::move(eff),
@@ -535,20 +487,6 @@ auto sensitive_name(std::string_view name) -> bool {
     return true;
   }
   return std::ranges::any_of(suffixes, [&](auto suf) { return lower.ends_with(suf); });
-}
-
-auto validate_introspection(const toml_map& file_map) -> std::vector<introspection_finding> {
-  std::vector<introspection_finding> findings;
-  constexpr std::string_view         key = "introspection.transcript_scan_bytes";
-  if (auto const it = file_map.find(key); it != file_map.end()) {
-    auto const& value = it->second;
-    if (value.kind_ != toml_value::kind::integer) {
-      findings.push_back(introspection_finding{std::string{key}, "must be an integer above 0 (bytes)"});
-    } else if (value.int_ <= 0) {
-      findings.push_back(introspection_finding{std::string{key}, std::format("must be above 0, got {}", value.int_)});
-    }
-  }
-  return findings;
 }
 
 auto sorted_keys(const effective_map& eff) -> std::vector<std::string> {

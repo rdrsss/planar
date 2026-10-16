@@ -2,6 +2,51 @@
 
 A changelog of shipped milestones and plans, newest first.
 
+## 2026-10-15
+
+### Plan 1142: the routing tables are dropped
+
+Nothing on master writes or reads the routing tables any more, so the schema drops them.
+
+- **Migration 00043.** Drops the ten `routing_*` tables: `routing_candidates`, `routing_candidate_bindings`, `routing_host_observations`, `routing_task_facts`, `routing_experiments`, `routing_dispatch_snapshots`, `routing_dispatch_events`, `routing_terminal_samples`, `routing_legacy_outcomes` and `routing_dispatch_previews`, with their indexes, their triggers and the compatibility view. The down migration recreates them empty.
+- **Diagnose.** The `planar-watch diagnose` checks `dispatch-no-role-action` and `dispatch-confirmed-late` are retired; naming either with `--check` is an unknown check (exit 2). `action-unended` stays.
+- **Installer backup.** Before it applies a migration that drops tables, the installer copies `planar.db` with its `-wal` and `-shm` into `$PLANAR_HOME/backups/` and prints the copy's path. If the copy fails, the install stops before anything changes. `backups/` is a data path: uninstall keeps it without `--purge`. See [INSTALL.md](../INSTALL.md#the-backup-before-a-table-dropping-migration).
+- **Plan claims.** A plan claim returns no action id. A dispatcher starts an orchestrator action with `planar-agent action start --claim <token> --kind orchestrator --json` and passes its id as `--parent-action`.
+- **Examples.** [`examples/swarm-orchestration.md`](../examples/swarm-orchestration.md) is added.
+
+## 2026-10-14
+
+### Plan 1142: role agents are examples and no longer installed
+
+The `planar-<role>` agents moved from `agents/` to `examples/agents/`. The installer places only the `planar` skill.
+
+- **Moved.** The coder, reviewer, janitor, research, planner, spec-reviewer, ingestor, ext-sync and sync-reconciler agents are in `examples/agents/`. Copy one into your harness's agent directory to use it. The doctrine documents they cite stay under `agents/` in the repository and are not staged.
+- **Upgrade.** The installer removes the `planar-<role>` agents an older install placed in the six vendor agent directories, each only while it is still what Planar placed, and then `~/.planar/agents/` and `~/.planar/codex-agents/`. See the [upgrade note](../INSTALL.md#upgrade-note-the-previous-skill-and-agent-projections).
+- **Release bundle.** The bundle carries no `agents/` or `codex-agents/`.
+
+## 2026-10-11
+
+### Plan 1142, milestone 2: verbs that are not mechanism left master
+
+Verbs that prescribed a method, or that nothing used, are gone, with the engines and role agents behind them.
+
+- **Moved to a branch.** `planar closure`, `planar groups`, `planar bench` and `planar run`, the closure, grouping and runs engines, the vendored tree-sitter, and the three research documents live on the branch `dev/grouping-solvers`.
+- **Archived at tags.** `planar import`, `planar synthesize` and the importer and synthesizer agents: tag `archive/import-synthesize`. `planar report`, the introspection engines, the `introspection.transcripts.*` config keys, the `introspection.transcript_scan_bytes` key (outside that prefix; `config validate` rejects it) and the introspector agent: tag `archive/introspection`. `planar feedback triage` and the feedback-triager agent: tag `archive/feedback-triage`.
+- **Removed with no replacement.** `planar explore`, `planar skills`, `planar scope use`, `pop` and `clear`; `plan edit`, `plan diff`, `plan review`, `question diff`, `question review`, `scenario diff` and `decision diff`; `audit publish-decision`, `assoc detect` and `config init`.
+- **Changed.** `plan recommend-strategy` reads declared touches only, so `--closure-source` is gone and the JSON key `closure_source` is always `"declared"`. The cross-scope guard now covers seven verbs: `spec ingest --apply`, `task update`, `decision accept`, `decision withdraw`, and `planar-ext sync push`, `sync pull` and `sync resolve`.
+- **Kept.** The CLI usage log (`cli_invocations`, `introspection.cli_log`, `introspection.retention_days`) and the `feedback_triage` table stay. `planar document validate-range` stays: it is the range authority paired with `document project`. Eleven role agents remain under `agents/`.
+
+## 2026-10-10
+
+### Plan 1142, milestone 1: Planar ships mechanism only
+
+Planar's code and release bundle now hold mechanism only. The workflow runner and the model-routing surface left master.
+
+- **Moved to a branch.** `planar-execute`, the Lua workflows under `workflows/` and the Centurion client verbs live on the branch `dev/planar-execute`.
+- **Removed with no replacement on master.** `planar workflow`; `planar-agent dispatch`, `planar models`, the routing engine and `agents/models.md`; `planar-agent run`, `planar-agent context` and `planar-watch run`; `planar-agent claim-associate` and the engine-supervision flags on `planar-agent`; and the evals candidate-spawn and rollout harnesses. The routing tables stay in the schema until a later milestone.
+- **Config.** The `[execute]` table is gone, and `planar config validate` now rejects it.
+- **Release bundle.** The bundle ships four binaries: `planar`, `planar-agent`, `planar-watch` and `planar-ext`. The installer removes `bin/planar-execute`, `workflows/` and `agents/models.md` from an older install through `install-cleanup.txt`.
+
 ## 2026-10-04
 
 ### Plan 1104: one `planar` skill replaces the forty `pl-*` skills and the renderer

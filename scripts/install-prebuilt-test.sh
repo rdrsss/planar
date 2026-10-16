@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Prebuilt-install fixtures (plan 1122, task rel-install-prebuilt; tech spec 677,
 # "Prebuilt install mode"). Drives `install.sh --prebuilt <dir>` end to end:
-#   - the happy path: bin/, codex-agents/ and release.json are placed from the
-#     bundle byte for byte, the vendor surfaces and the version-2 manifest record
-#     them, nothing is built, no python3 runs and the PATH holds only the base
+#   - the happy path: bin/, the skill and release.json are placed from the
+#     bundle byte for byte, the skill is the only vendor surface and the
+#     version-2 manifest records it, no agents/ or codex-agents/ is staged, nothing is built, no python3 runs and the PATH holds only the base
 #     tier of install.sh's BASE_DEPS (a tool the prebuilt path needs but the tier
 #     omits fails the run), and a second run reports no changes;
 #   - an old agent.db and its sidecars and old numbered queue logs are moved,
@@ -90,20 +90,20 @@ P="$H/.planar"
 run_prebuilt "$H" "$BUNDLE" --
 [[ "$RC" == 0 ]] || fail "prebuilt install failed ($RC): $(cat "$TMP/err") $(cat "$TMP/out")"
 no_python
-for b in planar planar-agent planar-watch planar-execute planar-ext; do
+for b in planar planar-agent planar-watch planar-ext; do
   cmp -s "$BUNDLE/bin/$b" "$P/bin/$b" || fail "bin/$b is not byte-identical to the bundle's"
   [[ -x "$P/bin/$b" ]] || fail "bin/$b is not executable"
 done
-[[ "$(tree_sum "$BUNDLE/codex-agents")" == "$(tree_sum "$P/codex-agents")" ]] || fail "codex-agents/ differs from the bundle's"
 cmp -s "$BUNDLE/release.json" "$P/release.json" || fail "release.json differs from the bundle's"
-[[ -f "$P/skills/planar/SKILL.md" && -f "$P/agents/planar-coder.md" && -f "$P/templates/a.toml" ]] || fail "staged trees are missing"
-[[ -d "$P/migrations" && -f "$P/workflows/w.lua" && -d "$P/scripts/install-lib" ]] || fail "migrations/workflows/scripts were not placed from the bundle"
-[[ -f "$H/.claude/skills/planar/SKILL.md" && -f "$H/.claude/agents/planar-coder.md" ]] || fail "the Claude surfaces were not placed"
-[[ -f "$H/.codex/agents/planar-coder.toml" ]] || fail "the Codex agent was not placed from the bundled TOML"
-cmp -s "$BUNDLE/codex-agents/planar-coder.toml" "$H/.codex/agents/planar-coder.toml" || fail "the Codex agent is not the bundle's pre-rendered TOML"
+[[ "$(tree_sum "$BUNDLE/skills/planar")" == "$(tree_sum "$P/skills/planar")" && -f "$P/templates/a.toml" ]] || fail "staged trees are missing"
+[[ ! -e "$P/agents" && ! -e "$P/codex-agents" ]] || fail "a prebuilt install staged agents/ or codex-agents/"
+[[ -d "$P/migrations" && -d "$P/scripts/install-lib" ]] || fail "migrations/scripts were not placed from the bundle"
+[[ -f "$H/.claude/skills/planar/SKILL.md" && -f "$H/.agents/skills/planar/SKILL.md" ]] || fail "the skill was not placed"
+[[ ! -e "$H/.claude/agents" && ! -e "$H/.codex/agents" ]] || fail "a role agent was placed"
 man="$P/install-manifest.json"
 grep -Eq '"version": 2,' "$man" || fail "the manifest is not version 2"
-for rec in '"codex-agents/planar-coder.toml"' "\"$H/.claude/agents/planar-coder.md\"" "\"$H/.codex/agents/planar-coder.toml\"" '"build_id": "abc123def456"'; do
+! grep -Eq '"kind": "agent"|codex-agents/|/agents/planar-' "$man" || fail "the manifest records an agent"
+for rec in '"skills/planar/SKILL.md"' "\"$H/.claude/skills/planar\"" "\"$H/.agents/skills/planar\"" '"build_id": "abc123def456"'; do
   grep -Fq "$rec" "$man" || fail "the manifest does not record $rec"
 done
 [[ -f "$P/.planar-install" ]] || fail "no ownership stamp"
@@ -119,7 +119,7 @@ grep -Eq 'no changes: all [0-9]+ vendor target\(s\) already match' "$TMP/out" ||
 # bin/ is a managed subtree, swapped in whole on every install (tech spec 677,
 # "Order of an install"): the second run's binaries are the bundle's again and no
 # backup or staging directory is left behind.
-for b in planar planar-agent planar-watch planar-execute planar-ext; do
+for b in planar planar-agent planar-watch planar-ext; do
   cmp -s "$BUNDLE/bin/$b" "$P/bin/$b" || fail "the second run left a bin/$b that is not the bundle's"
 done
 [[ -z "$(ls -d "$P"/*.old "$P"/.staging-* "$P/.planar-journal" 2>/dev/null)" ]] || fail "the second run left recovery evidence: $(ls -a "$P")"
@@ -134,6 +134,13 @@ run_prebuilt "$H" "$BUNDLE" -- --dry-run
 [[ "$RC" == 0 ]] || fail "prebuilt dry run failed ($RC): $(cat "$TMP/err")"
 [[ ! -e "$H/.planar" ]] || fail "a dry run created ~/.planar"
 grep -Fq 'nothing is built' "$TMP/out" || fail "the dry run does not say nothing is built"
+grep -Fq 'planar-<role> agents an older install placed' "$TMP/out" || fail "the dry run does not plan the role-agent sweep"
+# The sweep runs with --no-vendor too, so its dry-run line does as well.
+run_prebuilt "$H" "$BUNDLE" -- --dry-run --no-vendor
+[[ "$RC" == 0 ]] || fail "prebuilt --no-vendor dry run failed ($RC): $(cat "$TMP/err")"
+grep -Fq 'planar-<role> agents an older install placed' "$TMP/out" || fail "the --no-vendor dry run does not plan the role-agent sweep"
+grep -Fq 'vendor surfaces: skipped (--no-vendor)' "$TMP/out" || fail "the --no-vendor dry run does not say vendor surfaces are skipped"
+[[ ! -e "$H/.planar" ]] || fail "a --no-vendor dry run created ~/.planar"
 pass
 
 # --- the old queue store is moved aside, unread -------------------------------------------
@@ -255,7 +262,7 @@ pass
 
 # --- a bundle missing a required file is refused before any write ---------------------------------
 
-for missing in bin/planar bin/planar-agent bin/planar-watch bin/planar-execute bin/planar-ext release.json skills/planar/SKILL.md codex-agents; do
+for missing in bin/planar bin/planar-agent bin/planar-watch bin/planar-ext release.json skills/planar/SKILL.md; do
   B="$TMP/broken/$(echo "$missing" | tr / _)"
   mkdir -p "$TMP/broken"
   cp -R "$BUNDLE" "$B"
@@ -277,7 +284,7 @@ pass
 # --- a source install writes a release record ---------------------------------------------------------
 
 REPO="$TMP/repo"
-mkdir -p "$REPO/skills" "$REPO/templates" "$REPO/workflows"
+mkdir -p "$REPO/skills" "$REPO/templates"
 cp "$ROOT/install.sh" "$REPO/install.sh"
 cp -R "$ROOT/scripts" "$REPO/scripts"
 rm -rf "$REPO/scripts/install-lib/__pycache__"
@@ -292,12 +299,12 @@ STUBS="$TMP/stubs"
 mkdir -p "$STUBS"
 cat > "$STUBS/cmake" <<STUB
 #!/usr/bin/env bash
-# A stub cmake: \`cmake --install D --prefix P\` writes the five fake binaries of
+# A stub cmake: \`cmake --install D --prefix P\` writes the four fake binaries of
 # scripts/fixtures/prebuilt-bundle.sh (stub_binary_write) into P/bin.
 if [[ "\$1" == "--install" ]]; then
   source "$ROOT/scripts/fixtures/prebuilt-bundle.sh"
   mkdir -p "\$4/bin"
-  for b in planar planar-agent planar-watch planar-execute planar-ext; do
+  for b in planar planar-agent planar-watch planar-ext; do
     stub_binary_write "\$4/bin/\$b" "\${STUB_TAG:-dev}"
   done
 fi
@@ -478,7 +485,7 @@ if [[ -n "${PLANAR_REAL_BUNDLE:-}" ]]; then
   H="$(new_home real)"
   run_prebuilt "$H" "$PLANAR_REAL_BUNDLE" PLANAR_DB="$H/.planar/planar.db" PLANAR_CONFIG_PATH="$H/.planar/config.toml" --
   [[ "$RC" == 0 ]] || fail "real-bundle install failed ($RC): $(cat "$TMP/err") $(cat "$TMP/out")"
-  for b in planar planar-agent planar-watch planar-execute planar-ext; do
+  for b in planar planar-agent planar-watch planar-ext; do
     cmp -s "$PLANAR_REAL_BUNDLE/bin/$b" "$H/.planar/bin/$b" || fail "real bin/$b differs"
   done
   cmp -s "$PLANAR_REAL_BUNDLE/release.json" "$H/.planar/release.json" || fail "real release.json differs"

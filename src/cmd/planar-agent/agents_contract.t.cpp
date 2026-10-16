@@ -3,12 +3,15 @@
 // `planar-<role>.md` and carry `name` and `description` at the top level and
 // `kind` and `slug` under a `planar` map).
 //
-// The role files are installed one to a vendor directory, so each is named
-// `planar-<role>` to keep it from colliding with another tool's agent of the
-// same role. This file holds the sources to that contract, holds the four
-// doctrine documents to staying out of it, checks that no authored text still
-// dispatches an agent by its bare role name, and checks that the bare role
-// VALUE (`--role coder`) is still what `planar-agent queue run` accepts.
+// Role agents are examples, not installed: nine live under examples/agents/,
+// and agents/ keeps only planar-orchestrator and planar-test-coder (the
+// orchestrator eval reads them) beside the doctrine documents. Each is named
+// `planar-<role>` so an operator who copies one into a vendor directory does
+// not collide with another tool's agent of the same role. This file holds the
+// sources to that contract, holds the doctrine documents to staying out of it,
+// checks that no authored text still dispatches an agent by its bare role name,
+// and checks that the bare role VALUE (`--role coder`) is still what
+// `planar-agent queue run` accepts.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -24,15 +27,17 @@ namespace {
 
 namespace parity = planar::cmd::parity;
 
-/// @brief The fifteen role files, by stem.
-constexpr std::array k_agent_stems{
-    "planar-coder",       "planar-reviewer", "planar-orchestrator",     "planar-test-coder",   "planar-janitor",
-    "planar-research",    "planar-planner",  "planar-spec-reviewer",    "planar-ingestor",     "planar-importer",
-    "planar-synthesizer", "planar-ext-sync", "planar-feedback-triager", "planar-introspector", "planar-sync-reconciler",
+/// @brief The role files still under agents/, by stem.
+constexpr std::array k_agent_stems{"planar-orchestrator", "planar-test-coder"};
+
+/// @brief The role files under examples/agents/, by stem.
+constexpr std::array k_example_stems{
+    "planar-coder",    "planar-reviewer", "planar-janitor",       "planar-research",        "planar-planner",
+    "planar-ingestor", "planar-ext-sync", "planar-spec-reviewer", "planar-sync-reconciler",
 };
 
 /// @brief The doctrine documents: shared text, not agents, and not renamed.
-constexpr std::array k_doctrine{"methodology.md", "doctrine.md", "models.md", "cross-scope-writes.md"};
+constexpr std::array k_doctrine{"methodology.md", "doctrine.md", "cross-scope-writes.md"};
 
 auto repo(std::string_view rel) -> std::filesystem::path {
   return std::filesystem::path{PLANAR_REPO_ROOT} / rel;
@@ -161,12 +166,11 @@ auto has_problem(std::vector<std::string> const& problems, std::string_view need
   return std::ranges::any_of(problems, [&](std::string const& p) { return p.find(needle) != std::string::npos; });
 }
 
-} // namespace
-
-TEST_CASE("agents/ holds exactly fifteen planar-prefixed role files that follow the frontmatter contract",
-          "[cmd][agent][agents-contract]") {
+/// @brief Every role file with a `planar.kind: agent` frontmatter directly in
+/// `dir`, each checked against the contract; sorted file names.
+auto role_files_in(std::filesystem::path const& dir) -> std::vector<std::string> {
   std::vector<std::string> agents;
-  for (auto const& entry : std::filesystem::directory_iterator(repo("agents"))) {
+  for (auto const& entry : std::filesystem::directory_iterator(dir)) {
     if (!entry.is_regular_file() || entry.path().extension() != ".md") {
       continue;
     }
@@ -180,16 +184,40 @@ TEST_CASE("agents/ holds exactly fifteen planar-prefixed role files that follow 
     }
   }
   std::ranges::sort(agents);
+  return agents;
+}
+
+/// @brief The sorted file names of `stems`.
+template <std::size_t N> auto expected_files(std::array<char const*, N> const& stems) -> std::vector<std::string> {
   std::vector<std::string> expected;
-  for (auto const* stem : k_agent_stems) {
+  for (auto const* stem : stems) {
     expected.push_back(std::string{stem} + ".md");
   }
   std::ranges::sort(expected);
-  CHECK(agents.size() == 15);
-  CHECK(agents == expected);
+  return expected;
 }
 
-TEST_CASE("the four doctrine documents keep their names and carry no planar map and no name", "[cmd][agent][agents-contract]") {
+} // namespace
+
+TEST_CASE("agents/ holds only the orchestrator and test-coder role files, which follow the frontmatter contract",
+          "[cmd][agent][agents-contract]") {
+  auto const agents = role_files_in(repo("agents"));
+  CHECK(agents.size() == 2);
+  CHECK(agents == expected_files(k_agent_stems));
+}
+
+TEST_CASE("examples/agents/ holds the nine example role files, which follow the frontmatter contract",
+          "[cmd][agent][agents-contract]") {
+  auto const examples = role_files_in(repo("examples/agents"));
+  CHECK(examples.size() == 9);
+  CHECK(examples == expected_files(k_example_stems));
+  for (auto const* stem : k_example_stems) {
+    INFO(stem);
+    CHECK_FALSE(std::filesystem::exists(repo(std::string{"agents/"} + stem + ".md")));
+  }
+}
+
+TEST_CASE("the three doctrine documents keep their names and carry no planar map and no name", "[cmd][agent][agents-contract]") {
   for (auto const* file : k_doctrine) {
     DYNAMIC_SECTION(file) {
       REQUIRE(std::filesystem::exists(repo(std::string{"agents/"} + file)));
@@ -199,12 +227,25 @@ TEST_CASE("the four doctrine documents keep their names and carry no planar map 
       CHECK_FALSE(fm.top.contains("name"));
     }
   }
-  // No other file is in agents/: every .md is a role file or one of the four.
+  // No other file is in agents/: every .md is a role file or a doctrine document.
   std::size_t count = 0;
   for (auto const& entry : std::filesystem::directory_iterator(repo("agents"))) {
     count += entry.is_regular_file() && entry.path().extension() == ".md" ? 1 : 0;
   }
   CHECK(count == k_agent_stems.size() + k_doctrine.size());
+}
+
+TEST_CASE("the importer and synthesizer agents are gone with their verbs", "[cmd][agent][agents-contract]") {
+  // `planar import` and `planar synthesize` were removed (plan 1142, task 7471);
+  // their role files left agents/ in the same change, so no agent names a removed verb.
+  CHECK_FALSE(std::filesystem::exists(repo("agents/planar-importer.md")));
+  CHECK_FALSE(std::filesystem::exists(repo("agents/planar-synthesizer.md")));
+}
+
+TEST_CASE("agents/models.md is gone with the routing tier table", "[cmd][agent][agents-contract][routing]") {
+  // The tier-to-model table and `planar models resolve` were removed together
+  // (plan 1142, task 7455). Nothing in the authored tree ships the file.
+  CHECK_FALSE(std::filesystem::exists(repo("agents/models.md")));
 }
 
 TEST_CASE("a planar.slug that differs from the name fails and names the file and both values", "[cmd][agent][agents-contract]") {
@@ -234,16 +275,15 @@ TEST_CASE("a file with a top-level model or a bare file name fails", "[cmd][agen
 }
 
 TEST_CASE("no authored text dispatches an agent by its bare role name", "[cmd][agent][agents-contract]") {
-  // `--role coder`, `routing_candidate_bindings.role` and the models.md tier rows
-  // stay bare: they are role values, not agent names, and are not matched here.
-  std::string const roles =
-      "coder|reviewer|orchestrator|test-coder|janitor|research|planner|spec-reviewer|ingestor|importer|synthesizer|ext-sync|"
-      "feedback-triager|introspector|sync-reconciler";
-  std::regex const dispatch{"(subagent_type|agent_type|agent)[ \\t]*[:=][ \\t]*[`\"']?(" + roles + ")\\b|--agent[ =](" + roles +
-                            ")\\b|subagent type `(" + roles + ")`"};
+  // `--role coder` stays bare: it is a role value, not an agent name, and is
+  // not matched here.
+  std::string const roles = "coder|reviewer|orchestrator|test-coder|janitor|research|planner|spec-reviewer|ingestor|ext-sync|"
+                            "sync-reconciler";
+  std::regex const  dispatch{"(subagent_type|agent_type|agent)[ \\t]*[:=][ \\t]*[`\"']?(" + roles + ")\\b|--agent[ =](" + roles +
+                             ")\\b|subagent type `(" + roles + ")`"};
 
   std::vector<std::filesystem::path> files;
-  for (auto const* dir : {"agents", "evals", "docs"}) {
+  for (auto const* dir : {"agents", "examples", "evals", "docs"}) {
     for (auto const& entry : std::filesystem::recursive_directory_iterator(repo(dir))) {
       auto const ext = entry.path().extension().string();
       if (entry.is_regular_file() && (ext == ".md" || ext == ".json" || ext == ".py" || ext == ".sh")) {
@@ -275,4 +315,11 @@ TEST_CASE("queue run still accepts the bare role value", "[cmd][agent][agents-co
   auto const got = parity::run_pinned(std::filesystem::path{PLANAR_CPP_BIN}, args, arena.cpp_root, "bare-role");
   INFO("stdout:\n" << got.out << "stderr:\n" << got.err);
   CHECK(got.code == 0);
+}
+
+TEST_CASE("the removed feedback-triager role has no file under agents/", "[cmd][agent][agents-contract]") {
+  // Plan 1142, task 7473. The triage verbs and the role spec left the tree
+  // together; the role's source is preserved at tag archive/feedback-triage.
+  CHECK_FALSE(std::filesystem::exists(repo("agents/planar-feedback-triager.md")));
+  CHECK_FALSE(std::filesystem::exists(repo("codex-agents/planar-feedback-triager.toml")));
 }

@@ -17,9 +17,9 @@
 /// at. VERIFIED FALSE before a line was written, by reading the caller and
 /// then grepping the whole Zig tree: zig's `handlers/scenario/verify.zig`
 /// calls `engine.planning.scenario.verify` and NOTHING else, and
-/// `engine.planning.test_spec_status` has exactly three callers in the
+/// `engine.planning.test_spec_status` had exactly three callers in the Zig
 /// tree — `handlers/test_spec/status.zig`, `engine/routing/packet.zig` and
-/// `cmd/planar-execute/state.zig` (which shells the CLI). None of them is
+/// `cmd/planar-execute/state.zig` (removed; it shelled the CLI). None of them was
 /// on any `scenario` path.
 ///
 /// The dependency runs the OTHER WAY and is data-level, not call-level:

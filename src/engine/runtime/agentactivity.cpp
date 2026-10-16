@@ -5,14 +5,6 @@
 
 module;
 
-// `pid_alive` is the one place in this module that leaves SQLite: the run
-// sweep decides a `workflow_runs` row is dead by asking the kernel whether
-// its recorded pid still exists. `kill(pid, 0)` sends no signal — it runs
-// only the permission and existence checks — which is why this is a probe
-// and not an act.
-#include <cerrno>
-#include <csignal>
-
 module planar.engine.runtime.agentactivity;
 
 import std;
@@ -194,13 +186,13 @@ auto read_claim_row(const db::statement& stmt) -> std::expected<claim, agent_err
   return row;
 }
 
-/// @brief The canonical 18-column action projection.
+/// @brief The canonical 19-column action projection.
 constexpr std::string_view k_action_columns = "select id, session_id, session_entry_id, parent_action_id, claim_id,\n"
                                               "       action_kind, entity_kind, entity_id,\n"
                                               "       vendor, vendor_role, model,\n"
                                               "       started_at, ended_at, outcome, summary,\n"
                                               "       head_sha, dirty,\n"
-                                              "       metadata\n"
+                                              "       metadata, verdict\n"
                                               "from agent_actions\n";
 
 /// @brief Decode one row of `k_action_columns`.
@@ -244,6 +236,9 @@ auto read_action_row(const db::statement& stmt) -> std::expected<action, agent_e
     row.dirty = dirty_state_from_text(*dirty);
   }
   row.metadata = opt_text(stmt, 17);
+  if (auto const verdict = opt_text(stmt, 18); verdict.has_value()) {
+    row.verdict = review_verdict_from_text(*verdict);
+  }
   return row;
 }
 
@@ -492,8 +487,30 @@ auto to_text(action_kind value) -> std::string_view {
     return "run_submitted";
   case action_kind::run_reconciled:
     return "run_reconciled";
+  case action_kind::review:
+    return "review";
   }
   return "other";
+}
+
+auto to_text(review_verdict value) -> std::string_view {
+  switch (value) {
+  case review_verdict::approve:
+    return "approve";
+  case review_verdict::request_changes:
+    return "request-changes";
+  }
+  return "approve";
+}
+
+auto review_verdict_from_text(std::string_view text) -> std::optional<review_verdict> {
+  if (text == "approve") {
+    return review_verdict::approve;
+  }
+  if (text == "request-changes") {
+    return review_verdict::request_changes;
+  }
+  return std::nullopt;
 }
 
 auto is_supervision_kind(action_kind kind) -> bool {
@@ -620,7 +637,7 @@ auto failure_category_from_text(std::string_view text) -> std::optional<failure_
 }
 
 auto action_kind_from_text(std::string_view text) -> std::optional<action_kind> {
-  static constexpr std::array<std::pair<std::string_view, action_kind>, 22> k_table{{
+  static constexpr std::array<std::pair<std::string_view, action_kind>, 23> k_table{{
       {"planner", action_kind::planner},
       {"ingestor", action_kind::ingestor},
       {"coder", action_kind::coder},
@@ -643,6 +660,7 @@ auto action_kind_from_text(std::string_view text) -> std::optional<action_kind> 
       {"supervisor_override", action_kind::supervisor_override},
       {"run_submitted", action_kind::run_submitted},
       {"run_reconciled", action_kind::run_reconciled},
+      {"review", action_kind::review},
   }};
   for (auto const& [name, value] : k_table) {
     if (name == text) {
@@ -729,6 +747,17 @@ auto error_name(agent_error err) -> std::string_view {
     return "SupervisorMismatch";
   case agent_error::attempt_mismatch:
     return "AttemptMismatch";
+  case agent_error::task_not_ready:
+    return "TaskNotReady";
+  case agent_error::reviewer_not_independent:
+    return "ReviewerNotIndependent";
+  case agent_error::reviewer_unidentified:
+    return "ReviewerUnidentified";
+  case agent_error::reviewer_claim_not_found:
+    return "ReviewerClaimNotFound";
+  case agent_error::completion_unmet:
+  case agent_error::claim_policy_unmet:
+    return "PolicyUnmet";
   }
   return "QueryFailed";
 }
@@ -759,21 +788,25 @@ auto acquire_claim(db::connection& conn, const acquire_args& args) -> std::expec
     }
   }
 
+  if (args.admit) {
+    if (auto const admitted = args.admit(conn); !admitted) {
+      return std::unexpected(admitted.error());
+    }
+  }
+
   auto stmt = conn.prepare(std::format("insert into agent_work_claims (\n"
                                        "  claim_token, session_id, entity_kind, entity_id, claim_scope,\n"
                                        "  status, vendor, vendor_session_id, role, model,\n"
                                        "  worktree_id, worktree_path,\n"
                                        "  repo_root, branch, head_sha_at_claim, dirty_at_claim,\n"
-                                       "  purpose, base_ref,\n"
-                                       "  run_id, stage,\n"
+                                       "  purpose, base_ref, policy_digest,\n"
                                        "  lease_expires_at\n"
                                        ") values (\n"
                                        "  lower(hex(randomblob(16))), ?, ?, ?, ?,\n"
                                        "  'active', ?, ?, ?, ?,\n"
                                        "  ?, ?,\n"
                                        "  ?, ?, ?, ?,\n"
-                                       "  ?, ?,\n"
-                                       "  ?, ?,\n"
+                                       "  ?, ?, ?,\n"
                                        "  strftime('%Y-%m-%dT%H:%M:%fZ','now', {})\n"
                                        ")",
                                        seconds_modifier(args.ttl_secs)));
@@ -796,8 +829,7 @@ auto acquire_claim(db::connection& conn, const acquire_args& args) -> std::expec
   ok      = ok && bind_opt_text(*stmt, 14, claim_dirty_text(args.loc));
   ok      = ok && bind_opt_text(*stmt, 15, args.purpose);
   ok      = ok && bind_opt_text(*stmt, 16, args.base_ref);
-  ok      = ok && bind_opt_int(*stmt, 17, args.run_id);
-  ok      = ok && bind_opt_text(*stmt, 18, args.stage);
+  ok      = ok && bind_opt_text(*stmt, 17, args.policy_digest);
   if (!ok || !stmt->step()) {
     return std::unexpected(agent_error::query_failed);
   }
@@ -930,6 +962,17 @@ auto abort_claim(db::connection& conn, std::string_view claim_token, std::option
   if (changes(conn) == 0) {
     return std::unexpected(agent_error::claim_not_found);
   }
+  // The `claim_nest` action a bare claim opens for `--parent-action` ends with the claim, for task, plan
+  // and plan_step claims alike. (The `claim_check` marker is closed by `reset_direct_claim_task_after_abort`.)
+  auto nest = conn.prepare(std::format("update agent_actions\n"
+                                       "set ended_at = {},\n"
+                                       "    outcome = 'aborted'\n"
+                                       "where claim_id = (select id from agent_work_claims where claim_token = ?)\n"
+                                       "  and ended_at is null and metadata like '%\"claim_nest\":true%'",
+                                       k_now));
+  if (!nest || !nest->bind_text(1, claim_token) || !nest->step()) {
+    return std::unexpected(agent_error::query_failed);
+  }
   return get_claim_by_token(conn, claim_token);
 }
 
@@ -997,6 +1040,29 @@ auto has_active_claim_on_task(db::connection& conn, std::int64_t task_id) -> std
     return std::unexpected(agent_error::query_failed);
   }
   return *stepped == db::step_result::row;
+}
+
+auto active_claim_token_on_task(db::connection& conn, std::int64_t task_id)
+    -> std::expected<std::optional<std::string>, agent_error> {
+  auto stmt = conn.prepare(std::format("select claim_token from agent_work_claims\n"
+                                       "where entity_kind = 'task'\n"
+                                       "  and entity_id = ?\n"
+                                       "  and status = 'active'\n"
+                                       "  and lease_expires_at >= {}\n"
+                                       "order by id desc\n"
+                                       "limit 1",
+                                       k_now));
+  if (!stmt || !stmt->bind_int64(1, task_id)) {
+    return std::unexpected(agent_error::query_failed);
+  }
+  auto stepped = stmt->step();
+  if (!stepped) {
+    return std::unexpected(agent_error::query_failed);
+  }
+  if (*stepped != db::step_result::row) {
+    return std::optional<std::string>{};
+  }
+  return std::optional<std::string>{stmt->column_text(0)};
 }
 
 // =========================================================================
@@ -1075,24 +1141,6 @@ auto task_plan_id(db::connection& conn, std::int64_t task_id) -> std::optional<s
 // Run association
 // =========================================================================
 
-auto associate_claim_run(db::connection& conn, std::string_view claim_token, std::int64_t run_id,
-                         std::optional<std::string_view> stage) -> std::expected<std::int64_t, agent_error> {
-  auto stmt = conn.prepare("update agent_work_claims\n"
-                           "set run_id = ?,\n"
-                           "    stage = ?\n"
-                           "where claim_token = ? and status = 'active'");
-  if (!stmt) {
-    return std::unexpected(agent_error::query_failed);
-  }
-  bool ok = stmt->bind_int64(1, run_id).has_value();
-  ok      = ok && bind_opt_text(*stmt, 2, stage);
-  ok      = ok && stmt->bind_text(3, claim_token).has_value();
-  if (!ok || !stmt->step()) {
-    return std::unexpected(agent_error::query_failed);
-  }
-  return changes(conn);
-}
-
 // =========================================================================
 // Engine supervision
 // =========================================================================
@@ -1117,15 +1165,6 @@ auto get_supervision(db::connection& conn, std::string_view claim_token) -> std:
     out.attempt_id = stmt->column_text(1);
   }
   return out;
-}
-
-auto set_engine_supervision(db::connection& conn, std::int64_t claim_id, std::string_view attempt_id)
-    -> std::expected<void, agent_error> {
-  auto stmt = conn.prepare("update agent_work_claims set supervisor = 'engine', attempt_id = ? where id = ?");
-  if (!stmt || !stmt->bind_text(1, attempt_id) || !stmt->bind_int64(2, claim_id) || !stmt->step()) {
-    return std::unexpected(agent_error::query_failed);
-  }
-  return {};
 }
 
 // =========================================================================
@@ -1380,28 +1419,7 @@ auto reconcile_stale(db::connection& conn, const reconcile_policy& policy) -> st
     std::erase_if(candidates, [&](const claim& c) { return !claim_belongs_to_plan(conn, c, *policy.plan_id); });
   }
 
-  // Engine-supervised claims are the engine's to reconcile (plan 1033 D3):
-  // set aside unless the operator overrides. Decided per candidate, so the
-  // UPDATEs below touch exactly the claims left in `candidates`.
-  reconcile_result                        result;
-  std::vector<std::optional<std::string>> override_attempts;
-  {
-    std::vector<claim> kept;
-    for (auto& candidate : candidates) {
-      auto const sup = get_supervision(conn, candidate.claim_token);
-      if (!sup) {
-        return std::unexpected(sup.error());
-      }
-      if (sup->engine && !policy.override_supervisor) {
-        result.skipped_engine.push_back(std::move(candidate));
-        continue;
-      }
-      override_attempts.push_back(sup->engine ? std::optional<std::string>{sup->attempt_id.value_or("")} : std::nullopt);
-      kept.push_back(std::move(candidate));
-    }
-    candidates = std::move(kept);
-  }
-
+  reconcile_result result;
   if (policy.dry_run) {
     // Writes NOTHING — not the mark-stale, not the task reset, not the
     // orphan sweep. Both counters stay zero even with candidates present.
@@ -1414,10 +1432,9 @@ auto reconcile_stale(db::connection& conn, const reconcile_policy& policy) -> st
     category_text = to_text(*policy.category);
   }
 
-  if (policy.plan_id.has_value() || !result.skipped_engine.empty()) {
-    // Per candidate — plan-scoped, or with engine claims set aside — so the
-    // claims left out (other plans, the engine's) are untouched even though
-    // they share the expiry predicate.
+  if (policy.plan_id.has_value()) {
+    // Per candidate, plan-scoped, so the claims left out (other plans) are
+    // untouched even though they share the expiry predicate.
     for (auto const& candidate : candidates) {
       auto stmt = conn.prepare(std::format("update agent_work_claims\n"
                                            "set status = 'stale',\n"
@@ -1453,16 +1470,25 @@ auto reconcile_stale(db::connection& conn, const reconcile_policy& policy) -> st
 
   // --- return tasks to `todo` where THIS claim owns the transition.
   // The evidence is any action row on the claim (pull's role action or a
-  // direct claim's `claim_check`); a `--no-transition` claim has none and
-  // so cannot reset a status it never set. The `not exists` guard keeps a
-  // replacement claim's task from being yanked away.
+  // direct claim's `claim_check`) EXCEPT the bookkeeping rows a bare claim
+  // can carry: the `claim_nest` action opened for `--parent-action` and the
+  // `unready_override` audit row. A `--no-transition` claim has no other
+  // action, so it cannot reset a status it never set. Rows are told apart by
+  // their metadata marker and not by kind, because `pull --role other` opens
+  // an `other` dispatch action whose reset must still work. The `not exists`
+  // guard keeps a replacement claim's task from being yanked away.
   for (auto const& candidate : candidates) {
     if (candidate.kind != entity_kind::task) {
       continue;
     }
     auto reset = conn.prepare(std::format("update tasks set status = 'todo', updated_at = {0}\n"
                                           "where id = ? and status = 'doing'\n"
-                                          "  and exists (select 1 from agent_actions where claim_id = ?)\n"
+                                          "  and exists (\n"
+                                          "    select 1 from agent_actions where claim_id = ?\n"
+                                          "      and coalesce(metadata, '') not like '%\"claim_nest\":true%'\n"
+                                          "      and coalesce(metadata, '') not like '%\"unready_override\":true%'\n"
+                                          "      and action_kind <> 'review'\n"
+                                          "  )\n"
                                           "  and not exists (\n"
                                           "    select 1 from agent_work_claims\n"
                                           "    where entity_kind = 'task' and entity_id = ? and status = 'active'\n"
@@ -1477,33 +1503,13 @@ auto reconcile_stale(db::connection& conn, const reconcile_policy& policy) -> st
     auto close = conn.prepare(std::format("update agent_actions\n"
                                           "set ended_at = {},\n"
                                           "    outcome = 'aborted'\n"
-                                          "where claim_id = ? and action_kind = 'claim_check' and ended_at is null",
+                                          "where claim_id = ? and ended_at is null\n"
+                                          "  and (action_kind = 'claim_check' or metadata like '%\"claim_nest\":true%')",
                                           k_now));
     if (!close || !close->bind_int64(1, candidate.id) || !close->step()) {
       return std::unexpected(agent_error::query_failed);
     }
     result.actions_closed += changes(conn);
-  }
-
-  // --- the override's audit row, one per engine claim swept under it.
-  for (std::size_t i = 0; i < candidates.size(); ++i) {
-    if (!override_attempts[i].has_value()) {
-      continue;
-    }
-    auto const id = start_action(conn, start_action_args{
-                                           .session_id = candidates[i].session_id,
-                                           .claim_id   = candidates[i].id,
-                                           .kind       = action_kind::supervisor_override,
-                                           .vendor     = candidates[i].vendor,
-                                       });
-    if (!id) {
-      return std::unexpected(id.error());
-    }
-    auto const summary =
-        std::format("reconcile by operator overriding the engine supervisor (attempt {})", *override_attempts[i]);
-    if (auto const closed = end_action(conn, *id, outcome::ok, std::string_view{summary}); !closed) {
-      return std::unexpected(closed.error());
-    }
   }
 
   // --- orphaned actions: still open, but their owning session has ended.
@@ -1547,85 +1553,6 @@ auto reconcile_stale(db::connection& conn, const reconcile_policy& policy) -> st
   }
 
   result.candidates = std::move(candidates);
-  return result;
-}
-
-auto pid_alive(std::int64_t pid) -> bool {
-  if (pid <= 0) {
-    return false;
-  }
-  if (::kill(static_cast<::pid_t>(pid), 0) == 0) {
-    return true;
-  }
-  // ESRCH is the ONLY errno that means "gone". EPERM means the process
-  // exists under another owner, and any other errno is a question we
-  // cannot answer — both read as alive, because the conservative direction
-  // here is to leave a run running rather than abandon one that is not.
-  return errno != ESRCH;
-}
-
-auto reconcile_runs(db::connection& conn, bool dry_run, std::optional<std::int64_t> plan_id, bool override_supervisor)
-    -> std::expected<reconcile_runs_result, agent_error> {
-  // `lapsed` is computed IN SQL, against the same clock expression (`k_now`)
-  // every other write in this module uses, rather than fetched and compared
-  // in C++ — one fewer place a clock/format mismatch could hide.
-  std::string select_sql = std::format("select id, run_identifier, pid, plan_id, engine = 'centurion', "
-                                       "pid is null and expires_at is not null and expires_at < {} "
-                                       "from workflow_runs where status = 'running'",
-                                       k_now);
-  if (plan_id.has_value()) {
-    select_sql += std::format(" and plan_id = {}", *plan_id);
-  }
-
-  reconcile_runs_result result;
-  {
-    auto stmt = conn.prepare(select_sql);
-    if (!stmt) {
-      return std::unexpected(agent_error::query_failed);
-    }
-    while (true) {
-      auto stepped = stmt->step();
-      if (!stepped) {
-        return std::unexpected(agent_error::query_failed);
-      }
-      if (*stepped != db::step_result::row) {
-        break;
-      }
-      auto const    pid_opt = opt_int(*stmt, 2);
-      run_candidate row{.id             = stmt->column_int64(0),
-                        .run_identifier = stmt->column_text(1),
-                        .pid            = pid_opt.value_or(0),
-                        .plan_id        = opt_int(*stmt, 3)};
-      // A pid-bound run is probed for liveness exactly as before. A
-      // pid-less run is NEVER pid-probed (there is no pid to probe) — its
-      // liveness is entirely the `lapsed` predicate computed above.
-      bool const dead = pid_opt.has_value() ? !pid_alive(*pid_opt) : stmt->column_int64(5) != 0;
-      if (!dead) {
-        continue;
-      }
-      if (stmt->column_int64(4) != 0 && !override_supervisor) {
-        result.skipped_engine.push_back(std::move(row));
-      } else {
-        result.candidates.push_back(std::move(row));
-      }
-    }
-  }
-
-  if (dry_run) {
-    return result;
-  }
-
-  for (auto const& candidate : result.candidates) {
-    auto stmt = conn.prepare(std::format("update workflow_runs\n"
-                                         "set status = 'abandoned', ended_at = {}\n"
-                                         "where id = ? and status = 'running'",
-                                         k_now));
-    if (!stmt || !stmt->bind_int64(1, candidate.id) || !stmt->step()) {
-      return std::unexpected(agent_error::query_failed);
-    }
-    // Counted per ATTEMPT, not per row actually matched — zig's behavior.
-    ++result.abandoned;
-  }
   return result;
 }
 
@@ -1897,9 +1824,12 @@ auto list_actions(db::connection& conn, std::int64_t limit) -> std::expected<std
 }
 
 auto latest_action_for_claim(db::connection& conn, std::int64_t claim_id) -> std::expected<std::optional<action>, agent_error> {
-  auto rows =
-      collect_actions(conn, std::string{k_action_columns} + "where claim_id = ?\norder by started_at desc, id desc\nlimit 1",
-                      [claim_id](db::statement& stmt) { return stmt.bind_int64(1, claim_id).has_value(); });
+  // A `review` row is a verdict ABOUT the claim written by someone else; it is not what the claim's
+  // owner is doing, so it never stands in for the claim's current activity.
+  auto rows = collect_actions(conn,
+                              std::string{k_action_columns} +
+                                  "where claim_id = ? and action_kind <> 'review'\norder by started_at desc, id desc\nlimit 1",
+                              [claim_id](db::statement& stmt) { return stmt.bind_int64(1, claim_id).has_value(); });
   if (!rows) {
     return std::unexpected(rows.error());
   }
@@ -1907,6 +1837,42 @@ auto latest_action_for_claim(db::connection& conn, std::int64_t claim_id) -> std
     return std::optional<action>{};
   }
   return std::optional<action>{std::move(rows->front())};
+}
+
+auto reviews_for_claim(db::connection& conn, std::string_view claim_token)
+    -> std::expected<std::vector<review_row>, agent_error> {
+  auto stmt = conn.prepare("select a.id, a.verdict, coalesce(a.summary, ''), a.started_at,\n"
+                           "       json_extract(a.metadata, '$.reviewer_session'),\n"
+                           "       json_extract(a.metadata, '$.reviewer_claim'),\n"
+                           "       a.session_id\n"
+                           "from agent_actions a\n"
+                           "join agent_work_claims c on c.id = a.claim_id\n"
+                           "where c.claim_token = ? and a.action_kind = 'review' and a.verdict is not null\n"
+                           "order by a.id asc");
+  if (!stmt || !stmt->bind_text(1, claim_token)) {
+    return std::unexpected(agent_error::query_failed);
+  }
+  std::vector<review_row> rows;
+  while (true) {
+    auto stepped = stmt->step();
+    if (!stepped) {
+      return std::unexpected(agent_error::query_failed);
+    }
+    if (*stepped != db::step_result::row) {
+      return rows;
+    }
+    auto const verdict = review_verdict_from_text(stmt->column_text(1));
+    if (!verdict.has_value()) {
+      return std::unexpected(agent_error::query_failed);
+    }
+    rows.push_back(review_row{.action_id           = stmt->column_int64(0),
+                              .verdict             = *verdict,
+                              .summary             = stmt->column_text(2),
+                              .recorded_at         = stmt->column_text(3),
+                              .reviewer_session    = opt_text(*stmt, 4),
+                              .reviewer_claim      = opt_text(*stmt, 5),
+                              .reviewer_session_id = stmt->column_int64(6)});
+  }
 }
 
 auto list_actions_by_entity(db::connection& conn, std::string_view entity_kind, std::int64_t entity_id, std::int64_t limit)
@@ -2110,19 +2076,20 @@ auto walk_action_forest(db::connection& conn, std::optional<std::int64_t> root_s
     -> std::expected<std::vector<forest_node>, agent_error> {
   std::string const anchor_filter =
       root_session_id.has_value() ? "where parent_action_id is null and session_id = ?" : "where parent_action_id is null";
-  auto const sql = std::format("with recursive tree(action_id, parent_action_id, session_id, claim_id, depth) as (\n"
-                               "  select id, parent_action_id, session_id, claim_id, 0\n"
-                               "  from agent_actions\n"
-                               "  {}\n"
-                               "  union all\n"
-                               "  select a.id, a.parent_action_id, a.session_id, a.claim_id, t.depth + 1\n"
-                               "  from agent_actions a\n"
-                               "  join tree t on a.parent_action_id = t.action_id\n"
-                               ")\n"
-                               "select action_id, parent_action_id, session_id, claim_id, depth\n"
-                               "from tree\n"
-                               "order by action_id asc",
-                               anchor_filter);
+  auto const sql =
+      std::format("with recursive tree(action_id, parent_action_id, session_id, claim_id, action_kind, verdict, depth) as (\n"
+                  "  select id, parent_action_id, session_id, claim_id, action_kind, verdict, 0\n"
+                  "  from agent_actions\n"
+                  "  {}\n"
+                  "  union all\n"
+                  "  select a.id, a.parent_action_id, a.session_id, a.claim_id, a.action_kind, a.verdict, t.depth + 1\n"
+                  "  from agent_actions a\n"
+                  "  join tree t on a.parent_action_id = t.action_id\n"
+                  ")\n"
+                  "select action_id, parent_action_id, session_id, claim_id, depth, action_kind, verdict\n"
+                  "from tree\n"
+                  "order by action_id asc",
+                  anchor_filter);
 
   auto stmt = conn.prepare(sql);
   if (!stmt) {
@@ -2146,7 +2113,9 @@ auto walk_action_forest(db::connection& conn, std::optional<std::int64_t> root_s
                                 .session_id       = stmt->column_int64(2),
                                 .claim_id         = opt_int(*stmt, 3),
                                 .depth            = stmt->column_int64(4),
-                                .is_last_sibling  = false});
+                                .is_last_sibling  = false,
+                                .kind             = action_kind_from_text(stmt->column_text(5)).value_or(action_kind::other),
+                                .verdict          = review_verdict_from_text(stmt->column_text(6))});
   }
   annotate_last_sibling(nodes);
   return nodes;
@@ -2277,7 +2246,7 @@ auto next_work(db::connection& conn, std::int64_t plan_id) -> std::expected<std:
     } else if ((status == "todo" || status == "doing") && has_open_dependency) {
       // Task 6898 / decision D6's dependency-exclusion clause, applied to
       // `plan next`'s own bucketer so it agrees with `pull_next` /
-      // `peek_next` (`agentatomic.cpp::pick_next_eligible`) on the same
+      // `peek_next` (`agentatomic.cpp::eligible_task_ids`) on the same
       // row. A `todo`/`doing` task carrying an outbound `depends-on` edge
       // to a non-terminal blocker is not dispatchable yet; folded into
       // `blocked` rather than a new bucket, since that is already the

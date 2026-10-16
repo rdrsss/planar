@@ -415,6 +415,21 @@ auto tree(context& ctx, const cliapp::parsed_args& args) -> handler_result {
       out.append(node.is_last_sibling ? "\xE2\x94\x94\xE2\x94\x80\xE2\x94\x80 " : "\xE2\x94\x9C\xE2\x94\x80\xE2\x94\x80 ");
     }
 
+    // A review is a verdict ABOUT a claim by another session, so its line names the verdict and the
+    // reviewed claim rather than repeating the claim's own status line.
+    if (node.kind == aa::action_kind::review) {
+      std::string reviewed = "(no claim)";
+      if (node.claim_id.has_value()) {
+        if (auto const claim_row = aa::get_claim_by_id(**conn, *node.claim_id); claim_row.has_value()) {
+          reviewed = claim_row->claim_token;
+        }
+      }
+      out.append(std::format("review:{}  reviewer_session:{}  claim:{}\n",
+                             node.verdict.has_value() ? aa::to_text(*node.verdict) : std::string_view{"?"}, node.session_id,
+                             reviewed));
+      continue;
+    }
+
     bool rendered_claim = false;
     if (node.claim_id.has_value()) {
       if (auto claim_row = aa::get_claim_by_id(**conn, *node.claim_id); claim_row.has_value()) {

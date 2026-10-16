@@ -23,8 +23,9 @@ reads `~/.codex/auth.json`), while every WRITE the host makes to a NEW path
 surface itself is NOT taken from the operator's install: when given a
 `repo_root` it copies the checkout's single `skills/planar/` directory into
 `<claude-config>/skills/planar` and `<home>/.agents/skills/planar`, and each
-`agents/planar-<role>.md` into `<claude-config>/agents/` (Claude) or as a
-generated `<codex-home>/agents/planar-<role>.toml` (Codex), so a run
+`agents/planar-<role>.md` and `examples/agents/planar-<role>.md` (the role
+agents Planar no longer installs) into `<claude-config>/agents/` (Claude) or
+as a generated `<codex-home>/agents/planar-<role>.toml` (Codex), so a run
 exercises the checkout under test and never a stale install. It is
 a fail-closed, allowlisted STAGING step, not a broadening of the arena: it
 never grants read/write access to anything outside the named surfaces below,
@@ -410,7 +411,7 @@ def stage_planar_surface(
       (SKILL.md plus `references/`), the cross-vendor skill location;
     - Claude: `<CLAUDE_CONFIG_DIR>/skills/planar/` (same copy) and
       `<CLAUDE_CONFIG_DIR>/agents/planar-<role>.md` for each
-      `<repo_root>/agents/planar-*.md`;
+      `<repo_root>/agents/planar-*.md` and `<repo_root>/examples/agents/planar-*.md`;
     - Codex: `<CODEX_HOME>/agents/planar-<role>.toml` with `name`,
       `description` and `developer_instructions`, rendered from the same
       markdown files by `<repo_root>/scripts/render-codex-agents.py`;
@@ -429,8 +430,9 @@ def stage_planar_surface(
             f"{vendor}: required Planar skill is missing: {skill_src / 'SKILL.md'}"
         )
     agents_src = repo_root / "agents"
+    examples_src = repo_root / "examples" / "agents"
     for name in required_agents:
-        if not (agents_src / f"{name}.md").is_file():
+        if not any((d / f"{name}.md").is_file() for d in (agents_src, examples_src)):
             raise VendorStagingError(
                 f"{vendor}: required Planar agent is missing: {agents_src / (name + '.md')}"
             )
@@ -450,14 +452,21 @@ def stage_planar_surface(
         shutil.copytree(skill_src, target)
 
     agent_dir = config_dir / "agents"
-    sources = sorted(agents_src.glob("planar-*.md"))
+    sources = sorted(
+        [*agents_src.glob("planar-*.md"), *examples_src.glob("planar-*.md")],
+        key=lambda p: p.name,
+    )
     if sources:
         agent_dir.mkdir(parents=True, exist_ok=True)
     if vendor == "claude":
         for source in sources:
             shutil.copy2(source, agent_dir / source.name)
     elif sources:
-        _render_codex_agents(repo_root, agents_src, agent_dir)
+        with tempfile.TemporaryDirectory(prefix="planar-arena-agents-") as tmp:
+            merged = Path(tmp)
+            for source in sources:
+                shutil.copyfile(source, merged / source.name)
+            _render_codex_agents(repo_root, merged, agent_dir)
 
 
 def assert_vendor_auth(env: Mapping[str, str], vendor: str) -> None:

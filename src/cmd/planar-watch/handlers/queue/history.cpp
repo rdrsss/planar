@@ -122,6 +122,7 @@ auto render_json(const std::vector<hq::history_row>& rows) -> std::string {
     put_int(out, "ran_ms", r.ran_ms);
     put_int(out, "run_limit_ms", r.run_limit_ms);
     put_int(out, "wait_limit_ms", r.wait_limit_ms);
+    put_text(out, "claim_token", r.claim_token);
     out += '}';
   }
   out += "]\n";

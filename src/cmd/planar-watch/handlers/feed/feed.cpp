@@ -71,8 +71,12 @@ auto collect_events(context& ctx, const cliapp::parsed_args& args, std::optional
     auto task = row.entity.has_value() && aa::to_text(*row.entity) == "task" ? row.entity_id : std::nullopt;
     // The supervision kinds (plan 1033) name themselves on the text line;
     // every other action's line is what it always was.
-    auto const detail = aa::is_supervision_kind(row.kind) ? std::string{aa::to_text(row.kind)} : std::string{};
-    auto       add    = [&](std::string_view at, std::string_view kind) {
+    auto const detail =
+        aa::is_supervision_kind(row.kind) ? std::string{aa::to_text(row.kind)}
+        : row.kind == aa::action_kind::review
+            ? std::format("review {}", row.verdict.has_value() ? aa::to_text(*row.verdict) : std::string_view{"?"})
+            : std::string{};
+    auto add = [&](std::string_view at, std::string_view kind) {
       if (include(at, row.vendor, task)) {
         std::string body;
         ar::append_action(body, row);

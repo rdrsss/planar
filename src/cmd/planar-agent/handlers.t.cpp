@@ -181,9 +181,9 @@ TEST_CASE("planar-agent schema appends the terminator its renderer omits", "[cmd
   // `<verb>: not implemented in this build`. That is asserted directly
   // below, so this pair is a contract and not a relaxation.
   CHECK(got.out.contains("\"planar-agent ingest\""));
-  CHECK(got.out.contains("\"planar-agent run start\""));
-  CHECK(got.out.contains("\"planar-agent dispatch preview\""));
-  CHECK(got.out.contains("\"planar-agent context add\""));
+  // `dispatch preview` and `dispatch confirm` were removed with the routing
+  // dispatch boundary: the catalog no longer declares them.
+  CHECK_FALSE(got.out.contains("\"planar-agent dispatch"));
 
   // `ingest` is now a real leaf, not an exit-64 catalog placeholder.
   auto const unsupported = dispatch(fx, {"ingest", "--vendor", "nobody", "--event", "@missing"});
@@ -278,6 +278,18 @@ TEST_CASE("planar-agent maps a parse failure to exit 1, not the operator binary'
   CHECK(unknown_flag.err == "error: version: The following argument was not expected: --badflag\n");
 }
 
+TEST_CASE("planar-agent dispatch preview is an unknown subcommand and opens no database", "[cmd][agent][handlers][routing]") {
+  // Removed with the routing dispatch boundary (plan 1142, task 7455): the
+  // verb is no longer in the tree, so argv is refused exactly like any
+  // other unknown verb, at exit 1, before the database is touched.
+  auto const fx  = make_fixture("dispatch-gone");
+  auto const got = dispatch(fx, {"dispatch", "preview", "--work-item", "42"});
+  CHECK(got.code == 1);
+  CHECK(got.out.empty());
+  CHECK(got.err.starts_with("error: planar-agent: The following arguments were not expected: dispatch preview"));
+  CHECK_FALSE(got.db_open);
+}
+
 TEST_CASE("planar-agent help paths exit 0 and open no database", "[cmd][agent][handlers]") {
   auto const fx = make_fixture("help");
 
@@ -297,19 +309,18 @@ TEST_CASE("planar-agent help paths exit 0 and open no database", "[cmd][agent][h
   // The write surface is stated on the root page, as planar-ext's is.
   CHECK(explicit_help.out.contains("agent_actions"));
   CHECK(explicit_help.out.contains("agent_work_claims"));
-  CHECK(explicit_help.out.contains("routing_dispatch_"));
+  CHECK_FALSE(explicit_help.out.contains("routing_dispatch_"));
   CHECK(explicit_help.out.contains("queue_entries"));
   CHECK(explicit_help.out.contains("tasks.status"));
   // Matched as a LISTING LINE (`"\n  <verb>"`), not as a bare substring.
   // CLI11 indents a subcommand entry by exactly two spaces and wraps its
   // description to a deeper column, so this form matches an entry and
-  // nothing else — which matters for the negative loop below, where a bare
-  // `contains("dispatch")` is satisfied by `claim-associate`'s own
-  // description ("...at dispatch time"). That false positive is exactly
-  // what a substring check would have shipped.
+  // nothing else. A bare `contains("dispatch")` would be satisfied by some
+  // other verb's description ("...at dispatch time"), which is exactly what a
+  // substring check would have shipped.
   auto const listed = [&](std::string_view verb) { return explicit_help.out.contains("\n  " + std::string{verb}); };
-  for (auto const& verb : {"pull", "peek", "claim", "heartbeat", "claim-associate", "complete", "fail", "release", "block",
-                           "action", "reconcile", "abort", "version", "schema"}) {
+  for (auto const& verb : {"pull", "peek", "claim", "heartbeat", "complete", "fail", "release", "block", "action", "review",
+                           "brief", "reconcile", "abort", "version", "schema"}) {
     INFO("ported verb missing from the root page: " << verb);
     CHECK(listed(verb));
   }
@@ -319,7 +330,7 @@ TEST_CASE("planar-agent help paths exit 0 and open no database", "[cmd][agent][h
   // `dispatch.cpp`'s `not_implemented_for`), which is a better operator
   // experience than an unknown-verb error and is what makes
   // `make cli-usage-check` able to resolve their flags at all.
-  for (auto const& declared : {"ingest", "dispatch", "context", "run"}) {
+  for (auto const& declared : {"ingest"}) {
     INFO("declared verb missing from the root page: " << declared);
     CHECK(listed(declared));
   }

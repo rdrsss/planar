@@ -5,6 +5,7 @@ module planar.cmd.planar_agent.policy;
 
 import std;
 import planar.db;
+import planar.engine.ingest.packet;
 import planar.engine.planning;
 import planar.engine.runtime.agentactivity;
 import planar.engine.runtime.agentatomic;
@@ -65,11 +66,28 @@ auto task_policy(plan_roll_up* observed) -> engine::runtime::agentatomic::task_p
         // there is no illegal_transition/unknown_status branch to map.
         return std::unexpected(aa::agent_error::query_failed);
       },
+      .unready_reasons = [](db::connection& conn,
+                            std::int64_t    task_id) -> std::expected<std::vector<std::string>, aa::agent_error> {
+        // The task packet's own verdict, so `claim`, `pull`, `task packet` and `plan next` cannot
+        // disagree about which task is ready. Read-only; it runs on the claim transaction's connection.
+        namespace packet     = engine::ingest::packet;
+        auto const assembled = packet::assemble_task(conn, task_id);
+        if (!assembled) {
+          return std::unexpected(assembled.error() == packet::packet_error::task_not_found ? aa::agent_error::task_not_found
+                                                                                           : aa::agent_error::query_failed);
+        }
+        std::vector<std::string> names;
+        names.reserve(assembled->reasons.size());
+        for (auto const reason : assembled->reasons) {
+          names.emplace_back(packet::reason_name(reason));
+        }
+        return names;
+      },
   };
 }
 
 auto milestone_promoted(const plan_roll_up& observed, const engine::runtime::agentatomic::terminal_result& result) -> bool {
-  return !result.replayed && observed.result.has_value() && observed.result->flipped &&
+  return observed.result.has_value() && observed.result->flipped &&
          observed.result->status_after == engine::planning::plan_status::done;
 }
 

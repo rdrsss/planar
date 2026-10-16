@@ -105,7 +105,7 @@ auto run_inherited(const env_lookup& env, std::span<const std::string> argv) -> 
   }
   // Killed by a signal. The Zig originals map every non-`.exited`
   // termination to 1 — `editflow` reads this as "abort without writing" and
-  // `workflow run` propagates it as the verb's own exit code.
+  // a passthrough caller propagates it as the verb's own exit code.
   return 1;
 }
 

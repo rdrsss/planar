@@ -1,7 +1,7 @@
 # shellcheck shell=bash
 #
 # prebuilt-bundle.sh -- test-only fixture: a release bundle directory built from
-# the repository with five tiny executables in bin/, laid out as scripts/dist.sh
+# the repository with four tiny executables in bin/, laid out as scripts/dist.sh
 # lays out a real one (tech spec 677, "The bundle"). Sourced by
 # scripts/install-prebuilt-test.sh and scripts/install-data-paths-test.sh.
 #
@@ -20,7 +20,6 @@
 #                                  placeholder database at $PLANAR_DB when none
 #                                  is there and exits 0
 #   anything else                  exit 0
-# python3 is used here to render the Codex agents; that is test tooling.
 
 FAKE_BUNDLE_VERSION_TAG="v1.2.3"
 
@@ -67,20 +66,17 @@ STUB
 # repository at ROOT. CLEANUP_FILE replaces install-cleanup.txt.
 fake_bundle_make() {
   local root="$1" dest="$2" cleanup="${3:-$1/install-cleanup.txt}" b
-  mkdir -p "$dest/bin" "$dest/skills" "$dest/scripts" "$dest/templates" "$dest/workflows"
+  mkdir -p "$dest/bin" "$dest/skills" "$dest/scripts" "$dest/templates"
   cp "$root/install.sh" "$dest/install.sh"
   cp "$root/scripts/uninstall.sh" "$dest/uninstall.sh"
   cp "$cleanup" "$dest/install-cleanup.txt"
   cp -R "$root/scripts/install-lib" "$dest/scripts/install-lib"
   rm -rf "$dest/scripts/install-lib/__pycache__"
   cp -R "$root/skills/planar" "$dest/skills/planar"
-  cp -R "$root/agents" "$dest/agents"
   cp -R "$root/migrations" "$dest/migrations"
   printf 'shipped a\n' > "$dest/templates/a.toml"
   printf 'shipped b\n' > "$dest/templates/b.toml"
-  printf -- '-- workflow\n' > "$dest/workflows/w.lua"
-  python3 "$root/scripts/render-codex-agents.py" "$dest/agents" "$dest/codex-agents" >/dev/null
-  for b in planar planar-agent planar-watch planar-execute planar-ext; do
+  for b in planar planar-agent planar-watch planar-ext; do
     stub_binary_write "$dest/bin/$b" "$FAKE_BUNDLE_VERSION_TAG"
   done
   printf '{\n  "version": "%s",\n  "sha": "%s",\n  "date": "2026-10-06T00:00:00Z",\n  "os": "macos",\n  "arch": "arm64",\n  "os_floor": "26.0",\n  "schema_version": 41\n}\n' \

@@ -57,7 +57,7 @@ with tempfile.TemporaryDirectory() as temporary:
     (stage / 'bin').mkdir(parents=True)
     (stage / 'release.json').write_text(json.dumps(release, indent=2) + '\n')
     (stage / 'get-planar.sh').write_bytes(bootstrap + knob('BOOTSTRAP_EXTRA').encode())
-    for product in ('planar', 'planar-agent', 'planar-watch', 'planar-ext', 'planar-execute'):
+    for product in ('planar', 'planar-agent', 'planar-watch', 'planar-ext'):
         (stage / 'bin' / product).write_text(binary)
         (stage / 'bin' / product).chmod(0o755)
     archive = out / f'{name}.tar.gz'
@@ -67,7 +67,7 @@ with tempfile.TemporaryDirectory() as temporary:
 digest = hashlib.sha256(archive.read_bytes()).hexdigest()
 evidence = dict(format_version=1, archive=archive.name, sha256=digest, release=release,
                 gates=dict(portable=dict(result='pass', matched_count=int(knob('PORTABLE_MATCHED', '2')),
-                                         staged_binaries=5)))
+                                         staged_binaries=4)))
 (out / (archive.name + '.gates.json')).write_text(json.dumps(evidence, indent=2) + '\n')
 (out / 'get-planar.sh').write_bytes(bootstrap + knob('STANDALONE_EXTRA').encode())
 (out / 'get-planar.sh').chmod(0o755)

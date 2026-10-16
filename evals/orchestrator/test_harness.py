@@ -6127,8 +6127,6 @@ class RealLedgerAndCwdIsolationTests(unittest.TestCase):
 # 31 case assertions (the 22 `skill-planar-contract/*` ones are task 7213's and
 # are agent-independent), and 18 must/forbid calls in `grade_coherence`.
 RETARGETED_CASE_ROLES: dict[str, list[str]] = {
-    "ambiguous-tier-requires-operator-answer/tier-question-stops-dispatch": ["orchestrator"],
-    "ambiguous-tier-requires-operator-answer/no-round-up": ["agents/models.md", "orchestrator"],
     "archive-and-finalization-capability-boundary/janitor-owns-closeout": ["orchestrator"],
     "archive-and-finalization-capability-boundary/no-plan-status-bypass": ["orchestrator"],
     "archive-and-finalization-capability-boundary/archive-requires-done": ["orchestrator"],
@@ -6144,8 +6142,6 @@ RETARGETED_CASE_ROLES: dict[str, list[str]] = {
     "foreign-flat-lifecycle-success/review-before-complete": ["orchestrator"],
     "phase3-model-routing-host-boundary/preview-binds-tier-and-model": ["orchestrator"],
     "phase3-model-routing-host-boundary/preview-preserves-task-identity": ["orchestrator"],
-    "phase3-model-routing-host-boundary/no-non-medium-default-for-decided-work": ["agents/models.md", "orchestrator"],
-    "phase3-model-routing-host-boundary/no-title-vocabulary-escalation": ["agents/models.md", "orchestrator"],
     "phase3-model-routing-host-boundary/no-cross-host-vendor-substitution": ["orchestrator"],
     "phase35-is-coverage-driven/coverage-oracle": ["orchestrator"],
     "phase35-is-coverage-driven/no-configurable-cadence": ["agents/methodology.md", "orchestrator"],
@@ -6156,8 +6152,19 @@ RETARGETED_CASE_ROLES: dict[str, list[str]] = {
     "validation-cadence/no-per-task-broad-regression": ["agents/methodology.md", "coder", "orchestrator", "reviewer", "test-coder"],
     "validation-cadence/fix-cycles-stay-focused": ["agents/methodology.md"],
     "validation-cadence/reviewer-no-full-suite-demand": ["reviewer"],
-    "validation-cadence/skill-full-suite-once": ["skills/planar/references/claim-ritual.md"],
-    "validation-cadence/skill-empty-filter-fails": ["skills/planar/references/claim-ritual.md"],
+    "validation-cadence/skill-states-no-cadence": [
+        "skills/planar/SKILL.md",
+        "skills/planar/references/claim-ritual.md",
+        "skills/planar/references/dispatch.md",
+        "skills/planar/references/external-sync.md",
+        "skills/planar/references/knowledge.md",
+        "skills/planar/references/local.md",
+        "skills/planar/references/preparation.md",
+        "skills/planar/references/queue.md",
+        "skills/planar/references/recovery.md",
+        "skills/planar/references/resume-handoff.md",
+        "skills/planar/references/status.md",
+    ],
     "validation-cadence/repo-guide-states-cadence": ["CLAUDE.md"],
     "validation-cadence/repo-task-profile": ["docs/testing.md"],
     "reviewer-iteration-five-terminates/iteration-five-no-request-changes": ["orchestrator", "reviewer"],
@@ -6185,12 +6192,16 @@ COHERENCE_PHRASES: list[tuple[str, str, list[str]]] = [
     ("must", "'Output contract \u2014 the findings brief'", ["research"]),
 ]
 # Calls with a computed path list or a skill-only target; counted, not role-pinned.
-COHERENCE_OTHER_CALLS = 7  # 1 forbid core_rel, 2 forbid SKILL_RELS, 2 must SKILL.md, 2 must harness.py
-COHERENCE_CALL_TOTAL = 18  # 11 role-pinned above + COHERENCE_OTHER_CALLS
+# 1 forbid core_rel, 2 forbid SKILL_RELS, 3 must SKILL.md (invariant leads, the
+# brief, the routed references), 1 forbid SKILL.md (role or phase), 2 must harness.py
+COHERENCE_OTHER_CALLS = 9
+COHERENCE_CALL_TOTAL = 20  # 11 role-pinned above + COHERENCE_OTHER_CALLS
 
 
 def _role_of(path: str) -> str:
-    match = re.fullmatch(r"agents/planar-([a-z-]+)\.md", path)
+    # A role agent lives in agents/ or, as an example Planar no longer
+    # installs, in examples/agents/.
+    match = re.fullmatch(r"(?:examples/)?agents/planar-([a-z-]+)\.md", path)
     return match.group(1) if match else path
 
 
@@ -6239,6 +6250,35 @@ def missing_coherence_phrases(source: str) -> list[str]:
     ]
 
 
+class SkillFileListTests(unittest.TestCase):
+    """Contract assertions that cover every skill file list their paths by
+    hand (the contract grader takes no globs). A new file under skills/planar/
+    must join each list, or these assertions silently stop covering it."""
+
+    WHOLE_SKILL_ASSERTIONS = (
+        "validation-cadence/skill-states-no-cadence",
+        "skill-planar-contract/forbid-legacy-pl-commands",
+        "skill-planar-contract/forbid-scriptorium",
+        "skill-planar-contract/forbid-split-terminal-verb",
+    )
+
+    def test_every_skill_file_is_listed(self) -> None:
+        skill_files = {
+            p.relative_to(harness.ROOT).as_posix()
+            for p in (harness.ROOT / "skills" / "planar").rglob("*.md")
+        }
+        self.assertTrue(skill_files)
+        found = {}
+        for _, case in harness.load_cases():
+            for assertion in case.get("contract_assertions", []):
+                found[f"{case['id']}/{assertion['id']}"] = set(assertion["paths"])
+        for key in self.WHOLE_SKILL_ASSERTIONS:
+            with self.subTest(assertion=key):
+                self.assertIn(key, found)
+                self.assertEqual(sorted(skill_files - found[key]), [], key)
+        self.assertEqual(sorted(skill_files - set(harness.SKILL_RELS)), [], "SKILL_RELS")
+
+
 class RoleAssertionRetargetTests(unittest.TestCase):
     """Task 7214: every pl-<role> assertion now reads the agent file."""
 
@@ -6268,7 +6308,7 @@ class RoleAssertionRetargetTests(unittest.TestCase):
             sum(1 for k in found if not k.startswith("skill-planar-contract/")),
             len(RETARGETED_CASE_ROLES),
         )
-        self.assertEqual(len(found), 62)  # 53 at bb9e5816; +9 for validation-cadence
+        self.assertEqual(len(found), 55)  # 53 at bb9e5816; +9 for validation-cadence; -6 with the model-routing assertions; +1 restoring preview-preserves-task-identity; -1 when the skill contract became seven invariants, the brief and four routed references; -1 when the skill's two cadence rules became one check that it sets none
 
     def test_coherence_phrase_count_and_roles_are_unchanged(self) -> None:
         source = (harness.ROOT / "evals" / "orchestrator" / "harness.py").read_text(
@@ -6284,7 +6324,7 @@ class RoleAssertionRetargetTests(unittest.TestCase):
             encoding="utf-8"
         )
         mutated = source.replace(
-            '    forbid(r"planar task done", ["agents/planar-coder.md"])\n', "", 1
+            '    forbid(r"planar task done", ["examples/agents/planar-coder.md"])\n', "", 1
         )
         self.assertNotEqual(mutated, source)
         missing = missing_coherence_phrases(mutated)
@@ -6298,7 +6338,7 @@ class RoleAssertionRetargetTests(unittest.TestCase):
         source = (harness.ROOT / "evals" / "orchestrator" / "harness.py").read_text(
             encoding="utf-8"
         )
-        mutated = source.replace('["agents/planar-coder.md"])', '[])', 1)
+        mutated = source.replace('["examples/agents/planar-coder.md"])', '[])', 1)
         missing = missing_coherence_phrases(mutated)
         self.assertTrue(any("coder" in line for line in missing), missing)
 

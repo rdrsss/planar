@@ -22,90 +22,9 @@
 #
 # A target may depend only on planar_* targets in a STRICTLY lower layer.
 #
-# Exception (tech-spec "boundary invariants" § engine buckets): engine.execute
-# (and its planar-execute command binary) must NEVER depend on planar_db,
-# even though db sits in a strictly-lower layer — planar-execute is
-# deliberately never handed a SQLite handle; it reaches Planar state only by
-# shelling `planar`/`planar-agent`. This turns an accidental `import
-# planar.db;` inside engine.execute into a configure-time failure rather
-# than a silent capability leak.
-#
 # Call `planar_check_architecture()` once, after every module's
 # CMakeLists.txt (and therefore every `planar_module()` call) has run — the
 # top-level CMakeLists.txt does this last, deliberately.
-#
-# Naming-coupling closure (plan 996, task 6070, M3 pre-work): the exception
-# below used to match SOLELY by the literal target name `cmd_planar_execute`
-# — true only if the execute command binary is declared as
-# `planar_binary(planar_execute ...)`. `planar_binary()` (cmake/module.cmake)
-# prefixes whatever name it is given with `planar_cmd_`, so the natural,
-# unprefixed call `planar_binary(execute ...)` yields `planar_cmd_execute`
-# instead, which never matched the literal — the no-SQLite-handle exception
-# silently never fired for that (equally real) binary. Nothing enforced or
-# even documented that the caller had to spell the name exactly that one
-# way. The walk below now ALSO derives the exception from the real
-# dependency edge: any layer-3 target that actually links (directly or
-# transitively — see the "Transitive closure" section below)
-# `planar_engine_execute` is treated as an execute carrier, regardless of
-# what its own target name is. That makes the exception impossible to
-# bypass by choosing a different `planar_binary()` name — the only way to
-# silence it is to not link engine_execute at all, which is the correct
-# behavior.
-#
-# Re-evaluation of the literal-name match (plan 996, task 6069, M3
-# pre-work): the original literal-name match (`_name STREQUAL
-# "cmd_planar_execute"`) is KEPT alongside the edge-derived check, not
-# removed. It is still load-bearing for TWO standing fixtures, not just
-# one: cmd-binary-db/ (a manually-registered add_executable() proxy that
-# links planar_db directly but never links planar_engine_execute at all —
-# see that fixture's own comment for why it is deliberately toolchain-free)
-# and planar-binary-real/ (the real planar_binary() invoked with
-# DEPENDS db only, no engine_execute — that fixture's whole point is
-# proving planar_binary() itself works end-to-end under the OLD/literal
-# naming convention, independent of the edge-derived closure work). Both
-# fixtures were written before this task and neither links engine_execute,
-# so dropping the literal would silently turn both into false negatives
-# (configure would start succeeding against an intentionally-violating
-# fixture) rather than the intended discrimination. Removing the literal
-# and restructuring both fixtures to also link engine_execute was
-# considered and rejected: it would purely re-test the (already
-# well-covered, see planar-binary-execct-natural-name/) edge-derived path a
-# third time while destroying the one remaining "literal convention still
-# works" proof (see planar-binary-execute-natural-name/, which already
-# proves the edge-derived path independent of naming). The literal is
-# small, frozen, and commented — the drift risk it carries is lower than
-# the coverage loss from deleting it.
-#
-# Transitive closure (plan 996, task 6069, M3 pre-work — closes a gap
-# task 6070 documented but deliberately left open): the execute-carrier
-# check and the no-SQLite-handle exception it gates now both consult the
-# FULL transitive closure of a target's planar_* dependency graph, not
-# just its direct LINK_LIBRARIES/INTERFACE_LINK_LIBRARIES entries. Task
-# 6070 derived the carrier flag from a real dependency edge, but only
-# scanned DIRECT links: a cmd binary reaching planar_engine_execute only
-# through an intermediate module was not classified as a carrier at all,
-# and — independently — a carrier's OWN reach into planar_db was only
-# checked against its direct links, so a carrier that reaches planar_db
-# only through an intermediate, otherwise-legal module (e.g. an engine
-# bucket that legitimately depends on db for its own reasons) was not
-# caught either. See
-# cmake/tests/architecture-guard-fixture/execute-transitive-db/ for the
-# standing proof: a cmd binary directly links engine_execute (carrier,
-# already caught pre-closure) AND separately links a legal, db-using
-# intermediate engine module — the db reachability is only visible through
-# the closure, not any single direct edge.
-#
-# The generic strictly-downward layer check does NOT need a separate
-# transitive variant: every registered target is walked as the SOURCE of
-# its own edges (the outer `foreach(_tgt IN LISTS _planar_targets)` below),
-# so every edge in the graph is validated individually as its own target's
-# direct dependency. A chain of downward-or-layer-1-allowed edges is, by
-# construction, already fully downward end-to-end — there is no way for a
-# multi-hop chain to reach a higher layer than a single hop could not
-# already have flagged on its own. Transitivity only matters for the
-# execute-carrier property specifically, because that is a semantic
-# exception layered on TOP of (not derived from) the layer numbers, so
-# "carrier-ness" does not automatically propagate the way "downward" does.
 #
 # INTERFACE edges (plan 996, task 6069, M3 pre-work — M2 reviewer probe):
 # the walk used to read only the `LINK_LIBRARIES` target property, which
@@ -267,39 +186,6 @@ function(_planar_arch_cycle_visit name)
   set_property(GLOBAL PROPERTY _planar_arch_cycle_state_${name} "black")
 endfunction()
 
-# @brief Breadth-first reachability test over the same GLOBAL PROPERTY
-#        adjacency: does the transitive closure of `start` contain
-#        `needle`? Used for the execute-carrier / no-SQLite-handle
-#        exception, which is a semantic property layered on top of the
-#        layer numbers rather than derived from them (see this file's
-#        header comment, "Transitive closure").
-# @param start The (unprefixed) module name to start from.
-# @param needle The (unprefixed) module name being searched for.
-# @param out_var Variable name (in the caller's scope) to receive TRUE/FALSE.
-function(_planar_arch_reaches start needle out_var)
-  set(_visited "")
-  set(_queue "${start}")
-  set(_result FALSE)
-  while(_queue)
-    list(GET _queue 0 _cur)
-    list(REMOVE_AT _queue 0)
-    if(_cur IN_LIST _visited)
-      continue()
-    endif()
-    list(APPEND _visited "${_cur}")
-    get_property(_deps GLOBAL PROPERTY _planar_arch_adj_${_cur})
-    foreach(_dep IN LISTS _deps)
-      if(_dep STREQUAL needle)
-        set(_result TRUE)
-      endif()
-      if(NOT _dep IN_LIST _visited)
-        list(APPEND _queue "${_dep}")
-      endif()
-    endforeach()
-  endwhile()
-  set(${out_var} ${_result} PARENT_SCOPE)
-endfunction()
-
 # @brief Resolve a raw link entry to the real CMake target it names: strips
 #        CMake's own `$<LINK_ONLY:...>` wrapper and follows an ALIAS. Sets
 #        out_var to "" when the entry is not a target (a raw flag, a path, a
@@ -455,12 +341,12 @@ function(planar_check_architecture)
   # planar_* target MUST use planar_module()/planar_binary()" rule is
   # enforced only by a comment, not a check — a raw add_library()
   # intermediate that happens to be named planar_* configures cleanly and
-  # is invisible to _all_names, which silently voids the transitive
-  # closure for anything that depends through it (a real carrier->db edge
-  # routed through such an intermediate would never be flagged; "GUARD
-  # PASSED" on a genuine violation). This must run after _all_names is
-  # fully built (needs the complete registered set), but before any
-  # closure query below consumes it. See
+  # is invisible to _all_names, which silently voids the cycle and layer
+  # walks for every edge routed through it (a real upward edge reached
+  # through such an intermediate would never be flagged; "GUARD PASSED" on
+  # a genuine violation). This must run after _all_names is fully built
+  # (needs the complete registered set), but before the cycle detection
+  # below consumes the adjacency. See
   # cmake/tests/architecture-guard-fixture/unregistered-target-caught/ for
   # the standing proof.
   #
@@ -538,10 +424,8 @@ function(planar_check_architecture)
     endif()
   endforeach()
 
-  # Pass 3: per-target layer + exception checks, fed by the adjacency built
-  # in pass 1 (so INTERFACE edges are covered identically to direct
-  # edges), plus the closure-aware execute-carrier / no-SQLite-handle
-  # exception (see header comment, "Transitive closure").
+  # Pass 3: per-target layer checks, fed by the adjacency built in pass 1
+  # (so INTERFACE edges are covered identically to direct edges).
   foreach(_tgt IN LISTS _planar_targets)
     if(NOT TARGET ${_tgt})
       continue()
@@ -550,29 +434,6 @@ function(planar_check_architecture)
     _planar_module_layer("${_name}" _layer)
 
     get_property(_dep_names GLOBAL PROPERTY _planar_arch_adj_${_name})
-
-    # See the header comment ("Re-evaluation of the literal-name match")
-    # for why this literal check is kept alongside the edge-derived,
-    # closure-aware check below rather than replaced by it.
-    set(_is_execute_carrier FALSE)
-    if(_name STREQUAL "engine_execute" OR _name STREQUAL "cmd_planar_execute")
-      set(_is_execute_carrier TRUE)
-    endif()
-    _planar_arch_reaches("${_name}" "engine_execute" _reaches_execute)
-    if(_reaches_execute)
-      set(_is_execute_carrier TRUE)
-    endif()
-
-    if(_is_execute_carrier)
-      _planar_arch_reaches("${_name}" "db" _reaches_db)
-      if(_reaches_db)
-        message(FATAL_ERROR
-          "D15 violation: ${_tgt} depends on planar_db, which is forbidden "
-          "for '${_name}' — engine.execute must never hold a SQLite handle "
-          "(tech-spec § engine buckets: it reaches Planar state only by "
-          "shelling planar/planar-agent).")
-      endif()
-    endif()
 
     foreach(dep_name IN LISTS _dep_names)
       _planar_module_layer("${dep_name}" _dep_layer)

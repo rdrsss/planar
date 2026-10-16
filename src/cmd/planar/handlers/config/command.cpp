@@ -9,6 +9,7 @@ import std;
 import cli11;
 import planar.cliapp.args;
 import planar.engine.config.effective;
+import planar.engine.config.policy;
 import planar.engine.config.queue;
 import planar.engine.config.toml;
 import planar.json_text;
@@ -21,7 +22,6 @@ import planar.cmd.planar.declare;
 import planar.cmd.planar.handlers.config.show;
 import planar.cmd.planar.handlers.config.edit;
 import planar.cmd.planar.handlers.config.validate;
-import planar.cmd.planar.handlers.config.init;
 import planar.cmd.planar.handlers.config.path;
 
 namespace planar::cmd::handlers {
@@ -30,67 +30,13 @@ namespace cfg = engine::config;
 
 namespace {
 
-/// @brief The starter written by `config init`.
-///
-/// The LONGER of the two blobs — it carries the eight-line
-/// `[models.codex]` / `[roles]` example the `config edit` copy never
-/// received. 1267 bytes, byte-matched against the built oracle. See
-/// config.cppm for why the two are not merged.
-constexpr std::string_view k_starter_init = R"TOML(# ~/.planar/config.toml — Planar configuration
-#
-# This file was created by "planar config init" (or "planar init").
-# All keys are optional. Anything you don't set falls through to the
-# embedded defaults shipped in the binary.
-#
-# To see every available key with its current default value, run:
-#   planar config show --defaults
-#
-# To see the fully resolved configuration with provenance per key, run:
-#   planar config show --effective
-#
-# Environment variables override config values. They always take precedence.
-# See docs/architecture.md for the full configuration plane reference.
-#
-# To edit this file in your $EDITOR, run:
-#   planar config edit
-#
-# Example customizations (uncomment and fill in):
-#
-# [defaults]
-# vendor = "claude"
-#
-# [workbench]
-# root = "~/.planar/workbench"
-#
-# [external.jira]
-# base_url = "https://your-org.atlassian.net"
-# user_env  = "JIRA_USER"
-# token_env = "JIRA_TOKEN"
-#
-# # Per-vendor model tier maps + role→tier routing (plan 540). Override a
-# # tier to re-route every role at that tier; see `planar models`.
-# [models.codex]
-# medium = "gpt-5.6-terra"
-#
-# [roles]
-# coder = "large"
-#
-# [associations."org:acme"]
-# github_lead_repo = "acme/platform"
-#
-# [associations."org:acme".external.jira.status]
-# done = "Closed"
-)TOML";
-
 /// @brief The starter written by `config edit`.
 ///
-/// The SHORTER blob: identical to `k_starter_init` except that it lacks the
-/// `[models.codex]` / `[roles]` block. 1048 bytes, byte-matched against the
-/// built oracle. `edit.zig`'s own comment claims this "mirrors init.zig's
-/// starter_config exactly" — it does not, and reproducing the drift is D2.
+/// The starter written by `config edit` when no file exists. 1048 bytes,
+/// byte-matched against the built oracle.
 constexpr std::string_view k_starter_edit = R"TOML(# ~/.planar/config.toml — Planar configuration
 #
-# This file was created by "planar config init" (or "planar init").
+# This file was created by "planar config edit" (or "planar init").
 # All keys are optional. Anything you don't set falls through to the
 # embedded defaults shipped in the binary.
 #
@@ -216,8 +162,16 @@ auto masked_value(std::string_view key, const cfg::value_with_source& entry) -> 
 
 /// @brief The provenance label for one entry.
 /// @param entry The resolved value.
-/// @return The label, e.g. `config file` or `env: PLANAR_VENDOR`.
-auto provenance_label(const cfg::value_with_source& entry) -> std::string {
+/// @param config_path The configuration file, named in the label of a policy value.
+/// @return The label, e.g. `config file` or `env: PLANAR_VENDOR`. A policy value
+/// read from a file names the file and the table: `config file: <path>, policy` or
+/// `per-association override: <path>, associations."<slug>".policy`.
+auto provenance_label(const cfg::value_with_source& entry, const std::filesystem::path& config_path) -> std::string {
+  if (!entry.section.empty()) {
+    return std::format("{}: {}, {}",
+                       entry.source_ == cfg::provenance::assoc_override ? "per-association override" : "config file",
+                       config_path.string(), entry.section);
+  }
   switch (entry.source_) {
   case cfg::provenance::env:
     return std::format("env: {}", entry.env_var_name);
@@ -308,25 +262,6 @@ auto config_path(context& ctx, const cliapp::parsed_args& args) -> handler_resul
   return {};
 }
 
-auto config_init(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  static_cast<void>(args);
-  auto const path = config_file_path(ctx);
-  if (!path.has_value()) {
-    return std::unexpected(path.error());
-  }
-
-  std::error_code ec;
-  if (std::filesystem::exists(*path, ec)) {
-    ctx.out() << "config init: already exists " << path->string() << '\n';
-    return {};
-  }
-  if (!write_file(*path, k_starter_init)) {
-    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "initializing config file: FileWriteFailed"));
-  }
-  ctx.out() << "config init: created " << path->string() << '\n';
-  return {};
-}
-
 auto config_edit(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   static_cast<void>(args);
   auto const path = config_file_path(ctx);
@@ -397,17 +332,6 @@ auto config_show(context& ctx, const cliapp::parsed_args& args) -> handler_resul
   if (!resolved.has_value()) {
     return std::unexpected(error_from_body(domain_error_kind::generic_failure, "resolving configuration: ParseFailed"));
   }
-  // `resolve` falls back to the default for a wrong-typed value; a range-checked key is refused here, by name.
-  if (content_view.has_value()) {
-    if (auto const file_map = cfg::parse_toml(*content_view); file_map.has_value()) {
-      if (auto const findings = cfg::validate_introspection(*file_map); !findings.empty()) {
-        return std::unexpected(
-            error_from_body(domain_error_kind::invalid_input,
-                            std::format("invalid configuration: {}: {}", findings.front().key, findings.front().message)));
-      }
-    }
-  }
-
   bool const as_json = cliapp::flag_bool(args, "--json");
   // `--json` implies provenance; `--format` is declared and never read (see
   // config.cppm).
@@ -426,7 +350,7 @@ auto config_show(context& ctx, const cliapp::parsed_args& args) -> handler_resul
       continue;
     }
 
-    auto const label = provenance_label(entry);
+    auto const label = provenance_label(entry, *path);
     // A single-candidate tier renders exactly like every scalar key; only a
     // genuine multi-candidate list gets the extra clause.
     bool const show_candidates = entry.candidates.size() > 1;
@@ -513,6 +437,35 @@ auto queue_key_at_line(std::string_view content, std::uint32_t line) -> std::str
   }
 }
 
+/// @brief Whether the file opens the named table, or a table under it.
+///
+/// Lexical, like the other line scans here, because a flattened map has no
+/// entry for an empty table and a removed table with no keys must still refuse.
+/// @param content The whole configuration file.
+/// @param table The dotted table name, for example `execute`.
+/// @return True when some table header names `table` or `table.<...>`.
+auto has_table(std::string_view content, std::string_view table) -> bool {
+  std::string_view rest{content};
+  while (!rest.empty()) {
+    auto const newline = rest.find('\n');
+    auto const text    = trim_any(rest.substr(0, newline == std::string_view::npos ? rest.size() : newline), " \t\r");
+    if (!text.empty() && text.front() == '[') {
+      // A trailing `# comment` after the closing bracket is not part of the
+      // table name (task 7057).
+      auto const header = text.substr(0, std::min(text.size(), text.find('#')));
+      auto const name   = trim_any(trim_any(header, " \t[]"), " \t");
+      if (name == table || (name.starts_with(table) && name.size() > table.size() && name[table.size()] == '.')) {
+        return true;
+      }
+    }
+    if (newline == std::string_view::npos) {
+      break;
+    }
+    rest = rest.substr(newline + 1);
+  }
+  return false;
+}
+
 auto config_validate(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   static_cast<void>(args);
   auto const path = config_file_path(ctx);
@@ -547,7 +500,7 @@ auto config_validate(context& ctx, const cliapp::parsed_args& args) -> handler_r
                                     queue_key.empty() ? std::string{} : std::format(" ({})", queue_key))));
   }
 
-  // Steps 2-4 ACCUMULATE. Every finding is a stderr line; the exit is 1
+  // Steps 2-6 ACCUMULATE. Every finding is a stderr line; the exit is 1
   // once, at the end. `error_from_rendered` carries the whole payload so
   // this handler never writes to `ctx.err()` itself and the reporting site
   // stays the single place that turns a failure into bytes.
@@ -636,55 +589,7 @@ auto config_validate(context& ctx, const cliapp::parsed_args& args) -> handler_r
     }
   }
 
-  // ---- step 4: the work-type routing cross-check -------------------------
-  //
-  // Resolution order is vendor x tier x work-type — NOT sorted key order —
-  // and it is observable, because it is the order the findings print in.
-  // Oracle-confirmed: with `schema` and `feature` both mis-routed, `schema`
-  // reports first even though `feature` sorts earlier.
-  {
-    auto const env      = env_for(ctx);
-    auto const resolved = cfg::resolve(std::string_view{*content}, env, std::nullopt);
-    if (!resolved.has_value()) {
-      // Step 1 already parsed the same bytes, so this is a resolver bug
-      // rather than an operator error. The oracle marks the arm
-      // `unreachable`; refusing loudly is the same statement without the
-      // undefined behaviour.
-      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "resolving configuration: ParseFailed"));
-    }
-
-    for (auto const& vendor : cfg::vendors) {
-      for (auto const& tier : cfg::tiers) {
-        auto const model_key = std::format("models.{}.{}", vendor, tier);
-        auto const model_it  = resolved->effective.find(model_key);
-        // A tier with NO `models.*` entry is NOT validated — the oracle's
-        // `orelse continue`. Confirmed against the built binary: a
-        // `routing.codex.medium.cli` naming a model that exists nowhere
-        // exits 0 when `models.codex.medium` is absent.
-        if (model_it == resolved->effective.end()) {
-          continue;
-        }
-        std::vector<std::string> candidates = model_it->second.candidates;
-        if (candidates.empty()) {
-          candidates.push_back(model_it->second.value);
-        }
-
-        for (auto const& work_type : cfg::work_types) {
-          auto const routing_key = std::format("routing.{}.{}.{}", vendor, tier, work_type);
-          auto const routing_it  = resolved->effective.find(routing_key);
-          if (routing_it == resolved->effective.end() || routing_it->second.value.empty()) {
-            continue;
-          }
-          if (!std::ranges::contains(candidates, routing_it->second.value)) {
-            report(std::format("{}: routed model id \"{}\" is not in the {} candidate list", routing_key,
-                               routing_it->second.value, model_key));
-          }
-        }
-      }
-    }
-  }
-
-  // ---- step 5: the `[queue]` table (plan 1080, task hq-config) -----------
+  // ---- step 4: the `[queue]` table (plan 1080, task hq-config) -----------
   //
   // Read from the parsed FILE map, like step 3: a value inherited from the
   // embedded defaults is not something the operator wrote. Every refused
@@ -693,8 +598,34 @@ auto config_validate(context& ctx, const cliapp::parsed_args& args) -> handler_r
     report(std::format("{}: {}", finding.key, finding.message));
   }
 
-  // ---- step 6: the `[introspection]` keys that carry a range ------------
-  for (auto const& finding : cfg::validate_introspection(*parsed)) {
+  // ---- step 5: removed tables and keys ----------------------------------
+  //
+  // planar-execute's selector and profiles left planar's configuration with
+  // `[execute]` (plan 1142, task 7459), and the transcript capture settings
+  // left with the introspection engines (plan 1142, task 7472). A file that still
+  // carries one is refused by name rather than having its keys ignored.
+  auto const removed = [&](std::string_view name) {
+    return has_table(*content, name) || std::ranges::any_of(*parsed, [&](auto const& kv) {
+             return kv.first == name ||
+                    (kv.first.starts_with(name) && kv.first.size() > name.size() && kv.first[name.size()] == '.');
+           });
+  };
+  if (removed("execute")) {
+    report("execute: unknown key (the [execute] table was removed from planar's configuration)");
+  }
+  if (removed("introspection.transcripts")) {
+    report("introspection.transcripts: unknown key (the transcript capture settings were removed)");
+  }
+  if (removed("introspection.transcript_scan_bytes")) {
+    report("introspection.transcript_scan_bytes: unknown key (the transcript read budget was removed)");
+  }
+
+  // ---- step 6: the `[policy]` tables (plan 1142, task mo-policy-config) -----
+  //
+  // Policy keys are facts Planar can check at one verb. A workflow-shaped key
+  // (`after_review`, `then`, `retry`, ...) is refused as an unknown key, by
+  // name, and so is a value of the wrong type.
+  for (auto const& finding : cfg::validate_policy(*parsed)) {
     report(std::format("{}: {}", finding.key, finding.message));
   }
 
@@ -719,8 +650,6 @@ auto declare_config(CLI::App& root) -> void {
   config_cli::attach_edit(config);
 
   config_cli::attach_validate(config);
-
-  config_cli::attach_init(config);
 
   config_cli::attach_path(config);
 }

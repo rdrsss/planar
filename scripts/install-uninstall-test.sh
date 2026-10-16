@@ -4,7 +4,7 @@
 # the scenarios that verify rel-uninstall-script).
 #
 # Every run is a prebuilt install of a fake bundle (scripts/fixtures/
-# prebuilt-bundle.sh: five tiny stub executables, labelled as such) into a
+# prebuilt-bundle.sh: four tiny stub executables, labelled as such) into a
 # scratch HOME, then an uninstall, under /bin/bash with a PATH of install.sh's
 # base tier only: no python3, no flock. Nothing outside the scratch arena is
 # read or written; every run sets HOME and PLANAR_DB inside it.
@@ -75,7 +75,7 @@ else
   # A second bundle, release v1.2.4, whose binaries differ.
   B2="$TMP/bundles/planar-fake-2"
   fake_bundle_make "$ROOT" "$B2"
-  for b in planar planar-agent planar-watch planar-execute planar-ext; do stub_binary_write "$B2/bin/$b" v1.2.4 fedcba987654; done
+  for b in planar planar-agent planar-watch planar-ext; do stub_binary_write "$B2/bin/$b" v1.2.4 fedcba987654; done
   sed -i.bak 's/"version": "v1.2.3"/"version": "v1.2.4"/' "$B2/release.json" && rm -f "$B2/release.json.bak"
 fi
 scen_dispatch "$TMP/bundles" "$@"
@@ -180,7 +180,7 @@ hold_lock() {
 # the list of seeded files to $TMP/seeded.<basename of HOME>.
 seed_data() {
   local p="$1"
-  mkdir -p "$p/queue-logs" "$p/retired/2026-01-01/queue-logs" "$p/workbench/x" "$p/local/skills/mine" "$p/workspaces" \
+  mkdir -p "$p/queue-logs" "$p/retired/2026-01-01/queue-logs" "$p/backups/20261014T000000Z-schema-42" "$p/workbench/x" "$p/local/skills/mine" "$p/workspaces" \
            "$p/models" "$p/execute/default" "$p/templates/doc-prompts"
   printf 'SQLite format 3\nseeded\n' > "$p/planar.db"
   printf 'wal\n' > "$p/planar.db-wal"
@@ -189,6 +189,7 @@ seed_data() {
   printf 'legacy agent db\n' > "$p/retired/2026-01-01/agent.db"
   printf 'legacy wal\n' > "$p/retired/2026-01-01/agent.db-wal"
   printf 'old log\n' > "$p/retired/2026-01-01/queue-logs/7.log"
+  printf 'SQLite format 3\nbacked up\n' > "$p/backups/20261014T000000Z-schema-42/planar.db"
   printf 'readme\n' > "$p/workbench/x/README.md"
   printf '[cfg]\n' > "$p/config.toml"
   printf 'skill\n' > "$p/local/skills/mine/SKILL.md"
@@ -198,9 +199,9 @@ seed_data() {
   printf 'my edited template\n' > "$p/templates/a.toml"
   printf 'formerly shipped, renamed since\n' > "$p/templates/doc-prompts/old-name.md"
 }
-data_sums() { ( cd "$1" && find planar.db planar.db-wal planar.db-shm queue-logs retired workbench config.toml local workspaces models execute templates \
+data_sums() { ( cd "$1" && find planar.db planar.db-wal planar.db-shm queue-logs retired backups workbench config.toml local workspaces models execute templates \
   -type f -exec cksum {} + | LC_ALL=C sort ); }
-DATA_NAMES="planar.db planar.db-wal planar.db-shm queue-logs retired workbench config.toml local workspaces models execute templates"
+DATA_NAMES="planar.db planar.db-wal planar.db-shm queue-logs retired backups workbench config.toml local workspaces models execute templates"
 
 # Hoisted out of the first group: every group builds installed homes with it.
 make_installed() { # make_installed NAME -- an installed, data-seeded home; prints it
@@ -265,8 +266,8 @@ H="$(make_installed happy)"; P="$H/.planar"
 cmp -s "$ROOT/scripts/uninstall.sh" "$P/bin/planar-uninstall" && [[ -x "$P/bin/planar-uninstall" ]] \
   || fail "the install did not place scripts/uninstall.sh as an executable bin/planar-uninstall"
 recorded "$H" > "$TMP/recorded.happy"
-[[ "$(grep -c "$H/.claude/" "$TMP/recorded.happy")" -gt 1 && "$(grep -c "$H/.codex/" "$TMP/recorded.happy")" -gt 1 ]] \
-  || fail "the fixture recorded no Claude or Codex projections: $(cat "$TMP/recorded.happy")"
+[[ "$(grep -c "$H/.claude/" "$TMP/recorded.happy")" -ge 1 && "$(grep -c "$H/.agents/" "$TMP/recorded.happy")" -ge 1 ]] \
+  || fail "the fixture recorded no Claude or shared (Codex) projections: $(cat "$TMP/recorded.happy")"
 dbefore="$(data_sums "$P")"
 uninstall "$H"
 [[ "$RC" == 0 ]] || fail "planar-uninstall failed ($RC): $(show)"
@@ -274,8 +275,8 @@ while IFS= read -r t; do
   [[ ! -e "$t" && ! -L "$t" ]] || fail "planar-uninstall left the recorded target $t"
   grep -Fq "removed recorded " "$TMP/out" && grep -Fq " $t" "$TMP/out" || fail "planar-uninstall did not name the removal of $t"
 done < "$TMP/recorded.happy"
-[[ -d "$H/.claude/agents" && -d "$H/.codex/agents" ]] || fail "planar-uninstall removed a vendor directory"
-for n in bin skills agents codex-agents workflows scripts migrations; do
+[[ -d "$H/.claude/skills" && -d "$H/.agents/skills" ]] || fail "planar-uninstall removed a vendor directory"
+for n in bin skills scripts migrations; do
   [[ ! -e "$P/$n" ]] || fail "planar-uninstall left the managed subtree $n/"
   grep -Fq "removed managed subtree $P/$n" "$TMP/out" || fail "planar-uninstall did not name the removal of $n/"
 done
@@ -356,13 +357,13 @@ if scen unowned; then
 
 H="$(make_installed unowned)"; P="$H/.planar"
 recorded "$H" > "$TMP/recorded.unowned"
-printf 'my own coder agent\n' > "$H/.claude/agents/planar-coder.md"
+printf 'my own edit\n' >> "$H/.claude/skills/planar/SKILL.md"
 uninstall "$H"
 [[ "$RC" == 0 ]] || fail "uninstall with an unowned vendor file failed ($RC): $(show)"
-[[ "$(cat "$H/.claude/agents/planar-coder.md")" == "my own coder agent" ]] || fail "uninstall removed a vendor file the operator replaced"
-grep -Fq "left $H/.claude/agents/planar-coder.md" "$TMP/err" || fail "the unowned vendor file was not reported: $(show)"
+[[ "$(tail -1 "$H/.claude/skills/planar/SKILL.md")" == "my own edit" ]] || fail "uninstall removed a vendor skill the operator changed"
+grep -Fq "left $H/.claude/skills/planar" "$TMP/err" || fail "the unowned vendor skill was not reported: $(show)"
 while IFS= read -r t; do
-  [[ "$t" == "$H/.claude/agents/planar-coder.md" ]] && continue
+  [[ "$t" == "$H/.claude/skills/planar" ]] && continue
   [[ ! -e "$t" && ! -L "$t" ]] || fail "uninstall left the recorded target $t"
 done < "$TMP/recorded.unowned"
 pass "a vendor file the operator replaced is left and reported; every other recorded path is removed"
@@ -372,7 +373,7 @@ if scen link; then
 # A link-mode source install: the managed subtrees are symlinks into the checkout.
 # The uninstall unlinks them and the checkout behind them is untouched.
 REPO="$TMP/repo"
-mkdir -p "$REPO/skills" "$REPO/templates" "$REPO/workflows" "$REPO/migrations"
+mkdir -p "$REPO/skills" "$REPO/templates" "$REPO/migrations"
 cp "$ROOT/install.sh" "$REPO/install.sh"
 cp -R "$ROOT/scripts" "$REPO/scripts"
 rm -rf "$REPO/scripts/__pycache__" "$REPO/scripts/install-lib/__pycache__"
@@ -380,7 +381,6 @@ cp -R "$ROOT/agents" "$REPO/agents"
 cp -R "$ROOT/skills/planar" "$REPO/skills/planar"
 cp "$ROOT/install-cleanup.txt" "$REPO/install-cleanup.txt"
 printf 'shipped a\n' > "$REPO/templates/a.toml"
-printf -- '-- wf\n' > "$REPO/workflows/w.lua"
 printf -- '-- m\n' > "$REPO/migrations/00001_x.up.sql"
 : > "$REPO/CMakeLists.txt"
 : > "$REPO/CMakePresets.json"
@@ -392,7 +392,7 @@ cat > "$STUBS/cmake" <<STUB
 if [[ "\$1" == "--install" ]]; then
   source "$ROOT/scripts/fixtures/prebuilt-bundle.sh"
   mkdir -p "\$4/bin"
-  for b in planar planar-agent planar-watch planar-execute planar-ext; do
+  for b in planar planar-agent planar-watch planar-ext; do
     stub_binary_write "\$4/bin/\$b" dev
   done
 fi
@@ -406,12 +406,12 @@ RC=0
     "$REPO/install.sh" --build-dir "$H/build" --link >"$TMP/out" 2>"$TMP/err" ) || RC=$?
 [[ "$RC" == 0 ]] || fail "the link-mode source install failed ($RC): $(show)"
 rm -rf "$H/build"
-for n in scripts workflows migrations; do [[ -L "$P/$n" ]] || fail "the link-mode fixture has no symlinked $n/"; done
-[[ -L "$H/.claude/agents/planar-coder.md" ]] || fail "the link-mode fixture placed no symlinked vendor agent"
+for n in scripts migrations; do [[ -L "$P/$n" ]] || fail "the link-mode fixture has no symlinked $n/"; done
+[[ -L "$H/.claude/skills/planar" ]] || fail "the link-mode fixture placed no symlinked vendor skill"
 uninstall "$H"
 [[ "$RC" == 0 ]] || fail "uninstall of a link-mode install failed ($RC): $(show)"
-for n in scripts workflows migrations skills agents; do [[ ! -e "$P/$n" && ! -L "$P/$n" ]] || fail "uninstall left the link-mode $n"; done
-[[ ! -e "$H/.claude/agents/planar-coder.md" && ! -L "$H/.claude/agents/planar-coder.md" ]] || fail "uninstall left a link-mode vendor agent"
+for n in scripts migrations skills; do [[ ! -e "$P/$n" && ! -L "$P/$n" ]] || fail "uninstall left the link-mode $n"; done
+[[ ! -e "$H/.claude/skills/planar" && ! -L "$H/.claude/skills/planar" ]] || fail "uninstall left a link-mode vendor skill"
 [[ "$(sums "$REPO")" == "$repo_before" ]] || fail "the uninstall changed the checkout behind the link-mode install"
 pass "a link-mode install's symlinked subtrees and vendor links are unlinked; the checkout is untouched"
 fi
@@ -419,19 +419,16 @@ fi
 if scen escaped; then
 # --- uninstall reads an escaped path and reports a bad line ------------------------------------
 
-# CODEX_HOME holds a space, a backslash and a double quote; the manifest records
-# the Codex agents there with \\ and \" escapes, and the reader undoes them.
-H="$(new_home escaped)"; P="$H/.planar"
-CX="$H/co dex\\q\"x"
-mkdir -p "$CX"
-install_ok "$H" "CODEX_HOME=$CX"
-[[ -f "$CX/agents/planar-coder.toml" ]] || fail "the fixture placed no Codex agent under the escaped CODEX_HOME"
-grep -Fq 'co dex\\q\"x/agents/planar-coder.toml' "$P/install-manifest.json" || fail "the manifest does not hold the escaped path: $(grep -m1 planar-coder.toml "$P/install-manifest.json")"
-cx_n="$(ls "$CX/agents" | grep -c '^planar-.*\.toml$')"
+# HOME holds a space, a backslash and a double quote; the manifest records the
+# skills placed there with \\ and \" escapes, and the reader undoes them.
+H="$(new_home 'esc a\q"x')"; P="$H/.planar"
+install_ok "$H"
+[[ -f "$H/.claude/skills/planar/SKILL.md" ]] || fail "the fixture placed no skill under the escaped HOME"
+grep -Fq 'esc a\\q\"x/.claude/skills/planar"' "$P/install-manifest.json" || fail "the manifest does not hold the escaped path: $(grep -m1 'skills/planar"' "$P/install-manifest.json")"
 uninstall "$H"
 [[ "$RC" == 0 ]] || fail "uninstall of the escaped-path install failed ($RC): $(show)"
-[[ -z "$(ls -A "$CX/agents")" ]] || fail "uninstall left Codex agents under the escaped CODEX_HOME: $(ls -A "$CX/agents")"
-[[ "$(grep -Fc "removed recorded codex agent $CX/agents/" "$TMP/out")" == "$cx_n" ]] || fail "uninstall did not name each escaped-path removal: $(show)"
+[[ ! -e "$H/.claude/skills/planar" && ! -e "$H/.agents/skills/planar" ]] || fail "uninstall left a skill under the escaped HOME"
+grep -Fq "removed recorded claude skill $H/.claude/skills/planar" "$TMP/out" || fail "uninstall did not name the escaped-path removal: $(show)"
 pass "a manifest path with a space, a backslash and a double quote is read and its target removed"
 fi
 
@@ -440,7 +437,7 @@ if scen truncated; then
 # the others are removed.
 H="$(new_home truncated)"; P="$H/.planar"
 install_ok "$H"
-victim="$H/.claude/agents/planar-coder.md"
+victim="$H/.claude/skills/planar"
 ln_no="$(grep -n "\"installed_path\": \"$victim\"" "$P/install-manifest.json" | cut -d: -f1)"
 [[ -n "$ln_no" ]] || fail "the fixture manifest does not record $victim"
 awk -v n="$ln_no" 'NR == n { print substr($0, 1, 60); next } { print }' "$P/install-manifest.json" > "$TMP/m.json"
@@ -450,7 +447,7 @@ uninstall "$H"
 [[ "$RC" == 0 ]] || fail "uninstall over a damaged manifest line failed ($RC): $(show)"
 grep -Fq "install-manifest.json line $ln_no: cannot read this projection; its target is left in place" "$TMP/err" \
   || fail "the damaged line $ln_no was not reported by number: $(show)"
-[[ -f "$victim" ]] || fail "the target of the damaged line was removed"
+[[ -d "$victim" ]] || fail "the target of the damaged line was removed"
 while IFS= read -r t; do
   [[ ! -e "$t" && ! -L "$t" ]] || fail "uninstall left $t, recorded on an intact line"
 done < "$TMP/recorded.truncated"
@@ -538,19 +535,19 @@ for key in workbench.root templates.dir; do
   case "$key" in workbench.root) sect=workbench; k=root ;; *) sect=templates; k=dir ;; esac
   H="$(new_home "purgecfg-$sect")"; P="$H/.planar"
   install_ok "$H"
-  mkdir -p "$P/agents/relocated/sub"
-  printf 'plan notes\n' > "$P/agents/relocated/sub/notes.md"; printf 'two\n' > "$P/agents/relocated/b.txt"
-  printf '[%s]\n%s = "%s"\n' "$sect" "$k" "$P/agents/../agents/relocated/" > "$P/config.toml"
-  data_before="$(sums "$P/agents/relocated")"
+  mkdir -p "$P/migrations/relocated/sub"
+  printf 'plan notes\n' > "$P/migrations/relocated/sub/notes.md"; printf 'two\n' > "$P/migrations/relocated/b.txt"
+  printf '[%s]\n%s = "%s"\n' "$sect" "$k" "$P/migrations/../migrations/relocated/" > "$P/config.toml"
+  data_before="$(sums "$P/migrations/relocated")"
   uninstall "$H" -- --purge
   [[ "$RC" == 0 ]] || fail "--purge with $key under a managed tree failed ($RC): $(show)"
   [[ -f "$P/config.toml" ]] || fail "--purge removed config.toml although $key relocates data inside the install root: $(show)"
   grep -Fq "kept $P/config.toml" "$TMP/out" && grep -Fq "config.toml ($key)" "$TMP/out" || fail "--purge did not name the kept config.toml and the relocation ($key): $(show)"
-  [[ "$(sums "$P/agents/relocated")" == "$data_before" ]] || fail "--purge changed the relocated $key data"
+  [[ "$(sums "$P/migrations/relocated")" == "$data_before" ]] || fail "--purge changed the relocated $key data"
   install "$H"
   [[ "$RC" != 0 ]] || fail "the install after --purge replaced the subtree holding the relocated $key data: $(show)"
-  grep -Fq "refusing to replace" "$TMP/err" && grep -Fq "agents" "$TMP/err" && grep -Fq "data path '$sect'" "$TMP/err" || fail "the following install did not report the relocation into agents ($key): $(show)"
-  [[ "$(sums "$P/agents/relocated")" == "$data_before" ]] || fail "the following install changed the relocated $key data"
+  grep -Fq "refusing to replace" "$TMP/err" && grep -Fq "migrations" "$TMP/err" && grep -Fq "data path '$sect'" "$TMP/err" || fail "the following install did not report the relocation into migrations ($key): $(show)"
+  [[ "$(sums "$P/migrations/relocated")" == "$data_before" ]] || fail "the following install changed the relocated $key data"
 done
 fi
 # Spellings that only canonicalisation resolves: a symlink into a managed subtree and a ~ path
@@ -560,9 +557,9 @@ for sp in symlink tilde escape; do
   H="$(new_home "purgecfg-sp-$sp")"; P="$H/.planar"
   install_ok "$H"
   case "$sp" in
-    symlink) mkdir -p "$P/agents/relocated"; ln -s "$P/agents" "$H/lnk"; spell="$H/lnk/relocated"; dir="$P/agents/relocated" ;;
-    tilde) mkdir -p "$P/agents/relocated"; spell="~/.planar/agents/relocated"; dir="$P/agents/relocated" ;;
-    escape) mkdir -p "$H/ext-wb"; spell="$P/agents/../../ext-wb"; dir="$H/ext-wb" ;;
+    symlink) mkdir -p "$P/migrations/relocated"; ln -s "$P/migrations" "$H/lnk"; spell="$H/lnk/relocated"; dir="$P/migrations/relocated" ;;
+    tilde) mkdir -p "$P/migrations/relocated"; spell="~/.planar/migrations/relocated"; dir="$P/migrations/relocated" ;;
+    escape) mkdir -p "$H/ext-wb"; spell="$P/migrations/../../ext-wb"; dir="$H/ext-wb" ;;
   esac
   printf 'plan notes\n' > "$dir/notes.md"; printf 'two\n' > "$dir/b.txt"
   printf '[workbench]\nroot = "%s"\n' "$spell" > "$P/config.toml"
@@ -696,7 +693,7 @@ mkdir -p "$TMP/rt-killed"
 run_retry "$H" "$TMP/rt-killed" "$retry"
 [[ "$RC" == 0 ]] || fail "following the durable retry failed ($RC): $(show)"
 grep -Fq "finishing an interrupted uninstall" "$TMP/out" || fail "the retry did not finish the interrupted uninstall: $(show)"
-for n in bin skills agents codex-agents workflows scripts migrations; do [[ ! -e "$P/$n" ]] || fail "the retry left $n/"; done
+for n in bin skills scripts migrations; do [[ ! -e "$P/$n" ]] || fail "the retry left $n/"; done
 [[ ! -e "$P/.planar-journal" && ! -e "$P/release.json" ]] || fail "the retry left the journal or release.json"
 while IFS= read -r t; do [[ ! -e "$t" ]] || fail "the interrupted uninstall left the recorded target $t"; done < "$TMP/recorded.killed"
 [[ "$(data_sums "$P")" == "$dbefore" ]] || fail "the interrupted uninstall changed a data path"
@@ -775,7 +772,7 @@ if scen source-retry; then
 # A source install records its checkout, so the installed copy's retry names it
 # (quoted: the checkout path holds a space) and completes the uninstall from it.
 SRC="$TMP/my checkout"
-mkdir -p "$SRC/skills" "$SRC/templates" "$SRC/workflows" "$SRC/migrations"
+mkdir -p "$SRC/skills" "$SRC/templates" "$SRC/migrations"
 cp "$ROOT/install.sh" "$SRC/install.sh"
 cp -R "$ROOT/scripts" "$SRC/scripts"
 rm -rf "$SRC/scripts/__pycache__" "$SRC/scripts/install-lib/__pycache__"
@@ -783,7 +780,6 @@ cp -R "$ROOT/agents" "$SRC/agents"
 cp -R "$ROOT/skills/planar" "$SRC/skills/planar"
 cp "$ROOT/install-cleanup.txt" "$SRC/install-cleanup.txt"
 printf 'shipped a\n' > "$SRC/templates/a.toml"
-printf -- '-- wf\n' > "$SRC/workflows/w.lua"
 printf -- '-- m\n' > "$SRC/migrations/00001_x.up.sql"
 : > "$SRC/CMakeLists.txt"; : > "$SRC/CMakePresets.json"
 perl -0pi -e 's#/opt/homebrew/opt/llvm/bin/clang(\+\+)?#/bin/sh#g' "$SRC/install.sh"
@@ -793,7 +789,7 @@ cat > "$SSTUBS/cmake" <<STUB
 if [[ "\$1" == "--install" ]]; then
   source "$ROOT/scripts/fixtures/prebuilt-bundle.sh"
   mkdir -p "\$4/bin"
-  for b in planar planar-agent planar-watch planar-execute planar-ext; do stub_binary_write "\$4/bin/\$b" "\${STUB_TAG:-dev}"; done
+  for b in planar planar-agent planar-watch planar-ext; do stub_binary_write "\$4/bin/\$b" "\${STUB_TAG:-dev}"; done
 fi
 exit 0
 STUB
@@ -814,7 +810,7 @@ retry="$(sed -n 's/^  if this uninstall is interrupted, finish it with: //p' "$T
 mkdir -p "$TMP/rt-source"
 run_retry "$H" "$TMP/rt-source" "$retry"
 [[ "$RC" == 0 ]] && grep -Fq "finishing an interrupted uninstall" "$TMP/out" || fail "the source retry did not finish the interrupted uninstall ($RC): $(show)"
-for n in bin skills agents scripts migrations; do [[ ! -e "$P/$n" ]] || fail "the source retry left $n/"; done
+for n in bin skills scripts migrations; do [[ ! -e "$P/$n" ]] || fail "the source retry left $n/"; done
 [[ ! -e "$P/.planar-journal" && ! -e "$P/release.json" ]] || fail "the source retry left the journal or release.json"
 [[ "$(data_sums "$P")" == "$dbefore" ]] || fail "the source retry changed a data path"
 [[ -f "$SRC/install.sh" ]] || fail "the source retry removed the checkout"
@@ -866,9 +862,9 @@ upgrade_killed() { # upgrade_killed NAME [ENV=V...] -- an install of v1.2.3 whos
   install_ok "$H" "$@" --
   seed_data "$P"
   [[ -z "${UPG_EXT-}" ]] || rm -f "$P/planar.db" "$P/planar.db-wal" "$P/planar.db-shm"
-  in_arena "$H" "$@" PLANAR_INSTALL_TEST_FAULT=kill@backed-up:workflows -- "$B2/install.sh" --prebuilt "$B2"
+  in_arena "$H" "$@" PLANAR_INSTALL_TEST_FAULT=kill@backed-up:migrations -- "$B2/install.sh" --prebuilt "$B2"
   [[ "$RC" -ge 128 ]] || fail "$name: the upgrade was not killed ($RC): $(show)"
-  [[ "$(sed -n 's/^phase=//p' "$P/.planar-journal")" == mutating && -d "$P/workflows.old" && ! -e "$P/workflows" ]] \
+  [[ "$(sed -n 's/^phase=//p' "$P/.planar-journal")" == mutating && -d "$P/migrations.old" && ! -e "$P/migrations" ]] \
     || fail "$name: the fixture is not an interrupted upgrade: $(ls -A "$P" | tr '\n' ' ')"
   [[ -n "$(ls -d "$P"/.staging-* 2>/dev/null)" ]] || fail "$name: the interrupted upgrade left no staging"
   # Unknown look-alikes the journal does not own.
@@ -886,9 +882,9 @@ uninstall "$H"
 [[ "$RC" == 0 ]] || fail "uninstall over an interrupted upgrade failed ($RC): $(show)"
 grep -Fq "ending the pending install" "$TMP/out" || fail "the uninstall did not say it ends the pending install: $(show)"
 for s in $owned_staging; do [[ ! -e "$P/$s" ]] || fail "the uninstall left the owned staging $s"; done
-[[ ! -e "$P/workflows.old" ]] || fail "the uninstall left the owned backup workflows.old"
-grep -Fq "removed the interrupted install's backup $P/workflows.old" "$TMP/out" || fail "the owned backup's removal was not named: $(show)"
-for n in bin skills agents codex-agents scripts migrations; do [[ ! -e "$P/$n" ]] || fail "the uninstall left $n/"; done
+[[ ! -e "$P/migrations.old" ]] || fail "the uninstall left the owned backup migrations.old"
+grep -Fq "removed the interrupted install's backup $P/migrations.old" "$TMP/out" || fail "the owned backup's removal was not named: $(show)"
+for n in bin skills scripts migrations; do [[ ! -e "$P/$n" ]] || fail "the uninstall left $n/"; done
 for e in .staging-not-ours research.old notes.txt; do
   [[ -e "$P/$e" ]] || fail "the uninstall removed the unknown $e"
   grep -Fq "kept $P/$e" "$TMP/err" || fail "the unknown $e was not reported"

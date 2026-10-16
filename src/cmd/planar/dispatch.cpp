@@ -23,26 +23,17 @@ import planar.cmd.planar.handlers.test_spec;
 import planar.cmd.planar.handlers.health;
 import planar.cmd.planar.handlers.audit;
 import planar.cmd.planar.handlers.dashboard;
-import planar.cmd.planar.handlers.report;
 import planar.cmd.planar.handlers.capture;
 import planar.cmd.planar.handlers.catalog;
 import planar.cmd.planar.handlers.handoff;
 import planar.cmd.planar.handlers.init;
-import planar.cmd.planar.handlers.models;
 import planar.cmd.planar.handlers.plan;
 import planar.cmd.planar.handlers.resume;
-import planar.cmd.planar.handlers.runs;
 import planar.cmd.planar.handlers.local;
 import planar.cmd.planar.handlers.config;
 import planar.cmd.planar.handlers.templates;
-import planar.cmd.planar.handlers.closure;
-import planar.cmd.planar.handlers.groups;
 import planar.cmd.planar.handlers.spec_ingest;
-import planar.cmd.planar.handlers.importer;
-import planar.cmd.planar.handlers.synthesize;
-import planar.cmd.planar.handlers.skills;
 import planar.cmd.planar.handlers.task;
-import planar.cmd.planar.handlers.feedback;
 import planar.cmd.planar.handlers.question;
 import planar.cmd.planar.handlers.decision;
 import planar.cmd.planar.handlers.scenario;
@@ -55,7 +46,6 @@ import planar.cmd.planar.handlers.unlink;
 import planar.cmd.planar.handlers.update;
 import planar.cmd.planar.handlers.version;
 import planar.cmd.planar.handlers.workbench;
-import planar.cmd.planar.handlers.workflow;
 import planar.cmd.planar.handlers.workspace;
 
 namespace planar::cmd {
@@ -83,6 +73,34 @@ auto matched_node(CLI::App& root) -> std::pair<CLI::App*, std::vector<std::strin
     }
     node = matched.front();
     path.push_back(node->get_name());
+  }
+}
+
+/// @brief The second parsed child at some level of the parsed chain, if any.
+///
+/// CLI11 falls a word that names no child of the group it is under through to
+/// the parent, so `config init` (after `init` left the `config` group) parses
+/// `config` AND the root's own `init`. Two parsed children at one level is an
+/// unknown argument, not a choice between them. The one exemption is `help`
+/// as the first root child: it takes no positional, so a trailing word such
+/// as `planar help task` parses as a second root child by design and the
+/// documented behaviour is the root page.
+/// @param root The parsed root app.
+/// @return The second parsed child, or null when no level has one.
+auto second_parsed_child(CLI::App& root) -> CLI::App* {
+  CLI::App* node = &root;
+  while (true) {
+    auto const parsed = node->get_subcommands();
+    if (parsed.empty()) {
+      return nullptr;
+    }
+    if (node == &root && parsed.front()->get_name() == "help") {
+      return nullptr;
+    }
+    if (parsed.size() > 1) {
+      return parsed[1];
+    }
+    node = parsed.front();
   }
 }
 
@@ -181,27 +199,6 @@ auto not_implemented_for(std::string_view verb) -> handler_fn {
   };
 }
 
-/// @brief `explore`'s handler (decision 1003; task 6444).
-///
-/// `explore` stays in `unported_paths()` — it is reserved for launching Planar
-/// Explorer, which is a separate project and is not wired up yet — but unlike
-/// every other entry there, its own path is NOT a refusal: it prints the
-/// verb's own help page, exit 0. `--plan` / `--task` / `--scope` are declared
-/// flags on this leaf (see `k_flags_44` in `surface.cpp`) so CLI11 already
-/// parses and discards them before this handler runs; nothing here needs to
-/// read them.
-///
-/// `node` is looked up once, at table-build time, via `root.get_subcommand`
-/// rather than re-walked per invocation.
-/// @param node The `explore` leaf's CLI11 node.
-/// @return A handler that always succeeds, printing the leaf's help text.
-auto explore_fallback(const CLI::App* node) -> handler_fn {
-  return [node](context& ctx, const cliapp::parsed_args&) -> handler_result {
-    ctx.out() << node->help();
-    return {};
-  };
-}
-
 /// @brief `help`'s handler: print the root help page, as `planar --help` does.
 ///
 /// `root` is captured by reference and rendered through its own formatter,
@@ -238,8 +235,7 @@ auto make_handler_table(const CLI::App& root) -> handler_table {
   // `assoc members` — the family's read half, wired at task 6188. Its
   // engine call has existed since the family landed; what was missing was a
   // renderer for `project_ref` (this module's other two are singular and
-  // over `association`). Five `groups_recommend_test` integration frames
-  // were crashing in their FIXTURE on this verb, not in the verb they test.
+  // over `association`).
   table.emplace("assoc members", handlers::assoc_members);
   // `assoc list` + `assoc remove` — the family's two CHEAP remainders,
   // landed at task 6279. `remove` was handler-only (`remove_member` shipped
@@ -248,24 +244,14 @@ auto make_handler_table(const CLI::App& root) -> handler_table {
   //
   // `assoc list` is also `statediff.t.cpp`'s LAST `expected_unported`
   // entry, so wiring it here is what emptied that set.
-  //
-  // `assoc detect` stays unported: it is the ~680-line proposal engine
-  // (`detectProposals`/`proposalsFromSignals`/`enrichProposals`/
-  // `applyProposals`), which is the whole of the remaining work in this
-  // family and shares nothing with these two.
   table.emplace("assoc list", handlers::assoc_list);
   table.emplace("assoc remove", handlers::assoc_remove);
-  table.emplace("assoc detect", handlers::assoc_detect);
-  // `scope` — the WHOLE five-leaf family, landed at task 6214. Two do work
-  // (`show` reads the cwd-derived read set, `suggest` the project's existing
-  // memberships) and three are plan-153-M5 removal refusals that must NOT be
-  // left at the exit-64 default: the oracle answers exit 2 with a remedy
-  // paragraph, and exit 64 would read as "coming in a later build".
+  // `scope` — the two live leaves, landed at task 6214. `show` reads the
+  // cwd-derived read set and `suggest` the project's existing memberships.
+  // The plan-153-M5 removal stubs `use`, `pop` and `clear` were deleted in
+  // plan 1142 (task 7463) and are not declared at all.
   table.emplace("scope show", handlers::scope_show);
   table.emplace("scope suggest", handlers::scope_suggest);
-  table.emplace("scope use", handlers::scope_use);
-  table.emplace("scope pop", handlers::scope_pop);
-  table.emplace("scope clear", handlers::scope_clear);
   // `search` — the whole verb, landed at task 6090 with
   // `planar.engine.search`. One leaf, and the only one of that task's nine
   // that needed a new layer-2 bucket built from scratch.
@@ -283,27 +269,19 @@ auto make_handler_table(const CLI::App& root) -> handler_table {
   // a subcommand — same shape as `handoff`/`resume`. See handlers/health.cppm.
   table.emplace("health", handlers::health);
   table.emplace("health hygiene", handlers::health_hygiene);
-  // `audit` — all five leaves. The note that used to stand here said
+  table.emplace("health conformance", handlers::health_conformance);
+  // `audit` — all four leaves. The note that used to stand here said
   // `commits` needed git subprocess REVISION WALKS. It does not, and never
   // did — the oracle handler calls `listFiltered` and `writeJsonList`
   // over rows an earlier `capture commits` wrote, and spawns nothing.
   // `capture commits` and `bench harvest` really are blocked on the walk;
   // this leaf was mis-grouped with them. Corrected at task 6272, ported at
-  // 6277. `publish-decision` closed the family at task 6339, once
-  // `postComment` landed on both adapters — see handlers/audit.cppm.
+  // 6277.
   table.emplace("audit session", handlers::audit_session);
   table.emplace("audit trail", handlers::audit_trail);
   table.emplace("audit commits", handlers::audit_commits);
   table.emplace("audit handoff-readiness", handlers::audit_handoff_readiness);
-  table.emplace("audit publish-decision", handlers::audit_publish_decision);
   table.emplace("dashboard", handlers::dashboard);
-  // `report` — landed at task 6352 with the layer-1 `introspection_preview`
-  // extraction (decision 981) that lets `engine_introspect`'s `bundle`
-  // carry a `preview` field without an `engine_* -> engine_*` edge. Both
-  // engine buckets it composes (`engine_introspect`, DB aggregates;
-  // `engine_introspection_adapters`, filesystem discovery) were already
-  // ported; this handler is the D20 composition layer3 exists for.
-  table.emplace("report", handlers::report);
   table.emplace("task add", handlers::task_add);
   table.emplace("task show", handlers::task_show);
   table.emplace("task packet", handlers::task_packet);
@@ -327,18 +305,10 @@ auto make_handler_table(const CLI::App& root) -> handler_table {
   // The three that landed earlier also unblocked the `--touches` filter on
   // `plan list` and `task list`, which refused at exit 64 from task 6141
   // for want of `listTouching`.
-  table.emplace("task facts stage", handlers::task_facts_stage);
   table.emplace("task touches add", handlers::task_touches_add);
   table.emplace("task touches infer", handlers::task_touches_infer);
   table.emplace("task touches list", handlers::task_touches_list);
   table.emplace("task touches remove", handlers::task_touches_remove);
-  // `feedback triage` — all three leaves, landed at task 6303 with the
-  // `engine.planning.feedback_triage` engine they call. `feedback` and
-  // `feedback triage` are pure GROUPS and stay unregistered so they fall to
-  // the help path at exit 0.
-  table.emplace("feedback triage list", handlers::feedback_triage_list);
-  table.emplace("feedback triage show", handlers::feedback_triage_show);
-  table.emplace("feedback triage set", handlers::feedback_triage_set);
   // `question` — six of ten. Five landed at task 6188 with the `question`
   // engine they call; `question link` joined them at task 6193 with the
   // rest of the entity-link surface. The four still omitted are named
@@ -458,15 +428,11 @@ auto make_handler_table(const CLI::App& root) -> handler_table {
   // and stops. See `editflow.cppm`'s header.
   table.emplace("question edit", handlers::question_edit);
   table.emplace("question view", handlers::question_view);
-  table.emplace("question diff", handlers::question_diff);
-  table.emplace("question review", handlers::question_review);
   table.emplace("decision edit", handlers::decision_edit);
   table.emplace("decision view", handlers::decision_view);
-  table.emplace("decision diff", handlers::decision_diff);
   table.emplace("decision review", handlers::decision_review);
   table.emplace("scenario edit", handlers::scenario_edit);
   table.emplace("scenario view", handlers::scenario_view);
-  table.emplace("scenario diff", handlers::scenario_diff);
   table.emplace("scenario review", handlers::scenario_review);
   table.emplace("artifact edit", handlers::artifact_edit);
   table.emplace("artifact view", handlers::artifact_view);
@@ -489,19 +455,16 @@ auto make_handler_table(const CLI::App& root) -> handler_table {
   // ONE DIVERGENCE FROM THE OTHER FOUR, and it is the finding that made
   // this a task: on a NONEXISTENT id these two report `not_found`, not
   // `no_plan_link`, because their anchor resolvers read `plans` and `tasks`
-  // rather than `entity_links`. `plan diff 999` prints `no plan with id
-  // 999`; `question diff 999` prints `question 999 is not linked to a
+  // rather than `entity_links`. `task diff 999` prints `no task with id
+  // 999`; `decision review 999` prints `decision 999 is not linked to a
   // plan`. Both are exit 1. See `handlers/drafting.cppm`.
   //
   // What does NOT diverge, and was checked rather than assumed: unlike
   // `artifact`, `view`/`edit` and `diff`/`review` agree about WHERE the
   // file lives for both of these families. The thin-vs-canonical RENDERER
-  // split still applies to them, so `plan view 1 && plan diff 1` still
+  // split still applies to them, so `task view 1 && task diff 1` still
   // reports the two timestamp lines as a pending change.
-  table.emplace("plan edit", handlers::plan_edit);
   table.emplace("plan view", handlers::plan_view);
-  table.emplace("plan diff", handlers::plan_diff);
-  table.emplace("plan review", handlers::plan_review);
   table.emplace("task edit", handlers::task_edit);
   table.emplace("task view", handlers::task_view);
   table.emplace("task diff", handlers::task_diff);
@@ -547,9 +510,6 @@ auto make_handler_table(const CLI::App& root) -> handler_table {
   table.emplace("completion", [&root](context& ctx, const cliapp::parsed_args& args) -> handler_result {
     return handlers::completion(ctx, args, root);
   });
-  table.emplace("workflow list", handlers::workflow_list);
-  table.emplace("workflow show", handlers::workflow_show);
-  table.emplace("workflow run", handlers::workflow_run);
   table.emplace("annotate add", handlers::annotate_add);
   table.emplace("annotate list", handlers::annotate_list);
   table.emplace("annotate capabilities", handlers::annotate_capabilities);
@@ -579,10 +539,6 @@ auto make_handler_table(const CLI::App& root) -> handler_table {
   table.emplace("promote", handlers::promote);
   table.emplace("demote", handlers::demote);
   table.emplace("test-spec status", handlers::test_spec_status);
-  // `skills` has no subcommands, so it is a LEAF and needs an entry here
-  // even though the verb is retired and does nothing but render its own
-  // help page. See that handler's header.
-  table.emplace("skills", handlers::skills);
   table.emplace("workspace doctor", handlers::workspace_doctor);
   table.emplace("workspace init", handlers::workspace_init);
   table.emplace("workspace routing show", handlers::workspace_routing_show);
@@ -622,41 +578,6 @@ auto make_handler_table(const CLI::App& root) -> handler_table {
   table.emplace("handoff show", handlers::handoff_show);
   table.emplace("resume", handlers::resume_packet);
   table.emplace("resume validate", handlers::resume_validate);
-  // `bench` and `run` — one engine bucket, two surfaces over the same
-  // table. `bench harvest` is deliberately absent and stays a declared
-  // exit-64 refusal; its engine half was deferred WITH its git-subprocess
-  // dependency in task 6095. See `handlers/runs.cppm`.
-  // `models` — all fourteen leaves. `models resolve` left the unported
-  // inventory at task 6343, once `engine_ingest`'s planning half
-  // (`assemble_planning`, `compile_planning`) joined `engine_models`'s
-  // `profile` and `roles` (task 6111): the last missing piece was the
-  // `packet::evidence` -> `profile::fact` adapter, which belongs here — see
-  // `handlers/models.cppm`.
-  table.emplace("models registry list", handlers::models_registry_list);
-  table.emplace("models registry export", handlers::models_registry_export);
-  table.emplace("models registry add", handlers::models_registry_add);
-  table.emplace("models registry update", handlers::models_registry_update);
-  table.emplace("models registry remove", handlers::models_registry_remove);
-  table.emplace("models registry bind", handlers::models_registry_bind);
-  table.emplace("models registry unbind", handlers::models_registry_unbind);
-  table.emplace("models registry observe", handlers::models_registry_observe);
-  table.emplace("models registry eligibility", handlers::models_registry_eligibility);
-  table.emplace("models registry verify-identity", handlers::models_registry_verify_identity);
-  table.emplace("models evals", handlers::models_evals);
-  table.emplace("models experiments", handlers::models_experiments);
-  table.emplace("models outcomes", handlers::models_outcomes);
-  table.emplace("models resolve", handlers::models_resolve);
-  table.emplace("bench start", handlers::bench_start);
-  table.emplace("bench event", handlers::bench_event);
-  table.emplace("bench touch", handlers::bench_touch);
-  table.emplace("bench harvest", handlers::bench_harvest);
-  table.emplace("bench finish", handlers::bench_finish);
-  table.emplace("bench show", handlers::bench_show);
-  table.emplace("run start", handlers::run_start);
-  table.emplace("run event", handlers::run_event);
-  table.emplace("run finish", handlers::run_finish);
-  table.emplace("run show", handlers::run_show);
-
   // `local` — the whole five-leaf family (task 6189). None of them opens
   // SQLite; all five are filesystem state under `$PLANAR_LOCAL_HOME`/`$HOME`.
   table.emplace("local list", handlers::local_list);
@@ -686,28 +607,14 @@ auto make_handler_table(const CLI::App& root) -> handler_table {
   // the engine deliberately does not own.
   //
   // NONE of the five opens SQLite, and `ctx.db().opened()` is pinned false
-  // after each. `config init` and `config path` are what an operator runs
+  // after each. `config path` is what an operator runs
   // BEFORE `planar init`; a version that opened the database would also
   // MIGRATE it.
   table.emplace("config show", handlers::config_show);
   table.emplace("config edit", handlers::config_edit);
   table.emplace("config validate", handlers::config_validate);
-  table.emplace("config init", handlers::config_init);
   table.emplace("config path", handlers::config_path);
-  // Derived closure extraction is AST-backed through the pinned tree-sitter
-  // Zig grammar; its cross-bucket composition belongs at this cmd layer.
-  table.emplace("closure compute", handlers::closure_compute);
-  table.emplace("closure show", handlers::closure_show);
-  // `groups recommend` — the whole `groups` family, read-only.
-  table.emplace("groups recommend", handlers::groups_recommend);
   table.emplace("spec ingest", handlers::spec_ingest);
-  table.emplace("import", handlers::import_repo);
-  table.emplace("synthesize", handlers::synthesize);
-  // `explore` stays in `unported_paths()` (decision 1003 — the cockpit is
-  // dropped, not deferred) but its own fallback IS implemented: every gate
-  // refusal in the oracle prints the verb's help text, not an error. See
-  // `explore_fallback`'s header just above.
-  table.emplace("explore", explore_fallback(root.get_subcommand("explore")));
   table.emplace("help", help_handler(root));
 
   // Everything above is IMPLEMENTED. Everything below is DECLARED and
@@ -790,6 +697,45 @@ auto run_detailed(context& ctx, CLI::App& root, const handler_table& table) -> r
     return run_outcome{.code = exit_code_for(domain_error_kind::parse_error), .kind = domain_error_kind::parse_error};
   }
 
+  if (auto const* const extra = second_parsed_child(root); extra != nullptr) {
+    // An unknown word under a group is refused as a parse failure, the same line a
+    // flag or positional CLI11 cannot place produces (see the ParseError branch).
+    // Only the tokens from the misplaced word onward are unexpected; the words
+    // before it named valid nodes: walk past the words that named the parsed
+    // chain, then take the first later token that spells the extra child's name
+    // or one of its aliases, so a repeat further right does not move the start.
+    auto const names = [](CLI::App const& app, std::string_view word) {
+      auto const aliases = app.get_aliases();
+      return word == app.get_name() || std::ranges::find(aliases, word) != aliases.end();
+    };
+    std::size_t cursor = 1;
+    for (CLI::App const* node = &root; !node->get_subcommands().empty();) {
+      node = node->get_subcommands().front();
+      while (cursor < argv.size() && !names(*node, argv[cursor])) {
+        ++cursor;
+      }
+      cursor = std::min(cursor + 1, argv.size());
+    }
+    std::size_t first = argv.size();
+    for (std::size_t i = cursor; i < argv.size(); ++i) {
+      if (names(*extra, argv[i])) {
+        first = i;
+        break;
+      }
+    }
+    if (first == argv.size()) {
+      first = argv.size() - 1;
+    }
+    std::string tokens;
+    for (std::size_t i = first; i < argv.size(); ++i) {
+      tokens += i == first ? "" : " ";
+      tokens += argv[i];
+    }
+    auto const plural = first + 1 < argv.size();
+    ctx.err() << std::format("error: {}: The following {} not expected: {}\n", root.get_name(),
+                             plural ? "arguments were" : "argument was", tokens);
+    return run_outcome{.code = exit_code_for(domain_error_kind::parse_error), .kind = domain_error_kind::parse_error};
+  }
   auto const [node, path] = matched_node(root);
   if (!cliapp::children(*node).empty() && !table.contains(cliapp::path_key(path))) {
     // A group named without a leaf beneath it AND with no handler of its

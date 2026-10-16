@@ -318,18 +318,35 @@ scenario() {
   mkdir -p "$home"
   [[ "$vendors" == 0 ]] || mkdir -p "$home/.claude" "$home/.codex"
   p="$home/.planar"
+  if [[ "$vendors" == 1 ]]; then
+    # An older install that placed role agents: the staged agents/ and
+    # codex-agents/, a copied Claude agent and a linked Codex agent. The
+    # upgrade sweep removes both under this bash, then the cleanup list
+    # removes the staged trees.
+    mkdir -p "$p/agents" "$p/codex-agents" "$home/.claude/agents" "$home/.codex/agents"
+    : > "$p/.planar-install"
+    printf -- '---\nname: planar-coder\ndescription: An old role.\n---\n\nBody.\n' > "$p/agents/planar-coder.md"
+    printf 'name = "planar-coder"\n' > "$p/codex-agents/planar-coder.toml"
+    cp "$p/agents/planar-coder.md" "$home/.claude/agents/planar-coder.md"
+    ln -s "$p/codex-agents/planar-coder.toml" "$home/.codex/agents/planar-coder.toml"
+  fi
   install_run "$bash_bin" "$home" ${@+"$@"}
   [[ "$RC" == 0 ]] || fail "[$tag/$name] prebuilt install exited $RC: $(cat "$TMP/err") $(cat "$TMP/out")"
   grep -Eqi 'unbound variable|syntax error|bad substitution|command not found' "$TMP/err" "$TMP/out" && fail "[$tag/$name] install printed a shell error: $(cat "$TMP/err")"
   local b
-  for b in planar planar-agent planar-watch planar-execute planar-ext; do
+  for b in planar planar-agent planar-watch planar-ext; do
     cmp -s "$BUNDLE/bin/$b" "$p/bin/$b" || fail "[$tag/$name] bin/$b is not the bundle's"
   done
   [[ -f "$p/install-manifest.json" && -f "$p/release.json" && -f "$p/skills/planar/SKILL.md" ]] || fail "[$tag/$name] the install left no manifest, release.json or skill"
   if [[ "$vendors" == 1 ]]; then
-    [[ -f "$home/.claude/agents/planar-coder.md" && -f "$home/.codex/agents/planar-coder.toml" ]] || fail "[$tag/$name] vendor surfaces were not placed"
+    [[ -f "$home/.claude/skills/planar/SKILL.md" && -f "$home/.agents/skills/planar/SKILL.md" ]] || fail "[$tag/$name] vendor surfaces were not placed"
+    [[ ! -e "$home/.claude/agents/planar-coder.md" && ! -L "$home/.codex/agents/planar-coder.toml" ]] \
+      || fail "[$tag/$name] the role agents an older install placed (a copy and a link) were not removed"
+    [[ ! -e "$p/agents" && ! -e "$p/codex-agents" ]] || fail "[$tag/$name] the staged agents/ or codex-agents/ survived"
+    [[ -z "$(find "$home/.claude/agents" "$home/.codex/agents" -mindepth 1)" ]] || fail "[$tag/$name] a role agent was placed"
+    grep -Fq "removed role agent: $home/.codex/agents/planar-coder.toml" "$TMP/out" || fail "[$tag/$name] the linked role agent's removal was not printed"
   elif [[ "$vendors" == 2 ]]; then
-    [[ ! -e "$home/.claude/agents/planar-coder.md" && ! -e "$home/.codex/agents/planar-coder.toml" ]] || fail "[$tag/$name] --no-vendor placed vendor surfaces"
+    [[ ! -e "$home/.claude/skills/planar" && ! -e "$home/.agents/skills/planar" ]] || fail "[$tag/$name] --no-vendor placed vendor surfaces"
   else
     [[ ! -e "$home/.claude" && ! -e "$home/.codex" ]] || fail "[$tag/$name] a vendor directory appeared in a vendorless HOME"
   fi
@@ -351,7 +368,7 @@ scenario() {
   # planar-uninstall reads the manifest with sed (no python3 is on this PATH) and
   # removes the vendor surfaces it recorded.
   if [[ "$vendors" == 1 && "$UNINSTALL_REMOVES_VENDORS" == 1 ]]; then
-    [[ ! -e "$home/.claude/agents/planar-coder.md" && ! -e "$home/.codex/agents/planar-coder.toml" ]] || fail "[$tag/$name] uninstall left vendor surfaces"
+    [[ ! -e "$home/.claude/skills/planar" && ! -e "$home/.agents/skills/planar" ]] || fail "[$tag/$name] uninstall left vendor surfaces"
   fi
   local ls; ls="$(lock_state "$bash_bin" "$home")"
   lock_clear "$ls" || fail "[$tag/$name] after uninstall the mutation lock library judges the owner $ls (a live or unreleased owner remains)"

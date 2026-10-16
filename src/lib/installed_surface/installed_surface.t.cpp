@@ -1374,7 +1374,8 @@ TEST_CASE("derive_opencode reduces the frontmatter and keeps the body", "[instal
   CHECK_FALSE(is_::derive_opencode("---\ndescription: d\nbody\n").has_value());
 }
 
-TEST_CASE("derive_opencode is byte-equal to ownership.sh's awk for all fifteen agents", "[installed_surface][nine_roots]") {
+TEST_CASE("derive_opencode is byte-equal to ownership.sh's awk for every role agent in the tree",
+          "[installed_surface][nine_roots]") {
   const std::filesystem::path root{PLANAR_TARGET_SOURCE_ROOT};
   scratch_root                scratch;
   // The awk program is lifted out of scripts/install-lib/ownership.sh, the single home of
@@ -1407,8 +1408,17 @@ TEST_CASE("derive_opencode is byte-equal to ownership.sh's awk for all fifteen a
   // `\047` inside the awk source is awk's own escape; ownership.sh holds it unchanged.
   scratch.write(awk_file, program);
 
+  // The role agents: the two left under agents/ and the examples under
+  // examples/agents/. The installer's sweep derives the OpenCode form of the
+  // ones an older install placed to prove its copies.
+  std::vector<std::filesystem::directory_entry> sources;
+  for (auto const* dir : {"agents", "examples/agents"}) {
+    for (auto const& entry : std::filesystem::directory_iterator(root / dir)) {
+      sources.push_back(entry);
+    }
+  }
   std::size_t compared = 0;
-  for (auto const& entry : std::filesystem::directory_iterator(root / "agents")) {
+  for (auto const& entry : sources) {
     const auto name = entry.path().filename().string();
     if (!name.starts_with("planar-") || entry.path().extension() != ".md") {
       continue;
@@ -1426,7 +1436,7 @@ TEST_CASE("derive_opencode is byte-equal to ownership.sh's awk for all fifteen a
     CHECK(*cpp == awk_bytes);
     ++compared;
   }
-  CHECK(compared == 15);
+  CHECK(compared == 11);
 }
 
 TEST_CASE("the manifest vocabulary: the six vendors and `shared` are valid, anything else is invalid",

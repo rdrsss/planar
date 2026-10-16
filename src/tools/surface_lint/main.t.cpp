@@ -15,7 +15,7 @@
 // `surface_lint`'s entire correctness argument to date is the differential
 // against the zig original: task 6402 ran both over the same repo and got
 // byte-identical results on clean-repo, seeded-violation, and a
-// token-for-token diff of the 260-entry `command_classes` table. That
+// token-for-token diff of the 232-entry `command_classes` table. That
 // argument DIES at M10 when `zig/` is deleted — after that there is no
 // reference implementation and no standing gate of surface_lint's own. A
 // regression here would be silent, in the one tool whose whole job is
@@ -254,8 +254,9 @@ TEST_CASE("surface_lint enforces every check class against fixtures with provabl
   }
 
   SECTION("capability_exemption: an exempted mutate shape is silent beside a non-exempted one that still fires") {
-    // Paired within one file, one role: `planar plan create` is in
-    // k_capability_exemptions for (agents/planar-introspector.md, introspector);
+    // Paired within one file, one role: `planar-agent pull` is in
+    // k_capability_exemptions for (examples/agents/planar-reviewer.md,
+    // reviewer), which also proves examples/agents/ is scanned;
     // `planar decision add` is not. If the exemption table match broke to
     // always-exempt or never-exempt, this file's finding count would move
     // to 0 or 2 instead of staying at exactly 1.
@@ -263,7 +264,7 @@ TEST_CASE("surface_lint enforces every check class against fixtures with provabl
     INFO(out);
     REQUIRE(WIFEXITED(status));
     CHECK(WEXITSTATUS(status) == 1);
-    CHECK(out == "agents/planar-introspector.md:9: surface-capability-drift: read-only role contains coordination or entity "
+    CHECK(out == "examples/agents/planar-reviewer.md:9: surface-capability-drift: read-only role contains coordination or entity "
                  "write: planar decision add\n"
                  "surface-lint: 1 finding(s) across 1 files\n");
   }
@@ -285,9 +286,9 @@ TEST_CASE("surface_lint enforces every check class against fixtures with provabl
   }
 
   SECTION("no feedback envelope rule: a skill without the seven headings is clean") {
-    // The seven-section rule is gone (the contract lives in the skill's
-    // references/feedback-contract.md). clean/docs/clean.md carries no
-    // such heading and must still pass.
+    // The seven-section rule is gone: the report envelope is an example
+    // (examples/feedback-contract.md), not a contract the lint enforces.
+    // clean/docs/clean.md carries no such heading and must still pass.
     auto const [out, status] = capture(bin.string(), {(fixtures / "clean").string()});
     INFO(out);
     REQUIRE(WIFEXITED(status));
@@ -461,61 +462,21 @@ TEST_CASE("surface_lint enforces every check class against fixtures with provabl
                  "surface-lint: 1 finding(s) across 1 files\n");
   }
 
-  SECTION("queue_command: a span or block line that begins with a build or test program fires; queued, "
-          "prose, marked, region-exempt and out-of-scope text stays silent") {
-    // One file carries every shape: a span, a fenced line, an indented fenced
-    // line behind a `$ ` prompt, two spans on one line, a queued span and a
-    // queued block line (silent), prose naming programs (silent), non-build
-    // `cmake --preset` / `make:` / `go vet` / `npm install` spans (silent), a
-    // line carrying `queue-lint-ignore` (silent), a begin/end region holding a
-    // span, a span line and a fenced line (silent), and a span right after the
-    // region (fires again). docs/ is not gated; skills/ is.
-    auto const [out, status] = capture(bin.string(), {(fixtures / "queue_command").string()});
+  SECTION("direct_build_command: build and test commands run directly in agents/ and skills/ are not findings") {
+    // Whether authored text runs a build or test through the host queue is
+    // the operator's policy, so the lint reads no build or test command. One
+    // agent file runs `make test` in a span, `ctest` in a fence, `cmake
+    // --build` behind a `$ ` prompt and two programs on one line; the skill
+    // runs `pytest -q`; stray and unclosed `queue-lint-ignore` comments, which
+    // once had meaning, are plain HTML comments. All of it is clean, and both
+    // files are scanned (files_scanned == 2), so "clean" is not "unread".
+    auto const [out, status] = capture(bin.string(), {(fixtures / "direct_build_command").string()});
     INFO(out);
     REQUIRE(WIFEXITED(status));
-    CHECK(WEXITSTATUS(status) == 1);
-    CHECK(out == "agents/direct.md:6: surface-queue-command: build or test command is not given to `planar-agent queue "
-                 "run`: `make test`\n"
-                 "agents/direct.md:9: surface-queue-command: build or test command is not given to `planar-agent queue "
-                 "run`: `ctest --test-dir build`\n"
-                 "agents/direct.md:13: surface-queue-command: build or test command is not given to `planar-agent queue "
-                 "run`: `$ cmake --build build/debug`\n"
-                 "agents/direct.md:16: surface-queue-command: build or test command is not given to `planar-agent queue "
-                 "run`: `cargo test --release`\n"
-                 "agents/direct.md:16: surface-queue-command: build or test command is not given to `planar-agent queue "
-                 "run`: `ninja`\n"
-                 "agents/direct.md:35: surface-queue-command: build or test command is not given to `planar-agent queue "
-                 "run`: `gradle build`\n"
-                 "skills/skill/SKILL.md:6: surface-queue-command: build or test command is not given to `planar-agent "
-                 "queue run`: `pytest -q`\n"
-                 "skills/skill/SKILL.md: skill-rule frontmatter-present: ok (closed at line 4)\n"
-                 "skills/skill/SKILL.md: skill-rule name-matches-directory: ok (skill)\n"
-                 "skills/skill/SKILL.md: skill-rule name-format: ok (skill)\n"
-                 "skills/skill/SKILL.md: skill-rule description-length: ok (49 of 1024 characters)\n"
-                 "skills/skill/SKILL.md: skill-rule frontmatter-keys: ok (2 keys)\n"
-                 "skills/skill/SKILL.md: skill-rule body-lines: ok (2 of 500 lines)\n"
-                 "skills/skill/SKILL.md: skill-rule links-resolve: ok (every relative link exists)\n"
-                 "skills/skill/SKILL.md: skill-rule references-one-level: ok (every referenced file is one level "
-                 "below SKILL.md)\n"
-                 "surface-lint: 7 finding(s) across 3 files\n");
-  }
-
-  SECTION("queue_marker_invalid: an end without a begin, a begin inside a region and a region never closed are "
-          "reported, and the region state still decides what is exempt") {
-    auto const [out, status] = capture(bin.string(), {(fixtures / "queue_marker_invalid").string()});
-    INFO(out);
-    REQUIRE(WIFEXITED(status));
-    CHECK(WEXITSTATUS(status) == 1);
-    CHECK(out == "agents/markers.md:5: surface-queue-marker-invalid: `queue-lint-ignore-end` without a matching "
-                 "`queue-lint-ignore-begin`\n"
-                 "agents/markers.md:6: surface-queue-command: build or test command is not given to `planar-agent queue "
-                 "run`: `make`\n"
-                 "agents/markers.md:8: surface-queue-marker-invalid: `queue-lint-ignore-begin` inside the region opened "
-                 "at line 7\n"
-                 "agents/markers.md:11: surface-queue-command: build or test command is not given to `planar-agent queue "
-                 "run`: `ninja`\n"
-                 "agents/markers.md:12: surface-queue-marker-invalid: `queue-lint-ignore-begin` is never closed\n"
-                 "surface-lint: 5 finding(s) across 1 files\n");
+    CHECK(WEXITSTATUS(status) == 0);
+    CHECK(!out.contains("surface-queue"));
+    CHECK(out.contains("skills/skill/SKILL.md: skill-rule frontmatter-present: ok"));
+    CHECK(out.ends_with("surface-lint: clean (2 files)\n"));
   }
 
   SECTION("retired_refs: scoped hits fire, in a fence too; the changelog, the marked INSTALL.md region and "
@@ -524,11 +485,13 @@ TEST_CASE("surface_lint enforces every check class against fixtures with provabl
     // (plan 1089, tech spec 656 § Retired-reference lint). SCOPED hits: an
     // inline `agent.db` and a `PLANAR_AGENT_DB` in docs/scoped.md, an
     // `agent.db` inside a fenced block there, a `limit_columns_select` in the
-    // root README.md, and a `migrations-agent` in INSTALL.md AFTER its marked
-    // region. EXEMPT hits: docs/changelog.md, and INSTALL.md between its two
+    // root README.md, a `migrations-agent` in INSTALL.md AFTER its marked
+    // region, an `agent.db` in examples/walkthrough.md (read by the
+    // retired-only pass) and a `PLANAR_AGENT_DB` in examples/agents/ (read by
+    // the general scan, and reported once). EXEMPT hits: docs/changelog.md, and INSTALL.md between its two
     // markers (the unmarked INSTALL.md line 3 fires beside it, so the exemption
     // is the region and not the file). OUT-OF-SCOPE hits: migrations/README.md
-    // and scripts/notes.md name the terms freely. files_scanned == 4 proves
+    // and scripts/notes.md name the terms freely. files_scanned == 6 proves
     // those two were never read, and a stale mention in them cannot be what
     // keeps the output exact.
     auto const [out, status] = capture(bin.string(), {(fixtures / "retired_refs").string()});
@@ -542,7 +505,11 @@ TEST_CASE("surface_lint enforces every check class against fixtures with provabl
                  "docs/scoped.md:5: surface-retired-reference: retired reference outside an exempt region: "
                  "PLANAR_AGENT_DB\n"
                  "docs/scoped.md:8: surface-retired-reference: retired reference outside an exempt region: agent.db\n"
-                 "surface-lint: 6 finding(s) across 4 files\n");
+                 "examples/agents/planar-x.md:3: surface-retired-reference: retired reference outside an exempt region: "
+                 "PLANAR_AGENT_DB\n"
+                 "examples/walkthrough.md:3: surface-retired-reference: retired reference outside an exempt region: "
+                 "agent.db\n"
+                 "surface-lint: 8 finding(s) across 6 files\n");
   }
 
   SECTION("retired_marker_invalid: an unclosed region and a marker outside INSTALL.md are findings, and the "
@@ -561,15 +528,15 @@ TEST_CASE("surface_lint enforces every check class against fixtures with provabl
                  "surface-lint: 4 finding(s) across 2 files\n");
   }
 
-  SECTION("--command-inventory-json: the pinned 260-entry command_classes table") {
+  SECTION("--command-inventory-json: the pinned 199-entry command_classes table") {
     auto const [out, status] = capture(bin.string(), {"--command-inventory-json"});
     INFO(out);
     REQUIRE(WIFEXITED(status));
     CHECK(WEXITSTATUS(status) == 0);
     CHECK(out.starts_with(R"({"version":1,"commands":[)"));
-    CHECK(count_occurrences(out, "\"command\":") == 260);
+    CHECK(count_occurrences(out, "\"command\":") == 199);
     CHECK(out.contains(R"({"command":"planar init","access":"mutate"})"));
-    CHECK(count_occurrences(out, "\"access\":\"read\"") + count_occurrences(out, "\"access\":\"mutate\"") == 260);
+    CHECK(count_occurrences(out, "\"access\":\"read\"") + count_occurrences(out, "\"access\":\"mutate\"") == 199);
   }
 
   SECTION("usage error: no repo-root argument is a usage error, not a crash") {

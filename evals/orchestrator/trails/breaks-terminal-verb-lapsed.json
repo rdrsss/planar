@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "id": "breaks-terminal-verb-lapsed",
+  "description": "Rule 2: a claim is still active after its lease expired.",
+  "tasks": [
+    {
+      "title": "lapsed",
+      "final": "doing"
+    }
+  ],
+  "claims": [
+    {
+      "task": 1,
+      "status": "active",
+      "lease": "expired",
+      "role": "coder",
+      "model": "m",
+      "session": "coder",
+      "parent_action": true
+    }
+  ],
+  "expected": {
+    "conforms": false,
+    "violations": [
+      {
+        "rule": 2,
+        "entity": "claim:1"
+      }
+    ]
+  }
+}

@@ -288,7 +288,7 @@ runtime image; run it through the host queue. The removed-CA case requires
 The sync result remains exit 0, as for other per-link adapter errors.
 
 The `portable.binaries` ctest case is registered only with `PLANAR_PORTABLE`.
-It logs each of the five product binaries, inspects macOS dependencies and load
+It logs each of the four product binaries, inspects macOS dependencies and load
 commands with `otool`, or Linux dynamic entries and symbol versions with
 `readelf`, and then runs each CLI's `--help` in a disposable HOME/database.
 This startup check also detects static-runtime initialization failures that
@@ -439,9 +439,7 @@ scripts/break-probe.sh \
 ```
 
 Exit 0 is `killed`, exit 1 is `SURVIVOR`, exit 3 is `INERT`, exit 2 is a
-broken probe. A survivor is a finding about the test, not a footnote —
-see [`agents/methodology.md`](../agents/methodology.md) § Break-probe
-discipline.
+broken probe. A survivor is a finding about the test, not a footnote.
 
 `INERT` is deliberately not folded into `SURVIVOR`. The two look
 identical from the test's point of view — the mutant builds, the named
@@ -518,7 +516,7 @@ Docker Desktop 4.93.0, targeting `linux/amd64`. Bookworm supplied glibc
 CMake 4.4.2 used the existing x86_64 SHA-256 pin. The cold portable product
 build ran 1,997 steps with four jobs; image setup, configure, build and export
 took 889 seconds. Both `portable`-labelled tests subsequently passed, inspecting
-all five binaries for startup, glibc-only shared dependencies, no rpath and
+all binaries (then five, including `planar-execute`) for startup, glibc-only shared dependencies, no rpath and
 no GLIBC requirement above 2.36. Full diagnostics and package/archive provenance
 are retained in `build/m1-evidence/task7304/` on the dispatch host. This is
 product-build evidence; bundle assembly and clean-container bundle health
@@ -574,7 +572,7 @@ identical across cuts. `SHA256SUMS` uses two spaces before each bare asset name
 and covers every tarball in `dist/` and `get-planar.sh`, one record each, and
 `VERSION` contains the bare tag (or `dev`).
 
-Assembly requires exactly the two `portable` tests and inspects all five
+Assembly requires exactly the two `portable` tests and inspects all four
 installed copies again. A sibling `<archive>.gates.json` records
 `format_version: 1`, the archive name, SHA-256, the complete `release` identity,
 and `gates.portable` with `result: "pass"`, `matched_count: 2` and
@@ -584,5 +582,5 @@ It contains no smoke or CA verdict, so it cannot authorize publication:
 `format_version: 2`, and `scripts/release-publish.sh` requires that record for
 both platforms, bound to the same final checksum and release identity, and
 refuses missing evidence or `dev`. The contract is in
-[operations.md § Release Gate Evidence](operations.md#6-release-gate-evidence).
+[operations.md § Release Gate Evidence](operations.md#5-release-gate-evidence).
 Assembly does not publish anything.

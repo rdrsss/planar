@@ -141,7 +141,7 @@ source "$LIB/release.sh"
 
 # The managed subtrees (PLANAR_JOURNAL_SUBTREES) come from managed-lists.sh, the
 # one copy install.sh sources too.
-PLANAR_BINARY_NAMES="planar planar-agent planar-watch planar-execute planar-ext"
+PLANAR_BINARY_NAMES="planar planar-agent planar-watch planar-ext"
 
 # ---------- output ----------
 

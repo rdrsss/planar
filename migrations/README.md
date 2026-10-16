@@ -182,6 +182,46 @@ is not a counter reset: rename one of the databases instead of running the
 helper, which could archive logs the other database's runs are still
 writing.
 
+### Review-gate rollback
+
+Migration 00042 (plan 1142) widens `agent_actions.action_kind` with
+`review`, adds `agent_actions.verdict`, `agent_work_claims.policy_digest` and
+`queue_history.claim_token`, and inserts the `queue_schema` row (2, 1). Its
+down does not refuse. It **deletes every `review` action**, because the older
+schema cannot hold one and restoring a CHECK by text edit does not re-check
+stored rows; a child action that named a deleted review as its parent keeps
+its row with `parent_action_id` set to null. The verdicts, policy digests and
+queue claim tokens are dropped with their columns. Export them first if you
+need them:
+
+```bash
+sqlite3 -readonly <planar.db> \
+  "select * from agent_actions where action_kind = 'review'"
+sqlite3 -readonly <planar.db> \
+  "select id, claim_token, policy_digest from agent_work_claims where policy_digest is not null"
+sqlite3 -readonly <planar.db> \
+  "select seq, claim_token from queue_history where claim_token is not null"
+```
+
+### Routing-table drop
+
+Migration 00043 (plan 1142) drops the ten `routing_*` tables 00030 and 00031
+created, with their indexes and triggers and the
+`routing_candidate_compatibility_v1` view. Nothing on master or in
+planar-explorer's schema contract reads them. Its up **deletes their rows for
+good**; `install.sh` copies `planar.db` (with `-wal` and `-shm`) into
+`$PLANAR_HOME/backups/` before it applies a migration that drops tables (see
+[INSTALL.md](../INSTALL.md#the-backup-before-a-table-dropping-migration)).
+Its down recreates the tables, indexes, triggers and view as they stood after
+00032, **empty**: it is the up statements of 00030, 00031 and 00032 without
+their `schema_migrations` rows. To read old routing rows, open the backup
+read-only:
+
+```bash
+sqlite3 -readonly ~/.planar/backups/<time>-schema-42/planar.db \
+  "select count(*) from routing_dispatch_snapshots"
+```
+
 ### Relaxing a constraint on a foreign-key parent table
 
 The usual table rebuild is unsafe for a table other tables REFERENCE. The

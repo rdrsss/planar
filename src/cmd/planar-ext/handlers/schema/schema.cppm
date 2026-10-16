@@ -5,9 +5,9 @@
 /// NOT a nicety on this binary — decision 998 makes it a hard requirement.
 /// `tools/cli_usage_lint` SKIPS command paths it cannot resolve rather
 /// than flagging them, so a binary with no `schema` catalog turns the
-/// authored-surface gate VACUOUS over its entire verb set. `planar-execute`
-/// is exempt from that lint because it has no catalog and never will (see
-/// its own CMakeLists.txt); `planar-ext` is explicitly NOT exempt, because
+/// authored-surface gate VACUOUS over its entire verb set. The removed
+/// `planar-execute` was exempt from that lint because it had no catalog and
+/// never would; `planar-ext` is explicitly NOT exempt, because
 /// it carries operator-facing verbs (moving in over tasks 6419-6421) that
 /// the lint must be able to police from the moment this skeleton lands.
 ///

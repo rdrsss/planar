@@ -1,6 +1,5 @@
 // @file task_packet_leaf.t.cpp
-// @brief In-process tests for `planar task packet <task-id> [--json]` (plan
-// 996, task 6324).
+// @brief In-process tests for `planar task packet <task-id> [--json]` .
 //
 // The readiness RULES are pinned at the engine level in
 // `src/engine/ingest/packet.t.cpp`, on the same SQL seed. This file covers
@@ -31,14 +30,12 @@
 // implementation from one that always refuses — and seventeen reasons on a
 // bare task make "always refuses" a very convincing impostor.
 //
-// ## ORACLE PROVENANCE
+// ## READINESS IS COORDINATION ONLY
 //
-// The expected bytes were captured from `zig/zig-out/bin/planar` built at this
-// cycle's base, in a scratch arena (`PLANAR_DB` under a temp root, never the
-// operator's database), and replayed as a 21-arm differential through both
-// binaries against the same database file. All 21 agreed on stdout, stderr and
-// exit code. Exit codes were read from the command itself, never through a
-// pipe.
+// A task created with `task add` and nothing else is ready. The reasons are the
+// seven in `packet.cppm`; this file drives them the way an operator reaches
+// them, with `task link`, `question add` and `decision add`, and clears each
+// with the verb that resolves its cause.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -99,9 +96,8 @@ auto dispatch(const fixture& fx, std::vector<std::string> args) -> invocation {
 
 /// @brief Run raw SQL, asserting it succeeded.
 ///
-/// Every seed step is guarded. An oracle probe for this cycle went vacuous
-/// because two seed statements failed silently into /dev/null and the run
-/// compared an arena that had never been built.
+/// Every seed step is guarded: a statement that failed silently would leave
+/// the test comparing an arena that had never been built.
 auto exec_sql(const fixture& fx, std::string_view sql) -> void {
   auto conn = planar::db::connection::open(fx.db_path.string());
   REQUIRE(conn.has_value());
@@ -110,23 +106,27 @@ auto exec_sql(const fixture& fx, std::string_view sql) -> void {
   REQUIRE(ok.has_value());
 }
 
-// Digests computed with `shasum -a 256` over the documented preimage — an
-// implementation outside this tree. Seeding them from `source_digest` would
-// make the freshness half of every readiness assertion circular. See
-// packet.t.cpp for the full preimage list.
-constexpr std::string_view d_acceptance  = "c36d26ffec18cdac6ce40994f45fcbf6728bd65a160f0c4b9c6f29bd53c1b4d3";
-constexpr std::string_view d_next_action = "a735b836c075edb69bf4ebf0fec21139638ae4cb8f5cc093540080da737a7a29";
-constexpr std::string_view d_product     = "7294d414ca5de50586d1bbe24cff9820566fc37dae93a6f75a5005b3948b8b27";
-constexpr std::string_view d_tech        = "ec43ff315eae393c7b9a6aa5cdb1e83b8c958c5917f3d3b12cec1bc5d6aac294";
-constexpr std::string_view d_roadmap     = "fdd2302595324aaeaee4ecd136fbb2030178781f341d9bf9d88a8b560da197ad";
-constexpr std::string_view d_test_spec   = "6fbf86941cd9618fbbd981162cad4e957b3e735e08a82ff465f6de627940368f";
+/// @brief The `digest` value of a `--json` envelope, read from its key.
+auto digest_of(std::string_view payload) -> std::string {
+  // The envelope's digest follows `input`; a reference inside `input` carries a `digest` key of its own.
+  constexpr std::string_view envelope_key = R"(},"digest":")";
+  constexpr std::string_view plain_key    = R"("digest":")";
+  auto const                 envelope     = payload.rfind(envelope_key);
+  auto const                 start        = envelope != std::string_view::npos ? envelope + 2 : payload.find(plain_key);
+  REQUIRE(start != std::string_view::npos);
+  auto const from = start + plain_key.size();
+  auto const end  = payload.find('"', from);
+  REQUIRE(end != std::string_view::npos);
+  return std::string{payload.substr(from, end - from)};
+}
 
 /// @brief Seed the arena: a READY task 100 and a bare task 200 on one plan.
 ///
 /// `init` runs first so the database exists and is migrated; everything after
 /// it is SQL, because reaching a READY packet through the CLI would need the
-/// whole `spec ingest --apply` pipeline (which stages the routing facts) and
-/// that is a different subsystem from the one under test.
+/// whole `spec ingest --apply` pipeline, a different subsystem from the one
+/// under test. The task cites its artifacts through `cites` links, as ingest
+/// leaves them, and no fact row exists.
 auto seed(const fixture& fx) -> void {
   REQUIRE(dispatch(fx, {"init", "--allow-no-repo", "--name", "t6324"}).code == 0);
   // `init` already registers a project, so this one takes an id and a
@@ -150,11 +150,13 @@ auto seed(const fixture& fx) -> void {
                "values (101, 'global', null, 1, 'Dependency', 'Body.', 'done', 100, 'pkt-dep')");
   exec_sql(fx, "insert into tasks (id, scope_kind, scope_id, plan_id, title, status, priority, slug) "
                "values (200, 'global', null, 1, 'Bare task', 'todo', 100, 'pkt-bare')");
-  exec_sql(fx, "insert into artifacts (id, scope_kind, scope_id, kind, title, body, status) values "
-               "(10,'global',null,'product_spec','Product','## Overview\nSpec section body for product_spec.\n','active'),"
-               "(11,'global',null,'tech_spec','Tech','## Overview\nSpec section body for tech_spec.\n','active'),"
-               "(12,'global',null,'roadmap','Roadmap','## Overview\nSpec section body for roadmap.\n','active'),"
-               "(13,'global',null,'test_spec','Tests','## Overview\nSpec section body for test_spec.\n','active')");
+  exec_sql(
+      fx,
+      "insert into artifacts (id, scope_kind, scope_id, kind, title, body, status) values "
+      "(10,'global',null,'product_spec','Product','## Overview\nSpec section body for product_spec.\n','active'),"
+      "(11,'global',null,'tech_spec','Tech','## Overview\nSpec section body for tech_spec.\n\n## Notes\nTech notes.\n','active'),"
+      "(12,'global',null,'roadmap','Roadmap','## Overview\nSpec section body for roadmap.\n','active'),"
+      "(13,'global',null,'test_spec','Tests','## Overview\nSpec section body for test_spec.\n','active')");
   exec_sql(fx, "insert into decisions (id, scope_kind, scope_id, title, body, status) "
                "values (20, 'global', null, 'Locked', 'Decision body.', 'accepted')");
   exec_sql(fx, "insert into test_scenarios (id, scope_kind, scope_id, title, body, status) "
@@ -166,20 +168,6 @@ auto seed(const fixture& fx) -> void {
                "('test_scenario',30,'task',100,'verifies'),('test_scenario',30,'plan',1,'derives-from')");
   exec_sql(fx, "insert into task_touch_paths (task_id, repo_id, path) "
                "values (100, 900, 'src/engine/ingest/packet.cpp')");
-  exec_sql(fx,
-           std::format("insert into routing_task_facts (task_id, fact_kind, value_type, value_bool, value_text, "
-                       "source_entity_kind, source_entity_id, source_locator, source_digest, materializer_version) values "
-                       "(100,'acceptance_complete','bool',1,null,'task',100,'body#acceptance-criteria','{}','spec-ingest-v1'),"
-                       "(100,'next_action_exact','bool',1,null,'task',100,'next_action','{}','spec-ingest-v1'),"
-                       "(100,'cited_artifact_section','text',null,'Spec section body for product_spec.','artifact',10,"
-                       "'artifact:10#Overview','{}','spec-ingest-v1'),"
-                       "(100,'cited_artifact_section','text',null,'Spec section body for tech_spec.','artifact',11,"
-                       "'artifact:11#Overview','{}','spec-ingest-v1'),"
-                       "(100,'cited_artifact_section','text',null,'Spec section body for roadmap.','artifact',12,"
-                       "'artifact:12#Overview','{}','spec-ingest-v1'),"
-                       "(100,'cited_artifact_section','text',null,'Spec section body for test_spec.','artifact',13,"
-                       "'artifact:13#Overview','{}','spec-ingest-v1')",
-                       d_acceptance, d_next_action, d_product, d_tech, d_roadmap, d_test_spec));
 }
 
 } // namespace
@@ -199,34 +187,105 @@ TEST_CASE("task packet: the ready arm is genuinely reachable through the CLI", "
   CHECK(res.out.find(R"("reasons":[])") != std::string::npos);
 
   // The envelope's shape, in the order a consumer reads it.
-  CHECK(res.out.starts_with(R"({"policy_version":"routing-packet-v2","ready":true,"input":{"task_id":100,)"));
-  CHECK(res.out.find(R"("canonical":)") != std::string::npos);
-  CHECK(res.out.find(R"("digest":)") != std::string::npos);
+  CHECK(res.out.starts_with(R"({"policy_version":"routing-packet-v3","ready":true,"input":{"task_id":100,)"));
+  // No `canonical` copy: `input` is the only serialized body of the evidence.
+  CHECK(res.out.find(R"("canonical":)") == std::string::npos);
+  // The digest sits where `canonical` used to: after `input`, before `reasons`.
+  CHECK(res.out.find(R"(},"digest":")") != std::string::npos);
+  CHECK(res.out.find(R"(},"digest":")") < res.out.find(R"("reasons":)"));
+  CHECK(digest_of(res.out).size() == 64);
+  CHECK(digest_of(res.out).find_first_not_of("0123456789abcdef") == std::string::npos);
   CHECK(res.out.ends_with("]}\n"));
   CHECK(res.err.empty());
 }
 
-TEST_CASE("task packet: an unready packet is exit 0 with named reasons", "[task-packet]") {
+TEST_CASE("task packet: a hand-made task with no artifacts and no scenarios is ready", "[task-packet]") {
+  auto const fx = make_fixture("handmade");
+  REQUIRE(dispatch(fx, {"init", "--skip-project", "--allow-no-repo", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"plan", "create", "Hand-made plan", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"task", "add", "Do the thing", "--plan", "1", "--json"}).code == 0);
+
+  // No spec, no body, no decision, no scenario, no touch: nothing to prepare.
+  auto const res = dispatch(fx, {"task", "packet", "1", "--json"});
+  INFO("stdout: " << res.out);
+  CHECK(res.code == 0);
+  CHECK(res.out.contains(R"("ready":true)"));
+  CHECK(res.out.ends_with(R"("reasons":[]})"
+                          "\n"));
+
+  auto const text = dispatch(fx, {"task", "packet", "1"});
+  CHECK(text.code == 0);
+  CHECK(text.out.starts_with("task packet 1: ready\ndigest: "));
+  CHECK_FALSE(text.out.contains("reasons:"));
+}
+
+TEST_CASE("task packet: a refusal is exit 0 with named reasons in the documented order, each clearing when resolved",
+          "[task-packet]") {
   auto const fx = make_fixture("blocked");
+  REQUIRE(dispatch(fx, {"init", "--skip-project", "--allow-no-repo", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"plan", "create", "Hand-made plan", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"task", "add", "Blocked task", "--plan", "1", "--json"}).code == 0); // task 1
+  REQUIRE(dispatch(fx, {"task", "add", "Prerequisite", "--plan", "1", "--json"}).code == 0); // task 2
+  REQUIRE(dispatch(fx, {"question", "add", "Which database?", "--body", "Pick one.", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"decision", "add", "Pick SQLite", "--body", "SQLite.", "--json"}).code == 0);
+
+  auto const reasons = [&]() {
+    auto const res = dispatch(fx, {"task", "packet", "1", "--json"});
+    INFO("stdout: " << res.out);
+    // Exit 0. A refusal is a successful ANSWER, and an orchestrator that read
+    // this as an error would lose the reasons that explain it.
+    REQUIRE(res.code == 0);
+    auto const at = res.out.rfind(R"("reasons":[)");
+    REQUIRE(at != std::string::npos);
+    return res.out.substr(at);
+  };
+  CHECK(reasons() == R"("reasons":[]})"
+                     "\n");
+
+  // Link the three causes in the reverse of the documented order, to show the
+  // order comes from the packet and not from the order of the links.
+  REQUIRE(dispatch(fx, {"task", "link", "1", "decision:1", "--relationship", "cites"}).code == 0);
+  CHECK(reasons() == R"("reasons":["proposed_decision_linked"]})"
+                     "\n");
+  REQUIRE(dispatch(fx, {"task", "link", "1", "question:1", "--relationship", "addresses"}).code == 0);
+  CHECK(reasons() == R"("reasons":["open_question_linked","proposed_decision_linked"]})"
+                     "\n");
+  REQUIRE(dispatch(fx, {"task", "link", "1", "task:2", "--relationship", "depends-on"}).code == 0);
+  CHECK(reasons() == R"("reasons":["blocked_by_open_task","open_question_linked","proposed_decision_linked"]})"
+                     "\n");
+
+  // The text form names the same reasons in the same order.
+  auto const text = dispatch(fx, {"task", "packet", "1"});
+  CHECK(text.code == 0);
+  CHECK(text.out.starts_with("task packet 1: not_ready\ndigest: "));
+  CHECK(text.out.contains("\nreasons:\n- blocked_by_open_task\n- open_question_linked\n- proposed_decision_linked\n"));
+
+  // Each clears when its cause is resolved, by the verb that resolves it.
+  REQUIRE(dispatch(fx, {"task", "update", "2", "--status", "doing", "--json"}).code == 0);
+  CHECK(reasons().starts_with(R"("reasons":["blocked_by_open_task",)"));
+  REQUIRE(dispatch(fx, {"task", "done", "2"}).code == 0);
+  CHECK(reasons() == R"("reasons":["open_question_linked","proposed_decision_linked"]})"
+                     "\n");
+  REQUIRE(dispatch(fx, {"question", "answer", "1", "--answer", "SQLite."}).code == 0);
+  CHECK(reasons() == R"("reasons":["proposed_decision_linked"]})"
+                     "\n");
+  REQUIRE(dispatch(fx, {"decision", "accept", "1"}).code == 0);
+  CHECK(reasons() == R"("reasons":[]})"
+                     "\n");
+}
+
+TEST_CASE("task packet: a task that is already done is not claimable", "[task-packet]") {
+  auto const fx = make_fixture("closed");
   seed(fx);
 
+  // The seeded bare task is ready; closing it is the one change.
+  CHECK(dispatch(fx, {"task", "packet", "200", "--json"}).out.contains(R"("ready":true)"));
+  exec_sql(fx, "update tasks set status='done' where id=200");
   auto const res = dispatch(fx, {"task", "packet", "200", "--json"});
-  INFO("stdout: " << res.out);
-
-  // Exit 0. A refusal is a successful ANSWER, and an orchestrator that read
-  // this as an error would lose the reasons that explain it.
   CHECK(res.code == 0);
-  CHECK(res.out.find(R"("ready":false)") != std::string::npos);
-
-  // The reasons arrive NAMED and in emission order — an operator cannot act on
-  // a bare "not ready". Pinned as the literal array prefix rather than as a
-  // membership test, because the order is contract and a set comparison would
-  // not notice it changing.
-  CHECK(res.out.find(R"("reasons":["missing_body","missing_acceptance_section","generic_acceptance",)"
-                     R"("generic_next_action","missing_product_spec","missing_tech_spec","missing_roadmap",)"
-                     R"("missing_test_spec","missing_locked_decision","missing_touch",)"
-                     R"("absent_validation_gates","missing_acceptance_fact","missing_next_action_fact",)"
-                     R"("uncovered_required_scenario"]})") != std::string::npos);
+  CHECK(res.out.contains(R"("ready":false)"));
+  CHECK(res.out.ends_with(R"("reasons":["invalid_task_status"]})"
+                          "\n"));
 }
 
 TEST_CASE("task packet: the policy version rides in the envelope, not only the body", "[task-packet]") {
@@ -237,26 +296,15 @@ TEST_CASE("task packet: the policy version rides in the envelope, not only the b
   REQUIRE(res.code == 0);
 
   // Packets compare only within one policy version. A consumer has to
-  // establish that BEFORE comparing digests, and digging the version out of
-  // the canonical body would mean parsing the very thing whose format the
-  // version describes. So it appears twice, and both are contract.
-  CHECK(res.out.find(R"("policy_version":"routing-packet-v2")") != std::string::npos);
-  CHECK(res.out.find(R"(\"policy\":\"routing-packet-v2\")") != std::string::npos);
+  // establish that before comparing packets, so the version sits at the top
+  // of the envelope. The envelope has no escaped `canonical` copy of it.
+  CHECK(res.out.find(R"("policy_version":"routing-packet-v3")") != std::string::npos);
+  CHECK(res.out.find(R"(\"policy\":\"routing-packet-v3\")") == std::string::npos);
 }
 
 TEST_CASE("task packet: the digest is a change detector", "[task-packet]") {
   auto const fx = make_fixture("digest");
   seed(fx);
-
-  auto const digest_of = [](std::string_view payload) -> std::string {
-    constexpr std::string_view key   = R"("digest":")";
-    auto const                 start = payload.find(key);
-    REQUIRE(start != std::string_view::npos);
-    auto const from = start + key.size();
-    auto const end  = payload.find('"', from);
-    REQUIRE(end != std::string_view::npos);
-    return std::string{payload.substr(from, end - from)};
-  };
 
   auto const first = dispatch(fx, {"task", "packet", "100", "--json"});
   REQUIRE(first.code == 0);
@@ -275,6 +323,40 @@ TEST_CASE("task packet: the digest is a change detector", "[task-packet]") {
   CHECK(digest_of(after.out) != digest_of(first.out));
 }
 
+TEST_CASE("task packet: a display-only plan rename leaves the digest unchanged", "[task-packet]") {
+  auto const fx = make_fixture("rename");
+  seed(fx);
+
+  auto const before = dispatch(fx, {"task", "packet", "100", "--json"});
+  REQUIRE(before.code == 0);
+  // A plan's title reaches the packet only as `display_label`, which the
+  // canonical body carries and the digest's preimage omits.
+  exec_sql(fx, "update plans set title='Packet plan RENAMED' where id=1");
+  auto const after = dispatch(fx, {"task", "packet", "100", "--json"});
+  REQUIRE(after.code == 0);
+  CHECK(after.out != before.out);
+  CHECK(digest_of(after.out) == digest_of(before.out));
+}
+
+TEST_CASE("task packet: the JSON drops canonical and is byte-identical across two runs", "[task-packet]") {
+  auto const fx = make_fixture("twice");
+  seed(fx);
+
+  // Each arm runs twice in the same fixture. A packet whose bytes drifted
+  // between runs would make a consumer's comparison of two packets meaningless.
+  for (auto const id : {"100", "200"}) {
+    INFO("task " << id);
+    auto const first = dispatch(fx, {"task", "packet", id, "--json"});
+    REQUIRE(first.code == 0);
+    auto const second = dispatch(fx, {"task", "packet", id, "--json"});
+    REQUIRE(second.code == 0);
+    CHECK(second.out == first.out);
+    CHECK(first.out.find("\"canonical\":") == std::string::npos);
+    CHECK(first.out.find("\"input\":{") != std::string::npos);
+    CHECK(digest_of(first.out) == digest_of(second.out));
+  }
+}
+
 TEST_CASE("task packet: the text rendering names ready, digest, reasons and body", "[task-packet]") {
   auto const fx = make_fixture("text");
   seed(fx);
@@ -284,12 +366,22 @@ TEST_CASE("task packet: the text rendering names ready, digest, reasons and body
   CHECK(ready.out.starts_with("task packet 100: ready\ndigest: "));
   // A ready packet prints NO reasons block — not an empty one.
   CHECK(ready.out.find("reasons:") == std::string::npos);
-  CHECK(ready.out.find(R"({"policy":"routing-packet-v2","task_id":100)") != std::string::npos);
+  CHECK(ready.out.find(R"({"policy":"routing-packet-v3","task_id":100)") != std::string::npos);
+  // The citations arrive as references, taken from the task's `cites` links,
+  // and carry none of the cited text.
+  CHECK(ready.out.contains("references (expand one with: planar task packet 100 --expand <ref>):\n"));
+  CHECK(ready.out.contains("- artifact:10 4064d6efbf4b Product\n"));
+  CHECK(ready.out.contains("- artifact:11 "));
+  CHECK(ready.out.contains("- artifact:12 "));
+  CHECK(ready.out.contains("- artifact:13 "));
+  CHECK_FALSE(ready.out.contains("Spec section body for"));
+  CHECK_FALSE(ready.out.contains("\"facts\""));
 
+  exec_sql(fx, "update tasks set status='done' where id=200");
   auto const blocked = dispatch(fx, {"task", "packet", "200"});
   REQUIRE(blocked.code == 0);
   CHECK(blocked.out.starts_with("task packet 200: not_ready\ndigest: "));
-  CHECK(blocked.out.find("\nreasons:\n- missing_body\n- missing_acceptance_section\n") != std::string::npos);
+  CHECK(blocked.out.find("\nreasons:\n- invalid_task_status\n") != std::string::npos);
   CHECK(blocked.out.ends_with("\n"));
 }
 
@@ -337,110 +429,137 @@ TEST_CASE("task packet: an id of zero is treated as a lookup, not a default", "[
 }
 
 // ===========================================================================
-// `task facts stage` — the operator-provenance counterpart (task 6048,
-// decision 1102).
-//
-// These assert the LEAF's contract, not the engine's: the exit codes, what
-// lands on stdout versus stderr, and — the part that matters most to an
-// operator — that the verb answers "is this task dispatchable now" rather than
-// "did a write succeed".
+// References and `--expand` (plan 1142).
 // ===========================================================================
 
-TEST_CASE("task facts stage: reports the resulting packet, not just success", "[task-facts-stage][6048]") {
-  auto const fx = make_fixture("stage_reports");
+TEST_CASE("task packet: --json lists references and no facts or cited text", "[task-packet][references]") {
+  auto const fx = make_fixture("refs_json");
   seed(fx);
-  // Give the body the explicit artifact references an operator would author;
-  // the seed links the artifacts but names none of them in the body.
-  exec_sql(fx, "update tasks set body='Implement the packet compiler.\n"
-               "\n"
-               "## Acceptance Criteria\n"
-               "The packet compiles with zero readiness reasons.\n"
-               "\n"
-               "## Required validation\n"
-               "cmake --build build/debug\n"
-               "\n"
-               "## Citations\n"
-               "artifact:10#Overview\n"
-               "artifact:11#Overview\n"
-               "artifact:12#Overview\n"
-               "artifact:13#Overview\n"
-               "' where id=100");
 
-  auto const res = dispatch(fx, {"task", "facts", "stage", "100"});
-  INFO("stdout: " << res.out << "\nstderr: " << res.err);
-  CHECK(res.code == 0);
-  CHECK(res.err.empty());
-  CHECK(res.out.contains("staged routing facts for task 100 (operator-v1)"));
-  // The post-state is the answer. Exit 0 alone would be satisfied by a verb
-  // that wrote nothing at all.
-  CHECK(res.out.contains("packet ready: yes"));
+  auto const res = dispatch(fx, {"task", "packet", "100", "--json"});
+  REQUIRE(res.code == 0);
+  CHECK(res.out.contains(R"("references":[{"ref":"artifact:10","kind":"product_spec","id":10,"locator":"body","digest":")"));
+  CHECK(res.out.contains(R"("label":"Product","status":"active"})"));
+  CHECK_FALSE(res.out.contains(R"("facts")"));
+  CHECK_FALSE(res.out.contains(R"("citations")"));
+  CHECK_FALSE(res.out.contains("Spec section body for"));
 }
 
-TEST_CASE("task facts stage: an unresolvable citation refuses and names it", "[task-facts-stage][6048]") {
-  auto const fx = make_fixture("stage_citation");
+TEST_CASE("task packet: --expand prints exactly the cited section", "[task-packet][references]") {
+  auto const fx = make_fixture("expand");
   seed(fx);
 
-  // The seeded body cites no artifact explicitly, so all four `cites` edges
-  // are unresolvable. The operator needs to know WHICH — a bare failure name
-  // here is the exact unfindable-diagnostic problem task 6048 recorded.
-  auto const res = dispatch(fx, {"task", "facts", "stage", "100"});
-  INFO("stdout: " << res.out << "\nstderr: " << res.err);
-  CHECK(res.code == 1);
-  CHECK(res.err.contains("task 100"));
-  CHECK(res.err.contains("artifact 10"));
-  CHECK(res.err.contains("no facts were staged for this task"));
+  // A section by heading: the text under it and nothing else, exit 0, stderr silent.
+  auto const section = dispatch(fx, {"task", "packet", "100", "--expand", "artifact:11#Notes"});
+  INFO("stdout: " << section.out << "\nstderr: " << section.err);
+  CHECK(section.code == 0);
+  CHECK(section.out == "Tech notes.\n");
+  CHECK(section.err.empty());
+
+  // The heading is matched case-insensitively and the sibling section is not included.
+  auto const overview = dispatch(fx, {"task", "packet", "100", "--expand", "artifact:11#overview"});
+  CHECK(overview.code == 0);
+  CHECK(overview.out == "Spec section body for tech_spec.\n");
+
+  // No fragment: the whole artifact body.
+  auto const whole = dispatch(fx, {"task", "packet", "100", "--expand", "artifact:10"});
+  CHECK(whole.code == 0);
+  CHECK(whole.out == "## Overview\nSpec section body for product_spec.\n");
+
+  // --json: a stable object with the ref, the digest and the text.
+  auto const json = dispatch(fx, {"task", "packet", "100", "--expand", "artifact:11#Notes", "--json"});
+  CHECK(json.code == 0);
+  CHECK(json.out.starts_with(R"({"ref":"artifact:11#Notes","digest":")"));
+  CHECK(json.out.ends_with(R"(","text":"Tech notes."})"
+                           "\n"));
+  CHECK(digest_of(json.out).size() == 64);
 }
 
-TEST_CASE("task facts stage: an unknown task refuses rather than staging nothing quietly", "[task-facts-stage][6048]") {
-  auto const fx = make_fixture("stage_missing");
+TEST_CASE("task packet: --expand refuses a reference the task does not cite and names it", "[task-packet][references]") {
+  auto const fx = make_fixture("expand_unknown");
+  seed(fx);
+  exec_sql(fx, "insert into artifacts (id, scope_kind, scope_id, kind, title, body, status) "
+               "values (99,'global',null,'adr','Uncited','## Secret\nNot linked.\n','active')");
+
+  // An artifact that exists but is not cited, and one that does not exist.
+  for (std::string_view ref : {"artifact:99", "artifact:98"}) {
+    INFO("ref: " << ref);
+    auto const res = dispatch(fx, {"task", "packet", "100", "--expand", std::string{ref}});
+    CHECK(res.code == 1);
+    CHECK(res.out.empty());
+    CHECK(res.err == std::format("error: task packet: unknown reference {} for task 100\n", ref));
+  }
+
+  // Task 200 cites nothing, so even a real artifact is unknown to it.
+  auto const other = dispatch(fx, {"task", "packet", "200", "--expand", "artifact:10"});
+  CHECK(other.code == 1);
+  CHECK(other.err == "error: task packet: unknown reference artifact:10 for task 200\n");
+
+  auto const bad_section = dispatch(fx, {"task", "packet", "100", "--expand", "artifact:10#Missing"});
+  CHECK(bad_section.code == 1);
+  CHECK(bad_section.out.empty());
+  CHECK(bad_section.err.contains("artifact:10#Missing"));
+
+  auto const no_task = dispatch(fx, {"task", "packet", "999999", "--expand", "artifact:10"});
+  CHECK(no_task.code == 1);
+  CHECK(no_task.err == "error: no task with id 999999\n");
+}
+
+TEST_CASE("task packet: a packet shaped like task 7252 is under 16 KB as text", "[task-packet][references][size]") {
+  auto const fx = make_fixture("size");
   seed(fx);
 
-  auto const res = dispatch(fx, {"task", "facts", "stage", "999999"});
-  CHECK(res.code == 1);
+  // Four cited artifacts as large as task 7252's: 7 KB, 12 KB, 29 KB, 42 KB.
+  // Sixteen facts restated them and the text packet was 201,645 bytes.
+  auto const big = [](std::string_view marker, std::size_t bytes) {
+    std::string body = "## Overview\n";
+    while (body.size() < bytes) {
+      body += std::format("{} line of cited specification text.\n", marker);
+    }
+    return body;
+  };
+  exec_sql(fx, std::format("update artifacts set body='{}' where id=10", big("PRODUCTBODY", 7233)));
+  exec_sql(fx, std::format("update artifacts set body='{}' where id=12", big("ROADMAPBODY", 12096)));
+  exec_sql(fx, std::format("update artifacts set body='{}' where id=11", big("TECHBODY", 28894)));
+  exec_sql(fx, std::format("update artifacts set body='{}' where id=13", big("TESTBODY", 41672)));
+
+  auto const text = dispatch(fx, {"task", "packet", "100"});
+  REQUIRE(text.code == 0);
+  INFO("text bytes: " << text.out.size());
+  CHECK(text.out.size() < 16 * 1024);
+  CHECK_FALSE(text.out.contains("BODY line of cited"));
+  for (std::string_view ref : {"artifact:10", "artifact:11", "artifact:12", "artifact:13"}) {
+    CHECK(text.out.contains(std::format("- {} ", ref)));
+  }
+
+  // The cited text is still one verb away.
+  auto const expanded = dispatch(fx, {"task", "packet", "100", "--expand", "artifact:13"});
+  CHECK(expanded.code == 0);
+  CHECK(expanded.out.size() >= 41672);
+}
+
+TEST_CASE("task facts stage is an unknown subcommand", "[task-packet][references]") {
+  auto const fx = make_fixture("facts_gone");
+  seed(fx);
+
+  // The verb was removed with the facts it staged; it is refused at the
+  // argument layer and writes nothing. The table it wrote is gone too
+  // (migration 00043).
+  auto const snapshot = [&] {
+    auto conn = planar::db::connection::open(fx.db_path.string());
+    REQUIRE(conn.has_value());
+    auto stmt = conn->prepare("select (select count(*) from entity_links) || '|' || (select updated_at from tasks where id = 100)"
+                              " || '|' || (select count(*) from sqlite_master where name = 'routing_task_facts')");
+    REQUIRE(stmt.has_value());
+    REQUIRE(stmt->step().has_value());
+    return std::string{stmt->column_text(0)};
+  };
+  auto const before = snapshot();
+  CHECK(before.ends_with("|0"));
+
+  auto const res = dispatch(fx, {"task", "facts", "stage", "100"});
+  CHECK(res.code == 2);
   CHECK(res.out.empty());
-  // Task 6844: no --json on this invocation, so no envelope line -- the
-  // discriminating negative control against the --json cases above.
-  CHECK(res.err == "error: no task with id 999999\n");
-}
-
-TEST_CASE("task facts stage: --json emits the packet envelope", "[task-facts-stage][6048]") {
-  auto const fx = make_fixture("stage_json");
-  seed(fx);
-  exec_sql(fx, "update tasks set body='## Acceptance Criteria\n"
-               "The packet compiles with zero readiness reasons.\n"
-               "' where id=200");
-  exec_sql(fx, "update tasks set next_action='Stage the facts and read the packet.' where id=200");
-
-  auto const res = dispatch(fx, {"task", "facts", "stage", "200", "--json"});
-  INFO("stdout: " << res.out << "\nstderr: " << res.err);
-  CHECK(res.code == 0);
-  CHECK(res.out.contains("\"policy_version\":\"routing-packet-v2\""));
-  // Task 200 cites no specs, so it is still unready — and the verb says so
-  // rather than implying that staging is the same thing as readiness.
-  CHECK(res.out.contains("\"ready\":false"));
-  CHECK(res.out.contains("missing_product_spec"));
-  // But the two mandatory facts it CAN stage are no longer missing.
-  CHECK_FALSE(res.out.contains("missing_acceptance_fact"));
-  CHECK_FALSE(res.out.contains("missing_next_action_fact"));
-}
-
-TEST_CASE("task facts stage: text mode says NO and names what is still missing", "[task-facts-stage][6048]") {
-  auto const fx = make_fixture("stage_text_unready");
-  seed(fx);
-  exec_sql(fx, "update tasks set body='## Acceptance Criteria\n"
-               "The packet compiles with zero readiness reasons.\n"
-               "' where id=200");
-  exec_sql(fx, "update tasks set next_action='Stage the facts and read the packet.' where id=200");
-
-  // The non-vacuity arm for the text renderer. Without it, a handler that
-  // printed "packet ready: yes" unconditionally passes every other case in
-  // this file, because they all stage a task that really is ready.
-  auto const res = dispatch(fx, {"task", "facts", "stage", "200"});
-  INFO("stdout: " << res.out << "\nstderr: " << res.err);
-  CHECK(res.code == 0);
-  CHECK(res.out.contains("packet ready: no"));
-  // Naming the survivors is the point: "not ready" with no reasons would send
-  // the operator back to `task packet` to ask the same question again.
-  CHECK(res.out.contains("remaining:"));
-  CHECK(res.out.contains("missing_product_spec"));
+  CHECK(res.err.contains("facts"));
+  CHECK(snapshot() == before);
 }

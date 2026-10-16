@@ -158,4 +158,54 @@ export [[nodiscard]] auto section_has_content(std::string_view body, std::string
 /// @return The sanitized slug; empty when `raw` holds no slug characters.
 export [[nodiscard]] auto sanitize_slug(std::string_view raw) -> std::string;
 
+/// @brief One anchor artifact offered to an ingest pass.
+///
+/// The caller supplies bodies already reduced to their content section, in
+/// ascending artifact id order; every function below keeps that order, which
+/// is what makes ingest output deterministic across artifacts.
+export struct source_artifact {
+  std::int64_t id_ = 0; ///< Artifact id.
+  std::string  kind_;   ///< Artifact kind, e.g. `roadmap` or `design_note`.
+  std::string  title_;  ///< Artifact title, named in diagnostics.
+  std::string  body_;   ///< Content-section body.
+};
+
+/// @brief Whether an artifact body parses as a work list.
+///
+/// A work list is one or more `##` milestones each holding at least one task
+/// bullet. The reserved H2 headings `## Decisions`, `## Open Questions` and
+/// `## Scenarios` never count as milestones, so their bullets cannot make a
+/// spec document look like a roadmap.
+/// @param body The content-section body.
+/// @return `true` when the body holds at least one milestone with a bullet.
+export [[nodiscard]] auto parses_as_work_list(std::string_view body) -> bool;
+
+/// @brief Chooses the artifact that supplies the work list.
+///
+/// The lowest-id `roadmap` artifact wins outright. Without one, the single
+/// artifact whose body parses as a work list is chosen.
+/// @param artifacts The anchor's artifacts, in ascending id order.
+/// @return The index into `artifacts`, or a message naming the missing input
+/// (no candidate) or the ambiguity (two or more candidates, none a roadmap).
+export [[nodiscard]] auto select_work_list(std::span<const source_artifact> artifacts) -> std::expected<std::size_t, std::string>;
+
+/// @brief Decisions, questions and scenarios gathered from every anchor artifact.
+export struct spec_sections {
+  std::vector<decision> decisions_; ///< In artifact order, then source order.
+  std::vector<question> questions_; ///< In artifact order, then source order.
+  std::vector<scenario> scenarios_; ///< In artifact order, then source order.
+};
+
+/// @brief Collects the optional decision, question and scenario sections from
+/// every artifact, whatever its kind.
+///
+/// Titles are compared trimmed and ASCII-case-insensitively. The same title in
+/// two different artifacts is an error, because the ingest diff keys each row
+/// by title; a repeat inside one artifact is left to the diff as before.
+/// @param artifacts The anchor's artifacts, in ascending id order.
+/// @return The collected sections, or a message naming the duplicate title and
+/// the two artifact ids that carry it.
+export [[nodiscard]] auto collect_spec_sections(std::span<const source_artifact> artifacts)
+    -> std::expected<spec_sections, std::string>;
+
 } // namespace planar::engine::ingest::parse

@@ -24,13 +24,9 @@
 /// on the grounds that `defaults.toml` ships no embedded default for any
 /// of them, which is true but NOT a reason to drop the walk: every one of
 /// those keys is OPERATOR-SUPPLIED, so the walk is precisely what carries a
-/// hand-written `~/.planar/config.toml` into the effective map. Two live
-/// consumers read the result — `config validate` cross-checks every
-/// `routing.<vendor>.<tier>.<work-type>` against its tier's candidate list
-/// and exits 1 on a miss
-/// (zig/src/cmd/planar/handlers/config/validate.zig:117-165, pinned by
-/// zig/integration_tests/config_test.zig:252-284), and `config show
-/// --effective` prints them with provenance and renders multi-candidate
+/// hand-written `~/.planar/config.toml` into the effective map. The live
+/// consumer that reads the result is `config show --effective`, which prints
+/// them with provenance and renders multi-candidate
 /// tiers as `(candidates: a, b)` / a JSON `candidates` array
 /// (zig/src/cmd/planar/handlers/config/show.zig:92-171, pinned at
 /// :205-245). None of these keys carry an env or per-association override
@@ -70,6 +66,10 @@ export struct value_with_source {
   /// `value` is the tier default and stays scalar-compatible for every
   /// existing reader. Empty for every other key.
   std::vector<std::string> candidates;
+  /// @brief The TOML table that supplied a `policy.*` value, for example
+  /// `policy` or `associations."org:acme".policy`. Empty for every other key
+  /// and for a policy value that came from the embedded default.
+  std::string section;
 };
 
 /// @brief Canonical vendors participating in per-vendor
@@ -143,33 +143,10 @@ export struct external_config {
   external_github_projects github_projects; ///< `[external.github-projects]`.
 };
 
-/// @brief `[introspection.transcripts]` — per-vendor CLI transcript
-/// capture, independently enable/path-overridable.
-///
-/// `report`'s handler hand-copies these fields into
-/// `engine_introspection_adapters`' own `transcript_config` (the two
-/// modules cannot import each other — both are layer 2). A field ADDED
-/// here without a matching edit to that copy site would compile clean and
-/// silently be dropped; `report.cpp` guards against exactly that with a
-/// structured-binding decomposition pinning this struct's field count
-/// (task 6356) — adding, removing, or retyping a field here without
-/// updating that guard fails the build at the copy site, not silently.
-export struct transcripts_config {
-  bool        claude_enabled = true;  ///< Whether the Claude transcript adapter is enabled.
-  std::string claude_path;            ///< Operator override path; empty selects the built-in vendor location.
-  bool        codex_enabled = true;   ///< Whether the Codex transcript adapter is enabled.
-  std::string codex_path;             ///< Operator override path; empty selects the built-in vendor location.
-  bool        copilot_enabled = true; ///< Whether the Copilot transcript adapter is enabled.
-  std::string copilot_path;           ///< Operator override path; empty selects the built-in vendor location.
-};
-
 /// @brief `[introspection]` — opt-in CLI usage logging.
 export struct introspection_config {
   bool         cli_log        = false; ///< Opt-in; default off (recording behavior without consent violates least surprise).
   std::int64_t retention_days = 90;    ///< How many days of cli_invocations rows to retain.
-  std::int64_t transcript_scan_bytes =
-      67'108'864;                 ///< `planar report`'s transcript read budget, bytes; above 0 (a validated key).
-  transcripts_config transcripts; ///< `[introspection.transcripts]`.
 };
 
 /// @brief `[defaults]`.
@@ -208,22 +185,6 @@ export struct resolved {
   config        cfg;       ///< The resolved, typed configuration.
   effective_map effective; ///< Flat dotted-key → value + provenance, for `config show --effective`.
 };
-
-/// @brief One refused `[introspection]` value.
-export struct introspection_finding {
-  std::string key;     ///< The dotted key, for example `introspection.transcript_scan_bytes`.
-  std::string message; ///< What is wrong and what would be accepted.
-};
-
-/// @brief Check the `[introspection]` keys that carry a range: today
-/// `introspection.transcript_scan_bytes`, which must be an integer above 0.
-/// Reads the operator's file only; a value inherited from the embedded defaults
-/// is not something the operator wrote. `resolve()` does not refuse these values
-/// (it falls back to the default for a wrong type), so the callers that must
-/// fail on one (`planar report`, `config show`, `config validate`) call this.
-/// @param file_map The flattened user config file (from `parse_toml`).
-/// @return Every refused value, in key order; empty when all are valid or absent.
-export auto validate_introspection(const toml_map& file_map) -> std::vector<introspection_finding>;
 
 /// @brief Error surface for `resolve()`.
 export enum class effective_error : std::uint8_t {

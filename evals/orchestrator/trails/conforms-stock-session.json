@@ -1,0 +1,109 @@
+{
+  "schema_version": 1,
+  "id": "conforms-stock-session",
+  "description": "A session-style orchestrator: an orchestrator claim, coder claims dispatched under a parent action, an independent reviewer, queued gate runs, one task left for later.",
+  "style": "stock session",
+  "policy": {
+    "review_required": true,
+    "require_model": true,
+    "use_queue": true,
+    "task_gate": [
+      "make",
+      "test"
+    ]
+  },
+  "tasks": [
+    {
+      "title": "first",
+      "final": "done"
+    },
+    {
+      "title": "second",
+      "final": "done"
+    },
+    {
+      "title": "third",
+      "final": "todo"
+    }
+  ],
+  "claims": [
+    {
+      "task": 3,
+      "status": "released",
+      "role": "orchestrator",
+      "vendor": "claude",
+      "session": "orchestrator",
+      "parent_action": false
+    },
+    {
+      "task": 1,
+      "status": "completed",
+      "role": "coder",
+      "model": "claude-sonnet-5",
+      "vendor": "claude",
+      "session": "coder-1",
+      "parent_action": true,
+      "reviews": [
+        {
+          "session": "reviewer",
+          "verdict": "approve"
+        }
+      ],
+      "gate_runs": [
+        {
+          "argv": [
+            "make",
+            "test"
+          ],
+          "cwd": "/work/repo",
+          "outcome": "exited",
+          "exit_code": 0
+        }
+      ]
+    },
+    {
+      "task": 2,
+      "status": "completed",
+      "role": "coder",
+      "model": "claude-sonnet-5",
+      "vendor": "claude",
+      "session": "coder-2",
+      "parent_action": true,
+      "reviews": [
+        {
+          "session": "reviewer",
+          "verdict": "approve"
+        }
+      ],
+      "gate_runs": [
+        {
+          "argv": [
+            "make",
+            "test"
+          ],
+          "cwd": "/work/repo",
+          "outcome": "exited",
+          "exit_code": 0
+        }
+      ]
+    },
+    {
+      "task": 3,
+      "status": "released",
+      "role": "coder",
+      "model": "claude-sonnet-5",
+      "vendor": "claude",
+      "session": "coder-3",
+      "parent_action": true
+    }
+  ],
+  "expected": {
+    "conforms": true,
+    "violations": [],
+    "overrides": [],
+    "before_floor": {
+      "claims": 0,
+      "done_tasks": 0
+    }
+  }
+}

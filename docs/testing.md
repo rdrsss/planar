@@ -13,10 +13,10 @@ walk are in [lifecycles.md](lifecycles.md).
 | `make test-cpp-report` | The same suite, plus its skip tally. The expected tally is zero. |
 | `make ctest-registry-check` | ctest runs exactly the cases the test binaries contain. Needs `build/debug` built. |
 | `make coverage` | The `(verb, subcommand)` leaf-coverage ratio has not dropped below `scripts/coverage-baseline.txt`. |
-| `make cli-usage-check` | Authored surfaces (`agents/`, `skills/`, `docs/`) and the `docs.examples` the binaries publish in `schema` only use commands and flags the five binaries expose, and pass the semantic surface lint, including the host-queue rule (`surface-queue-command`, [architecture.md](architecture.md#authored-surface-validation)), and `scripts/check-md-anchors.py` fails on a broken in-page anchor in `docs/cli-reference.md` and `INSTALL.md`. |
+| `make cli-usage-check` | Authored surfaces (`agents/`, `examples/agents/`, `skills/`, `docs/`) and the `docs.examples` the binaries publish in `schema` only use commands and flags the four binaries expose, and pass the semantic surface lint ([architecture.md](architecture.md#authored-surface-validation)), and `scripts/check-md-anchors.py` fails on a broken in-page anchor in `docs/cli-reference.md` and `INSTALL.md`. |
 | `make surface-check` | Each binary's live schema and help surface matches `scripts/surface-baseline.txt`. |
 | `make exit-code-contract` | The exit codes documented in [cli-reference.md](cli-reference.md) are the ones the binaries return. |
-| `make eval-contracts` | The provider-free eval lanes. |
+| `make eval-contracts` | The provider-free eval lanes: the harness unit tests, the source contracts, the recorded trails graded through `planar health conformance` (`make eval-orchestrator-trails`, which builds `planar` first), and the controlled lifecycle replays. |
 | `make eval-queue-observation-integration` | A live scratch-database detached ticket observed through native wait and the older-queue compatibility path. Needs the debug binaries built first. |
 | `make cpp-lint-gate` | `clang-format --Werror` and the Doxygen doc-comment pass. |
 | `make test-all` | All of the above, composed. This is the gate to run before a pull request. |
@@ -25,9 +25,10 @@ walk are in [lifecycles.md](lifecycles.md).
 
 ## How the skill tree is tested
 
-The `planar` skill (`skills/planar/`) and the agents (`agents/planar-*.md`) are
-authored files that install unchanged, so there is no render step to test;
-the checks are on the source.
+The `planar` skill (`skills/planar/`) is an authored tree that installs
+unchanged, so there is no render step to test; the checks are on the source.
+The role agents (`agents/planar-*.md` and `examples/agents/planar-*.md`) are
+not installed, but they name Planar's commands, so the same lints read them.
 
 - **Format.** `make surface-lint` applies the Agent Skills rules to every
   `skills/<name>/SKILL.md` (frontmatter, name, description length, allowed
@@ -37,13 +38,16 @@ the checks are on the source.
 - **Budget.** `skills/planar/SKILL.md` has a tighter limit than the format's:
   150 lines of body. A Catch2 case in the surface-lint test binary enforces it.
 - **Commands.** `make cli-usage-check` runs `cli_usage_lint` over `agents/`,
-  `skills/`, `docs/` and `CLAUDE.md`, so every command and flag a reference
+  `examples/agents/`, `skills/`, `docs/` and `CLAUDE.md`, so every command and flag a reference
   or agent names must exist in a binary's `schema` catalog; its catalog mode
   checks the `docs.examples` the binaries publish the same way.
 - **Contract.** The eval contract tier (`make eval-contracts`) asserts, through
   `evals/orchestrator/cases/skill-planar.json`, that `SKILL.md` states each of
-  the thirteen invariants, names the five binaries and cites the feedback
-  contract.
+  the seven mechanism invariants, names the four binaries and
+  `planar-agent brief`, routes to the dispatch, preparation, queue and
+  claim-ritual references, and names no role agent or orchestrator phase. The
+  coherence grader also holds `SKILL.md` to at most 80 lines, and
+  `validation-cadence.json` checks that no skill file sets a testing cadence.
 
 The orchestrator lifecycle fixture's final repository test uses a detached
 queue ticket in its isolated arena. The harness records the ticket and log
@@ -160,7 +164,7 @@ the gate to run before a pull request; CI is the independent backstop.
 |---|---|---|
 | `ci.yml` (fast tier) | Pull requests into `master`, and pushes to `master` | `make fmt-check`, the installer fixtures, and the planning eval harness unit tests. It does not build the C++ tree. A newer push cancels the older run. |
 | `full.yml` (full tier) | Nightly, on manual dispatch, on `v*` tags, and on a pull request labelled `ci:full` | The `debug` build, the whole ctest suite, the orchestrator eval harness unit tests and the scratch queue observer integration test, on Linux in the same pinned toolchain image as `make linux-gate`. Builds from cold. |
-| `release.yml` (release) | A pushed stable `vX.Y.Z` tag only; never a branch, a pull request or a pre-release tag | One job per platform builds the release bundle from the tag commit and runs that platform's portable and clean-host gates before uploading; the final job runs the publisher, the only step that calls `gh release`, and a failed or missing platform publishes nothing. It reuses the scripts and evidence files of `make release-cut`. See [Release Gate Evidence and Cutting a release](operations.md#6-release-gate-evidence). Under decision 1337 releases are cut locally with `make release-cut` until hosted CI returns. |
+| `release.yml` (release) | A pushed stable `vX.Y.Z` tag only; never a branch, a pull request or a pre-release tag | One job per platform builds the release bundle from the tag commit and runs that platform's portable and clean-host gates before uploading; the final job runs the publisher, the only step that calls `gh release`, and a failed or missing platform publishes nothing. It reuses the scripts and evidence files of `make release-cut`. See [Release Gate Evidence and Cutting a release](operations.md#5-release-gate-evidence). Under decision 1337 releases are cut locally with `make release-cut` until hosted CI returns. |
 
 The fast tier does nothing for a change that touches only `agents/`, `skills/`,
 `docs/`, `.github/ISSUE_TEMPLATE/`, `.github/PULL_REQUEST_TEMPLATE.md`, or a
@@ -184,8 +188,13 @@ On a machine shared by several agents and projects, a build or test is not
 started directly. It is submitted to the host-wide queue, so two builds do
 not run at once and one agent's `make test` does not starve another's. The
 queue is `planar-agent queue`; see [the queue verbs](cli-reference.md#queue-verbs)
-for the full contract and [operations.md](operations.md#5-the-host-build-and-test-queue)
-for running it. `planar-agent queue rule` prints the rule agents follow.
+for the full contract and [operations.md](operations.md#4-the-host-build-and-test-queue)
+for running it. `planar-agent queue rule` prints how to use the queue, and
+prints the requirement to use it only where the operator's policy sets
+`use_queue = true` (`[policy]` or an `[associations."<slug>".policy]` table in
+`config.toml`; no environment override). This repository's contributor rule is
+that its agents use the queue, so a contributor enables it in their own
+`config.toml`.
 
 Every gate above has a queued form: the gate's own command after the argument
 terminator, run from the directory it needs.
@@ -228,7 +237,7 @@ Do not hide an unbounded retry loop around finite slices. A `stalled`,
 `history_unavailable` or `error` result needs inspection; a queue refusal
 never authorizes a direct build. `queue wait` only reads state and never
 renews a claim. See [the wait contract](cli-reference.md#waiting-for-a-logical-ticket-queue-wait)
-and [operations](operations.md#5-the-host-build-and-test-queue).
+and [operations](operations.md#4-the-host-build-and-test-queue).
 
 The queue is for builds and tests that would otherwise run side by side. It
 does not replace the gates: a queued `make test` is the same `make test`.
@@ -410,8 +419,7 @@ before they were deleted, and assert them against the current binary alone.
 They remain the strongest grading on help text, exit codes, error wording and
 the `schema` catalog, and they cannot be re-derived. A comment that says "the
 oracle declares X" records where a pinned byte came from; do not add new
-ones. `scripts/parity-data/parity-triage.md` holds the rationale for the
-pins.
+ones.
 
 ## Exit codes
 
@@ -543,12 +551,12 @@ sqlite3 /tmp/cp-smoke.db < migrations/00001_foundation.up.sql
 
 `make dist` configures and builds the `dist` preset (`PLANAR_PORTABLE=ON`,
 version metadata, a macOS 26.0 deployment target), runs the portable-binary
-checks on the five staged binaries, and assembles
+checks on the four staged binaries, and assembles
 `dist/planar-<platform>.tar.gz` with `SHA256SUMS`, `VERSION`, a standalone
 `get-planar.sh` and the archive's `.gates.json` evidence (`scripts/dist.sh`).
 `make linux-dist` does the same for Linux x86_64 in Docker on Debian bookworm.
 Both are release builds and not part of `make test` or `make test-all`; the
-gates they feed are in [operations.md § 6](operations.md#6-release-gate-evidence)
+gates they feed are in [operations.md § 5](operations.md#5-release-gate-evidence)
 and [toolchain-parity.md](toolchain-parity.md#portable-distribution-builds).
 Run them through the host queue and never with a validation tag in the real
 repository.
@@ -600,7 +608,7 @@ ctest --test-dir build/debug -L '^dist_layout$' --output-on-failure
 | `install.scenarios` | `install_scenarios` | `scripts/install-scenarios-test.sh` | The scenario filter and the parallel dispatch of the installer scripts: a stand-in script for the runner, and the usage paths of the four real scripts. See [Installer test speed](#installer-test-speed). |
 | `install.uninstall_removal`, `install.uninstall_manifest`, `install.uninstall_interrupted` | `install_uninstall` (all three), `install_uninstall_<group>` | `scripts/install-uninstall-test.sh` (`INSTALL_UNINSTALL_GROUP`) | `scripts/uninstall.sh`. `removal`: unknown entries, the removal and its data-path rules, `--purge`, link-mode. `manifest`: escaped and truncated manifest lines, `~/.local/bin`, a missing manifest, a relocated database, the held lock. `interrupted`: the interrupted-uninstall retry and an interrupted upgrade. |
 | `install.queue_probe` | `install_queue_probe` | `scripts/install-lib/queue_probe.test.py` | The installer's database probe with no `python3`, against the real built binaries. |
-| `install.order_db`, `install.order_swap`, `install.order_recover`, `install.order_concurrent`, `install.order_handoff` | `install_order` (all five), `install_order_<group>` | `scripts/install-order-test.sh` (`INSTALL_ORDER_GROUP`) | The order of an install end to end, against bundles of the real built binaries. `db`: databases fresh, behind, ahead and faulty, the queue warning. `swap`: kill-and-resume at every swap point. `recover`: recovery before restaging and a journaled restore. `concurrent`: concurrent owners, a first-install kill, a host rename, the read-only parent, refused attempts. `handoff`: the updater handoff, `--cleanup`, uninstall over a pending install, the inert fault hook. |
+| `install.order_db`, `install.order_swap`, `install.order_recover`, `install.order_concurrent`, `install.order_handoff` | `install_order` (all five), `install_order_<group>` | `scripts/install-order-test.sh` (`INSTALL_ORDER_GROUP`) | The order of an install end to end, against bundles of the real built binaries. `db`: databases fresh, behind, ahead and faulty, the queue warning, the backup before a table-dropping migration. `swap`: kill-and-resume at every swap point. `recover`: recovery before restaging and a journaled restore. `concurrent`: concurrent owners, a first-install kill, a host rename, the read-only parent, refused attempts. `handoff`: the updater handoff, `--cleanup`, uninstall over a pending install, the inert fault hook. |
 | `queue_retire_reader` | `queue;scripts` | `scripts/install-lib/queue_retire.test.py` | The reader the installer runs to judge the retired queue store's entries, including its `/proc` cases. |
 | `codex_agents_render` | `scripts` | `scripts/render_codex_agents_test.py` | The Codex custom-agent TOML renderer. |
 

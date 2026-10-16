@@ -678,15 +678,3 @@ TEST_CASE("audit session gives a non-integer id exit 2 and a missing id exit 1",
   CHECK(missing_json.err == "error: session 99 not found\n");
   CHECK(missing_json.out == planar::cmd::testsupport::json_error_envelope_line("audit session", "not_found"));
 }
-
-// This file used to carry "the two unported audit leaves still refuse at
-// exit 64" here, pinning `audit publish-decision` and (earlier still)
-// `audit handoff-readiness`, `audit commits` and `audit trail` as each was
-// added and then removed from the set. `audit publish-decision` was the
-// family's last remaining entry — removed at task 6339 once `postComment`
-// landed on both adapters — so the set this case pinned is now EMPTY and
-// the case itself is gone rather than kept with nothing to assert. Its argv
-// moves to audit_publish_decision_leaf.t.cpp, where `audit publish-decision
-// 1` now pins real behaviour (the scope guard, the fixture-server request
-// log, the unconditional re-post) instead of an exit-64 placeholder. The
-// `audit` family is now fully ported and contributes nothing to this file.

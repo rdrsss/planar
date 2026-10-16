@@ -43,7 +43,7 @@
 /// The oracle opens `$EDITOR` for the body when, and only when, all three
 /// of: `--body` was absent, `--editor` is on (it defaults to TRUE), and
 /// stdout is a TTY. Process spawning does not exist anywhere in this tree
-/// — it is the same missing seam that deferred `workflow run`, `bench
+/// — it is the same missing seam that deferred `bench
 /// harvest` and `capture commits`. This handler therefore REFUSES on that
 /// exact three-way conjunction rather than quietly creating a body-less
 /// task, which would be a silent divergence on the one path an interactive
@@ -84,12 +84,16 @@ export auto task_add(context& ctx, const cliapp::parsed_args& args) -> handler_r
 /// `not_found` (exit 1) when no task has that id.
 export auto task_show(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
-/// @brief Handle `planar task packet <task-id> [--json]` (plan 996, task
-/// 6324).
+/// @brief Handle `planar task packet <task-id> [--json] [--expand <ref>]`
+/// (plan 996, task 6324).
 ///
-/// Compiles the authoritative current routing packet for a task. This is the
-/// verb the ORCHESTRATOR reads to decide whether a task is dispatchable, so
-/// two things about its result shape are contract rather than presentation:
+/// Compiles the authoritative current task packet for a task. With
+/// `--expand <ref>` it prints one referenced artifact, or one section of it,
+/// instead: a reference the task does not cite exits 1 and names the
+/// reference. This is the verb an agent reads to learn whether a task can be
+/// taken now (coordination readiness only; see `planar.engine.ingest.packet`),
+/// so two things about its result shape are contract rather than
+/// presentation:
 ///
 ///   - **An unready packet is exit 0.** `ready: false` with a populated
 ///     `reasons` array is a successful answer to the question asked, not a
@@ -131,19 +135,6 @@ export auto task_packet(context& ctx, const cliapp::parsed_args& args) -> handle
 /// (exit 64) for `--touches`.
 export auto task_list(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
-/// @brief Handle `planar task facts stage <task-id> [--json]`.
-///
-/// Stages the task's routing facts under `operator-v1` provenance and then
-/// reports the resulting packet, because "did the write succeed" is not the
-/// operator's question — "is this task dispatchable now" is.
-///
-/// An unresolvable citation exits non-zero and prints one diagnostic per
-/// offending artifact; nothing is staged in that case.
-/// @param ctx Handler context.
-/// @param args Parsed arguments.
-/// @return Success, or the domain error.
-export auto task_facts_stage(context& ctx, const cliapp::parsed_args& args) -> handler_result;
-
 /// @brief Handle `planar task update <task-id> [--title] [--status] …`.
 ///
 /// Carries TWO guards the other task verbs do not, in this order:
@@ -173,11 +164,9 @@ export auto task_done(context& ctx, const cliapp::parsed_args& args) -> handler_
 
 /// @brief Handle `planar task cancel <task-id> [--json]`.
 ///
-/// Note the missing `--force`: this verb has no override at all, and its
-/// claim refusal therefore renders as the GENERIC `task cancel: TaskClaimed`
-/// rather than the two-line advisory its siblings print. That is the
-/// oracle's own asymmetry — `cancel.zig` has no `error.TaskClaimed` arm, so
-/// the error falls to the catch-all `else`. Captured, not inferred.
+/// Note the missing `--force`: this verb has no override at all, so its
+/// claim refusal names the `planar-agent` terminal verb that would succeed
+/// and does not offer one.
 /// @param ctx The invocation context.
 /// @param args The parsed arguments.
 /// @return Success, or `invalid_input` (exit 2), or `generic_failure` (exit 1).

@@ -19,7 +19,8 @@
 # no python3.
 #
 #   sweep_* / run_sweep     the installer's sweep of the projections older
-#                           installs placed (removes only proven entries).
+#                           installs placed, the planar-<role> agents among
+#                           them (removes only proven entries).
 #   opencode_derive FILE    print the OpenCode form of a staged agent.
 #   uninstall_owned STAGED INSTALLED VENDOR KIND
 #                           status 0 when INSTALLED is still what Planar placed
@@ -94,6 +95,68 @@ sweep_agents() {
   done < <(find "$dir" -maxdepth 1 -type l -print0)
 }
 
+# sweep_role_agents <dir> <fmt> — the planar-<role> agents an install placed in
+# the vendor agent directory <dir> while Planar still placed role agents. <fmt>
+# is the directory's placed form: md (Claude Code, Gemini CLI, Antigravity),
+# copilot (planar-<role>.agent.md), opencode (the derived form) or toml (Codex).
+# The previous install's staged trees $PLANAR_HOME/agents/ and
+# $PLANAR_HOME/codex-agents/ are the evidence, so this runs before the cleanup
+# list removes them. An entry is removed when it is a symlink (live or dangling)
+# into one of those two trees, or a regular file whose bytes equal what placing
+# its staged source wrote. A planar-local-* entry (`planar local link`) is never
+# touched. A planar-<role> entry with no proof is left: it is reported when the
+# previous install manifest records it (Planar placed it and it changed since),
+# and otherwise it is not Planar's and is passed over silently.
+sweep_role_agents() {
+  local dir="$1" fmt="$2" entry name role src tmp proven
+  [[ -d "$dir" ]] || return 0
+  while IFS= read -r -d '' entry; do
+    name="$(basename "$entry")"
+    [[ "$name" == planar-local-* ]] && continue
+    case "$fmt" in
+      toml)    [[ "$name" == *.toml ]] || continue; role="${name%.toml}"; src="$PLANAR_HOME/codex-agents/$name" ;;
+      copilot) [[ "$name" == *.agent.md ]] || continue; role="${name%.agent.md}"; src="$PLANAR_HOME/agents/$role.md" ;;
+      *)       [[ "$name" == *.md ]] || continue; role="${name%.md}"; src="$PLANAR_HOME/agents/$role.md" ;;
+    esac
+    [[ -n "${role#planar-}" ]] || continue
+    proven=0
+    if [[ -L "$entry" ]]; then
+      sweep_link_into "$entry" "$PLANAR_HOME/agents/planar-*" "$PLANAR_HOME/codex-agents/planar-*" && proven=1
+    elif [[ -f "$entry" && -f "$src" ]]; then
+      if [[ "$fmt" == opencode ]]; then
+        tmp="$(mktemp)"
+        if opencode_derive "$src" > "$tmp" 2>/dev/null && cmp -s "$tmp" "$entry"; then proven=1; fi
+        rm -f "$tmp"
+      elif cmp -s "$src" "$entry"; then
+        proven=1
+      fi
+    fi
+    if [[ "$proven" -eq 1 ]]; then
+      sweep_remove "$entry" "role agent"
+    elif sweep_manifest_records "$entry"; then
+      warn "left $entry: Planar placed it, but it no longer matches the copy Planar placed (changed after the install?); Planar no longer installs role agents, so remove it yourself if you do not need it"
+      SWEEP_LEFT=$((SWEEP_LEFT + 1))
+    fi
+  done < <(find "$dir" -maxdepth 1 \( -type f -o -type l \) -name 'planar-*' -print0)
+}
+
+# sweep_manifest_records <path> — true when $PLANAR_HOME/install-manifest.json
+# holds <path> as a whole JSON string. The escaping mirrors
+# install_manifest_json_quote in install-manifest.sh, which writes the
+# manifest (the backslash, the quote, newline, carriage return and tab); it is
+# repeated here because the uninstaller sources this file without that one.
+# Keep the two in step.
+sweep_manifest_records() {
+  local manifest="$PLANAR_HOME/install-manifest.json" quoted="$1"
+  [[ -f "$manifest" && ! -L "$manifest" ]] || return 1
+  quoted="${quoted//\\/\\\\}"
+  quoted="${quoted//\"/\\\"}"
+  quoted="${quoted//$'\n'/\\n}"
+  quoted="${quoted//$'\r'/\\r}"
+  quoted="${quoted//$'\t'/\\t}"
+  grep -qF -- "\"$quoted\"" "$manifest" 2>/dev/null
+}
+
 # sweep_skills <dir> <staged-dir> — the pl-* skill directories an older install
 # copied or linked into <dir>. Removed when a symlink into $PLANAR_HOME, or when
 # the bytes equal <staged-dir>/<same name> (the old runtime marker file
@@ -125,6 +188,12 @@ run_sweep() {
             "$HOME/.gemini/antigravity-cli/agents" "$HOME/.config/opencode/agents"; do
     sweep_agents "$_d"
   done
+  sweep_role_agents "$HOME/.claude/agents" md
+  sweep_role_agents "$CODEX_HOME/agents" toml
+  sweep_role_agents "$HOME/.copilot/agents" copilot
+  sweep_role_agents "$HOME/.gemini/agents" md
+  sweep_role_agents "$HOME/.gemini/antigravity-cli/agents" md
+  sweep_role_agents "$HOME/.config/opencode/agents" opencode
   sweep_skills "$CODEX_HOME/skills" "$PLANAR_HOME/codex-skills"
   sweep_skills "$HOME/.copilot/skills" "$PLANAR_HOME/copilot-skills"
   sweep_skills "$HOME/.gemini/antigravity-cli/skills" "$PLANAR_HOME/gemini-skills"

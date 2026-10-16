@@ -8,12 +8,14 @@
 #
 #   PLANAR_JOURNAL_SUBTREES  the managed subtrees of the install root, in the
 #                            order the installer stages, swaps and journals them.
-#                            templates/ is a data path and is not listed.
+#                            templates/ is a data path and is not listed;
+#                            agents/ and codex-agents/ are no longer staged
+#                            (install-cleanup.txt removes them).
 #   PLANAR_VENDOR_NAMES      the vendors Planar places surfaces into, in the order
 #                            they are reported.
 #
 # Both are space-separated words (bash 3.2: no associative arrays). Sourced,
 # never executed.
 
-PLANAR_JOURNAL_SUBTREES="bin skills agents codex-agents workflows scripts migrations"
+PLANAR_JOURNAL_SUBTREES="bin skills scripts migrations"
 PLANAR_VENDOR_NAMES="claude codex copilot gemini antigravity opencode"

@@ -181,7 +181,7 @@
 /// with the head binary, or leaves `--claim` out and heartbeats separately.
 /// The queue's own guarantees hold when a renewal cannot: a renewal that
 /// fails (an unresolvable path, an absent or schema-locked or busy main
-/// database, an unknown, ended or lapsed claim, an engine-supervised claim) is
+/// database, an unknown, ended or lapsed claim) is
 /// reported as a `warning: queue: cannot renew the claim: <why>; the command is
 /// not affected` line on standard error, or in the output file of a detached
 /// run, written with or without `--notices` and once per distinct reason. It is

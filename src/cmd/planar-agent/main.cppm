@@ -16,15 +16,13 @@ import planar.cmd.planar_agent.handlers.release.command;
 import planar.cmd.planar_agent.handlers.block.command;
 import planar.cmd.planar_agent.handlers.claim.command;
 import planar.cmd.planar_agent.handlers.heartbeat.command;
-import planar.cmd.planar_agent.handlers.claim_associate.command;
 import planar.cmd.planar_agent.handlers.action.command;
+import planar.cmd.planar_agent.handlers.review.command;
+import planar.cmd.planar_agent.handlers.brief.command;
 import planar.cmd.planar_agent.handlers.ingest.command;
 import planar.cmd.planar_agent.handlers.reconcile.command;
 import planar.cmd.planar_agent.handlers.abort.command;
 import planar.cmd.planar_agent.handlers.schema.command;
-import planar.cmd.planar_agent.handlers.run.command;
-import planar.cmd.planar_agent.handlers.dispatch.command;
-import planar.cmd.planar_agent.handlers.context.command;
 import planar.cmd.planar_agent.handlers.queue.command;
 
 namespace planar::cmd::agent {
@@ -35,8 +33,8 @@ export auto root_app() -> std::unique_ptr<CLI::App> {
   // Declaration order matches the oracle's `handlers/cmd.zig` registry.
   auto app = std::make_unique<CLI::App>("Agent-callable coordination binary (pull / claim / complete / heartbeat / reconcile).\n"
                                         "\n"
-                                        "  This binary writes agent_actions, agent_work_claims, the routing_dispatch_*\n"
-                                        "  tables, and the host-queue tables (queue_entries, queue_history,\n"
+                                        "  This binary writes agent_actions, agent_work_claims, and the host-queue\n"
+                                        "  tables (queue_entries, queue_history,\n"
                                         "  queue_schema). It changes tasks.status only as part of a coordinated\n"
                                         "  claim operation; planning entities are written by planar.",
                                         "planar-agent");
@@ -51,15 +49,13 @@ export auto root_app() -> std::unique_ptr<CLI::App> {
   handlers::block_cli::add(*app);
   handlers::claim_cli::add(*app);
   handlers::heartbeat_cli::add(*app);
-  handlers::claim_associate_cli::add(*app);
   handlers::action_cli::add(*app);
+  handlers::review_cli::add(*app);
+  handlers::brief_cli::add(*app);
   handlers::ingest_cli::add(*app);
   handlers::reconcile_cli::add(*app);
   handlers::abort_cli::add(*app);
   handlers::schema_cli::add(*app);
-  handlers::run_cli::add(*app);
-  handlers::dispatch_cli::add(*app);
-  handlers::context_cli::add(*app);
   handlers::queue_cli::add(*app);
 
   // Help renders the same page it rendered before every bool flag gained

@@ -5,17 +5,14 @@
 /// checks of its own.
 ///
 /// Scope: repository-relative links, retired references, artifact-set and
-/// capability drift, command shapes, path existence, the skill
-/// feedback/recovery headings, and (plan 1080, task hq-rule-lint) the
-/// host-queue rule: `surface-queue-command` flags a build or test command in
-/// `agents/` or `skills/` that is not given to `planar-agent queue run`,
-/// and `surface-queue-marker-invalid` flags an unbalanced
-/// `queue-lint-ignore-begin`/`-end` region. `surface-lint-ignore` suppresses
-/// the first set of codes; the queue codes have their own `queue-lint-ignore`
-/// line and region markers (see the checkQueueCommands comment below).
+/// capability drift, command shapes, path existence and the Agent Skills
+/// format. `surface-lint-ignore` suppresses the
+/// suppressible codes. Whether authored text runs a build or test command
+/// directly or through `planar-agent queue run` is the operator's policy,
+/// not a lint rule, so no check reads build or test commands.
 ///
 /// Plan 1089 adds `surface-retired-reference`: the names of the removed agent
-/// database may not appear in `docs/`, `agents/`, `skills/`, `copilot/` or
+/// database may not appear in `docs/`, `agents/`, `skills/`, `copilot/`, `examples/` or
 /// the root guides, except in `docs/changelog.md` and in the marked upgrade
 /// note of `INSTALL.md`. `surface-retired-ref-marker-invalid` flags an unclosed
 /// or misplaced marker (see the checkRetiredReferences comment below).
@@ -53,8 +50,6 @@ constexpr std::string_view command             = "surface-command-drift";
 constexpr std::string_view path                = "surface-path-missing";
 constexpr std::string_view suppression_invalid = "surface-suppression-invalid";
 constexpr std::string_view suppression_unused  = "surface-suppression-unused";
-constexpr std::string_view queue_command       = "surface-queue-command";
-constexpr std::string_view queue_marker        = "surface-queue-marker-invalid";
 constexpr std::string_view retired             = "surface-retired-reference";
 constexpr std::string_view retired_marker      = "surface-retired-ref-marker-invalid";
 constexpr std::string_view skill_spec          = "surface-skill-spec";
@@ -62,7 +57,9 @@ constexpr std::string_view skill_spec          = "surface-skill-spec";
 
 constexpr std::array<std::string_view, 6> k_suppressible_codes{code::link,       code::legacy,  code::artifacts,
                                                                code::capability, code::command, code::path};
-constexpr std::array<std::string_view, 3> k_scan_dirs{"agents", "skills", "docs"};
+// `examples/agents` holds the role agents Planar no longer installs; they are
+// still authored text that names Planar's commands, so they stay linted.
+constexpr std::array<std::string_view, 4> k_scan_dirs{"agents", "examples/agents", "skills", "docs"};
 
 struct finding_t {
   std::string_view code;
@@ -94,8 +91,8 @@ struct options_t {
 };
 
 // ---------------------------------------------------------------------------
-// Fence tracking — shared shape between the main scan loop, the
-// suppression pre-pass, and the feedback-contract pass.
+// Fence tracking — shared shape between the main scan loop and the
+// suppression pre-pass.
 // ---------------------------------------------------------------------------
 
 struct fence_t {
@@ -260,8 +257,7 @@ struct projection_link_t {
   std::string_view file;
   std::string_view target;
 };
-constexpr std::array<projection_link_t, 2> k_projection_links{
-    projection_link_t{"docs/cli-reference.md", "../commands/claude/pl-synthesize.md"},
+constexpr std::array<projection_link_t, 1> k_projection_links{
     projection_link_t{"docs/workflows.md", "../commands/claude/pl-workspace-scan.md"},
 };
 auto is_projection_only_link(std::string const& file, std::string_view target) -> bool {
@@ -338,7 +334,7 @@ auto check_legacy(std::string const& file, std::size_t line_no, std::string_view
 // surfaces. Unlike `k_retired_patterns` above, which fires on every scanned
 // file, these patterns carry a PATH SCOPE and an EXEMPTION LIST:
 //
-//   - SCOPE: `docs/`, `agents/`, `skills/`, `copilot/`, and the root
+//   - SCOPE: `docs/`, `agents/`, `skills/`, `copilot/`, `examples/`, and the root
 //     files `README.md`, `CLAUDE.md`, `AGENTS.md`, `INSTALL.md`. A path outside
 //     the scope (`install.sh`, `scripts/`, `src/`, `migrations/README.md`) is
 //     never read for these patterns: the installer legitimately names the
@@ -377,7 +373,7 @@ constexpr std::array<scoped_retired_pattern_t, 2> k_pending_retired_patterns{{{"
 /// blanked from a line before the pending patterns are matched.
 constexpr std::array<std::string_view, 2> k_pending_retired_exempt_literals{"pl-forward-spec://", "pl-synthesize://"};
 
-constexpr std::array<std::string_view, 4> k_retired_scope_dirs{"docs/", "agents/", "skills/", "copilot/"};
+constexpr std::array<std::string_view, 5> k_retired_scope_dirs{"docs/", "agents/", "skills/", "copilot/", "examples/"};
 constexpr std::array<std::string_view, 4> k_retired_scope_files{"README.md", "CLAUDE.md", "AGENTS.md", "INSTALL.md"};
 constexpr std::array<std::string_view, 1> k_retired_exempt_files{"docs/changelog.md"};
 constexpr std::string_view                k_retired_region_marker = "<!-- retired-ref: agent.db upgrade note -->";
@@ -772,27 +768,20 @@ constexpr command_class_t m_(std::string_view s) {
   return {s, access_t::mutate};
 }
 
-constexpr std::array<command_class_t, 260> k_command_classes{
+constexpr std::array<command_class_t, 199> k_command_classes{
     m_("planar init"),
     r_("planar scope show"),
     r_("planar scope suggest"),
-    r_("planar scope use"),
-    r_("planar scope pop"),
-    r_("planar scope clear"),
     r_("planar assoc list"),
     m_("planar assoc create"),
     m_("planar assoc add"),
     m_("planar assoc remove"),
     r_("planar assoc members"),
-    m_("planar assoc detect"),
     m_("planar plan create"),
     r_("planar plan show"),
     r_("planar plan list"),
     m_("planar plan update"),
-    m_("planar plan edit"),
     r_("planar plan view"),
-    r_("planar plan diff"),
-    r_("planar plan review"),
     m_("planar plan link"),
     r_("planar plan next"),
     r_("planar plan recommend-strategy"),
@@ -826,8 +815,6 @@ constexpr std::array<command_class_t, 260> k_command_classes{
     m_("planar question add"),
     m_("planar question edit"),
     r_("planar question view"),
-    r_("planar question diff"),
-    r_("planar question review"),
     m_("planar question answer"),
     m_("planar question wontfix"),
     r_("planar question list"),
@@ -836,7 +823,6 @@ constexpr std::array<command_class_t, 260> k_command_classes{
     m_("planar scenario add"),
     m_("planar scenario edit"),
     r_("planar scenario view"),
-    r_("planar scenario diff"),
     r_("planar scenario review"),
     m_("planar scenario verify"),
     m_("planar scenario retire"),
@@ -851,7 +837,6 @@ constexpr std::array<command_class_t, 260> k_command_classes{
     m_("planar decision withdraw"),
     m_("planar decision edit"),
     r_("planar decision view"),
-    r_("planar decision diff"),
     r_("planar decision review"),
     m_("planar decision link"),
     m_("planar artifact add"),
@@ -931,27 +916,15 @@ constexpr std::array<command_class_t, 260> k_command_classes{
     r_("planar audit trail"),
     r_("planar audit commits"),
     r_("planar audit session"),
-    m_("planar audit publish-decision"),
     r_("planar audit handoff-readiness"),
     r_("planar health hygiene"),
-    r_("planar models evals"),
-    r_("planar models registry list"),
-    m_("planar models registry add"),
-    m_("planar models registry update"),
-    m_("planar models registry remove"),
-    m_("planar models registry bind"),
-    m_("planar models registry unbind"),
-    m_("planar models registry observe"),
-    r_("planar models registry eligibility"),
-    r_("planar models registry export"),
-    r_("planar models registry verify-identity"),
+    r_("planar health conformance"),
     r_("planar dashboard"),
     m_("planar spec ingest"),
     r_("planar test-spec status"),
     r_("planar config show"),
     m_("planar config edit"),
     r_("planar config validate"),
-    m_("planar config init"),
     r_("planar config path"),
     r_("planar templates list"),
     r_("planar templates show"),
@@ -966,33 +939,9 @@ constexpr std::array<command_class_t, 260> k_command_classes{
     m_("planar local unlink"),
     m_("planar local import"),
     m_("planar local migrate"),
-    r_("planar skills"),
-    m_("planar import"),
-    m_("planar synthesize"),
     r_("planar version"),
     r_("planar completion"),
     r_("planar schema"),
-    r_("planar report"),
-    m_("planar bench start"),
-    m_("planar bench event"),
-    m_("planar bench touch"),
-    m_("planar bench harvest"),
-    m_("planar bench finish"),
-    r_("planar bench show"),
-    m_("planar closure compute"),
-    r_("planar closure show"),
-    m_("planar run start"),
-    m_("planar run event"),
-    m_("planar run finish"),
-    r_("planar run show"),
-    r_("planar groups recommend"),
-    m_("planar explore"),
-    r_("planar workflow list"),
-    r_("planar workflow show"),
-    m_("planar workflow run"),
-    r_("planar feedback triage list"),
-    r_("planar feedback triage show"),
-    m_("planar feedback triage set"),
     r_("planar-agent version"),
     m_("planar-agent pull"),
     r_("planar-agent peek"),
@@ -1002,24 +951,12 @@ constexpr std::array<command_class_t, 260> k_command_classes{
     m_("planar-agent block"),
     m_("planar-agent claim"),
     m_("planar-agent heartbeat"),
-    m_("planar-agent claim-associate"),
     m_("planar-agent action start"),
     m_("planar-agent action end"),
     m_("planar-agent ingest"),
     m_("planar-agent reconcile"),
     m_("planar-agent abort"),
     r_("planar-agent schema"),
-    m_("planar-agent run start"),
-    m_("planar-agent run end"),
-    m_("planar-agent context add"),
-    m_("planar-agent context capsule"),
-    r_("planar-agent context list"),
-    r_("planar models experiments"),
-    r_("planar models outcomes"),
-    r_("planar models resolve"),
-    m_("planar-agent context resolve"),
-    m_("planar-agent dispatch preview"),
-    m_("planar-agent dispatch confirm"),
     r_("planar-watch feed"),
     r_("planar-watch ps"),
     r_("planar-watch claims"),
@@ -1027,8 +964,6 @@ constexpr std::array<command_class_t, 260> k_command_classes{
     r_("planar-watch plans"),
     r_("planar-watch log"),
     r_("planar-watch tree"),
-    r_("planar-watch run list"),
-    r_("planar-watch run show"),
     r_("planar-watch sync-events"),
     r_("planar-watch version"),
     r_("planar-watch completion"),
@@ -1044,14 +979,10 @@ struct capability_exemption_t {
   std::string_view role;
   std::string_view shape;
 };
-constexpr std::array<capability_exemption_t, 7> k_capability_exemptions{
-    capability_exemption_t{"agents/planar-introspector.md", "introspector", "planar plan create"},
-    capability_exemption_t{"agents/planar-introspector.md", "introspector", "planar task add"},
-    capability_exemption_t{"agents/planar-introspector.md", "introspector", "planar question add"},
-    capability_exemption_t{"agents/planar-reviewer.md", "reviewer", "planar-agent pull"},
-    capability_exemption_t{"agents/planar-reviewer.md", "reviewer", "planar-agent claim"},
-    capability_exemption_t{"agents/planar-reviewer.md", "reviewer", "planar-agent heartbeat"},
-    capability_exemption_t{"agents/planar-reviewer.md", "reviewer", "planar skills render"},
+constexpr std::array<capability_exemption_t, 3> k_capability_exemptions{
+    capability_exemption_t{"examples/agents/planar-reviewer.md", "reviewer", "planar-agent pull"},
+    capability_exemption_t{"examples/agents/planar-reviewer.md", "reviewer", "planar-agent claim"},
+    capability_exemption_t{"examples/agents/planar-reviewer.md", "reviewer", "planar-agent heartbeat"},
 };
 auto is_capability_exemption(std::string const& file, std::string_view role, std::string_view shape) -> bool {
   for (auto const& e : k_capability_exemptions)
@@ -1234,7 +1165,7 @@ auto check_deferred_executable(std::string const& file, std::size_t line_no, std
 
 auto check_deferred_command(std::string const& file, std::size_t line_no, std::string_view line, bool in_fence,
                             std::vector<finding_t>& findings, std::vector<suppression_t>& suppressions) -> void {
-  if (!file.starts_with("agents/") && !file.starts_with("skills/"))
+  if (!file.starts_with("agents/") && !file.starts_with("examples/agents/") && !file.starts_with("skills/"))
     return;
   if (in_fence) {
     check_deferred_executable(file, line_no, line, findings, suppressions);
@@ -1504,176 +1435,6 @@ auto check_agent_skill(fs::path const& root, std::string const& rel_file, fs::pa
 }
 
 // ---------------------------------------------------------------------------
-// checkQueueCommands (plan 1080, task hq-rule-lint) — the queue rule for
-// authored agent and skill sources.
-//
-// Every build and test run on a host goes through `planar-agent queue run`
-// (agents/methodology.md § Builds and tests go through the host queue). The
-// rule only works when the text agents read never tells them to run such a
-// command directly, so this pass flags an inline code span, or a line of a
-// fenced code block, whose FIRST word is a build or test program and which
-// is therefore not given to the queue: a command given to the queue begins
-// `planar-agent queue run`, and its program follows a bare `--`.
-//
-// The program list is the product spec's "What counts as a build or test
-// command", exactly: make, cmake --build, ninja, ctest, cargo build/test, go
-// build/test, npm test, pytest, tox, gradle build. "Linters that build first"
-// have no program name to match and are the reader's judgement. `cmake
-// --preset` (a configure) and `npm install` are not builds and are not
-// listed. A program word is matched whole: `make:` and `makefile` are not
-// `make`.
-//
-// SCOPE: agents/ and skills/ only. docs/ describes the tools and is not
-// an instruction to an agent. Prose outside a span or block is never read.
-//
-// Escape hatches, deliberately separate from `surface-lint-ignore` (which
-// needs a code and a rationale comment on the line above, and cannot sit
-// inside a table row or a verbatim section):
-//   - a line carrying `queue-lint-ignore` is exempt. Use it on a line that
-//     must keep the command, such as a failure-signature table row, and say
-//     why beside it.
-//   - a region between a `<!-- queue-lint-ignore-begin ... -->` line and a
-//     `<!-- queue-lint-ignore-end -->` line is exempt. It exists for text
-//     that is pinned byte for byte elsewhere, where a per-line marker would
-//     change the bytes: the queue rule's own section in agents/methodology.md.
-//     The marker lines sit outside the pinned text. A marker that is
-//     unbalanced is itself a finding, so a typo cannot exempt the rest of a
-//     file.
-// ---------------------------------------------------------------------------
-
-constexpr std::string_view k_queue_ignore       = "queue-lint-ignore";
-constexpr std::string_view k_queue_region_begin = "<!-- queue-lint-ignore-begin";
-constexpr std::string_view k_queue_region_end   = "<!-- queue-lint-ignore-end";
-
-/// A build or test program: its first word, and the second word that must
-/// follow it (empty when the program alone is enough).
-struct build_program_t {
-  std::string_view first;
-  std::string_view second;
-};
-
-constexpr std::array<build_program_t, 12> k_build_programs{{{"make", ""},
-                                                            {"ninja", ""},
-                                                            {"ctest", ""},
-                                                            {"pytest", ""},
-                                                            {"tox", ""},
-                                                            {"cmake", "--build"},
-                                                            {"cargo", "build"},
-                                                            {"cargo", "test"},
-                                                            {"go", "build"},
-                                                            {"go", "test"},
-                                                            {"npm", "test"},
-                                                            {"gradle", "build"}}};
-
-/// @brief The next run of non-blank characters of `text` from `cursor`;
-/// advances `cursor` past it.
-auto next_word(std::string_view text, std::size_t& cursor) -> std::string_view {
-  while (cursor < text.size() && is_ws(text[cursor]))
-    ++cursor;
-  std::size_t const start = cursor;
-  while (cursor < text.size() && !is_ws(text[cursor]))
-    ++cursor;
-  return text.substr(start, cursor - start);
-}
-
-/// @brief Is `text`, taken as one command, a build or test command: does it
-/// begin (after an optional `$ ` prompt) with a listed program?
-auto begins_with_build_program(std::string_view text) -> bool {
-  std::size_t cursor = 0;
-  auto        first  = next_word(text, cursor);
-  if (first == "$")
-    first = next_word(text, cursor);
-  if (first.empty())
-    return false;
-  auto const second = next_word(text, cursor);
-  for (auto const& program : k_build_programs) {
-    if (first == program.first && (program.second.empty() || second == program.second))
-      return true;
-  }
-  return false;
-}
-
-auto queue_command_finding(std::vector<finding_t>& findings, std::string const& file, std::size_t line_no, std::string_view text)
-    -> void {
-  findings.push_back({.code    = code::queue_command,
-                      .file    = file,
-                      .line    = line_no,
-                      .message = std::format("build or test command is not given to `planar-agent queue run`: `{}`", text)});
-}
-
-auto check_queue_commands(std::string const& file, std::vector<std::string_view> const& lines, std::vector<finding_t>& findings)
-    -> void {
-  std::optional<fence_t>     fence;
-  std::optional<std::size_t> region_line;
-  for (std::size_t idx = 0; idx < lines.size(); ++idx) {
-    std::size_t const      line_no = idx + 1;
-    std::string_view const line    = lines[idx];
-    std::string_view const trimmed = trim(line, " \t\r");
-    if (advance_fence(trimmed, fence))
-      continue;
-    if (!fence.has_value()) {
-      if (trimmed.starts_with(k_queue_region_begin) && trimmed.ends_with("-->")) {
-        if (region_line.has_value())
-          findings.push_back(
-              {.code    = code::queue_marker,
-               .file    = file,
-               .line    = line_no,
-               .message = std::format("`queue-lint-ignore-begin` inside the region opened at line {}", *region_line)});
-        else
-          region_line = line_no;
-        continue;
-      }
-      if (trimmed.starts_with(k_queue_region_end) && trimmed.ends_with("-->")) {
-        if (region_line.has_value())
-          region_line.reset();
-        else
-          findings.push_back({.code    = code::queue_marker,
-                              .file    = file,
-                              .line    = line_no,
-                              .message = "`queue-lint-ignore-end` without a matching `queue-lint-ignore-begin`"});
-        continue;
-      }
-    }
-    if (region_line.has_value() || line.find(k_queue_ignore) != std::string_view::npos)
-      continue;
-    if (fence.has_value()) {
-      if (begins_with_build_program(trimmed))
-        queue_command_finding(findings, file, line_no, trimmed);
-      continue;
-    }
-    std::size_t cursor = 0;
-    while (true) {
-      auto const open = line.find('`', cursor);
-      if (open == std::string_view::npos)
-        break;
-      std::size_t const          run_len = marker_run_length(line, open, '`');
-      std::size_t                search  = open + run_len;
-      std::optional<std::size_t> close;
-      while (true) {
-        auto const candidate_close = line.find('`', search);
-        if (candidate_close == std::string_view::npos)
-          break;
-        std::size_t const candidate_len = marker_run_length(line, candidate_close, '`');
-        if (candidate_len == run_len) {
-          close = candidate_close;
-          break;
-        }
-        search = candidate_close + candidate_len;
-      }
-      if (!close.has_value())
-        break;
-      std::string_view const span = trim(line.substr(open + run_len, *close - (open + run_len)), " \t");
-      if (begins_with_build_program(span))
-        queue_command_finding(findings, file, line_no, span);
-      cursor = *close + run_len;
-    }
-  }
-  if (region_line.has_value())
-    findings.push_back(
-        {.code = code::queue_marker, .file = file, .line = *region_line, .message = "`queue-lint-ignore-begin` is never closed"});
-}
-
-// ---------------------------------------------------------------------------
 // scanFile / scanRepository.
 // ---------------------------------------------------------------------------
 
@@ -1714,8 +1475,6 @@ auto scan_file_impl(fs::path const& root, std::string const& rel_file, fs::path 
     check_deferred_command(rel_file, line_no, line, fence.has_value(), result.findings, suppressions);
   }
   check_retired_references(rel_file, lines, result.findings, opts);
-  if (rel_file.starts_with("agents/") || rel_file.starts_with("skills/"))
-    check_queue_commands(rel_file, lines, result.findings);
   if (is_agent_skill_file(rel_file))
     check_agent_skill(root, rel_file, abs_file, content, result);
   for (auto const& s : suppressions) {
@@ -1742,7 +1501,8 @@ auto collect_markdown(fs::path const& dir, std::vector<fs::path>& paths) -> void
 }
 
 /// Reads the files the retired-reference scope names that the general scan does
-/// not (`README.md`, `INSTALL.md`, a regular-file `AGENTS.md`, `copilot/`) and
+/// not (`README.md`, `INSTALL.md`, a regular-file `AGENTS.md`, `copilot/`, and
+/// `examples/` outside `examples/agents/`) and
 /// runs ONLY `check_retired_references` over them: the other checks were
 /// written for `agents/`, `skills/` and `docs/` and are not asked of a
 /// root guide. `AGENTS.md` is skipped when it is a symlink, because the
@@ -1756,11 +1516,14 @@ auto scan_retired_only_files(fs::path const& root, result_t& result, options_t c
       paths.push_back(path);
   }
   collect_markdown(root / "copilot", paths);
+  collect_markdown(root / "examples", paths);
   std::ranges::sort(paths);
   for (auto const& path : paths) {
     std::string const rel_path = relative_path(path.string(), root.string());
-    std::ifstream     in(path, std::ios::binary);
-    std::string       content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    if (rel_path.starts_with("examples/agents/")) // the general scan reads these
+      continue;
+    std::ifstream in(path, std::ios::binary);
+    std::string   content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     check_retired_references(rel_path, split_lines(content), result.findings, opts);
     ++result.files_scanned;
   }

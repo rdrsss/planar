@@ -42,8 +42,8 @@ it works and how to use it.
   plus the host build and test queue.
 - [Lifecycles](lifecycles.md). Every state machine Planar enforces, as diagrams
   with the command that fires each transition.
-- [Skill reference](skill-reference.md). The `planar` skill, the `planar-<role>`
-  agents, and where the installer places them.
+- [Skill reference](skill-reference.md). The `planar` skill, the example role agents,
+  and where the installer places the skill.
 
 ## Reference
 
@@ -65,5 +65,5 @@ it works and how to use it.
 - [Design specification v0.1](planar-spec-v0.1.md) and the
   [architecture decision records](adrs.md). The reasoning behind the design.
 - [Changelog](changelog.md).
-- [Research instrumentation](research/README.md). Documentation of the
-  measurement instrument that Planar includes.
+- [Research instrumentation](research/README.md). A pointer to the branch that
+  holds the removed measurement instrument.

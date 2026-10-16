@@ -9,9 +9,6 @@
 #     bin/planar-agent                # the agent-callable coordination binary
 #     bin/planar-watch                # the human-facing read-only viewer
 #                                     # (opens DB read-only, zero write verbs)
-#     bin/planar-execute              # deterministic spawn-free Lua workflow
-#                                     # engine (run <wf.lua> --phase; shells
-#                                     #  planar for state, holds no DB handle)
 #     bin/planar-ext                  # operational-plane binary (Jira, GitHub
 #                                     # Issues adapters; read-only on planning
 #                                     # tables, read-write on external_links /
@@ -24,26 +21,19 @@
 #     migrations/00001_foundation.up.sql  # canonical migration sources (also
 #                                     # embedded into the binary at configure
 #                                     # time via CMake codegen)
-#     agents/                         # vendor-neutral agent role specs, staged
-#                                     # (planar-*.md roles plus the shared docs)
 #     skills/planar/                  # staged planar skill (SKILL.md + references/)
-#     codex-agents/planar-*.toml      # Codex custom agents rendered from agents/
 #     templates/                      # operator-editable defaults
-#     workflows/                      # Lua workflows
-#     scripts/validate-{barrel-modes,plan-status}-acceptance
 #
-# Then places the staged skill and agents into each vendor that is present on
-# the host (a presence marker per vendor; --vendors narrows the set):
+# Then places the staged skill into each vendor that is present on the host (a
+# presence marker per vendor; --vendors narrows the set):
 #
-#   skills   ~/.claude/skills/planar                 Claude Code
-#            ~/.agents/skills/planar                 Codex, Copilot, Gemini CLI, OpenCode (once)
-#            ~/.gemini/antigravity-cli/skills/planar Antigravity
-#   agents   ~/.claude/agents/planar-<role>.md
-#            $CODEX_HOME/agents/planar-<role>.toml   (default ~/.codex)
-#            ~/.copilot/agents/planar-<role>.agent.md
-#            ~/.gemini/agents/planar-<role>.md
-#            ~/.gemini/antigravity-cli/agents/planar-<role>.md
-#            ~/.config/opencode/agents/planar-<role>.md  (frontmatter reduced)
+#   ~/.claude/skills/planar                 Claude Code
+#   ~/.agents/skills/planar                 Codex, Copilot, Gemini CLI, OpenCode (once)
+#   ~/.gemini/antigravity-cli/skills/planar Antigravity
+#
+# The skill is the only agent surface Planar ships. Role agents are examples
+# (examples/agents/ in the source tree) and are not installed; an upgrade
+# removes the planar-<role> agents an older install placed (see the sweep).
 #
 # The binary lives at ~/.planar/bin/planar. Add ~/.planar/bin to your PATH:
 #
@@ -121,6 +111,8 @@ source "$REPO_ROOT/scripts/install-lib/data-paths.sh"
 source "$REPO_ROOT/scripts/install-lib/mutation-lock.sh"
 source "$REPO_ROOT/scripts/install-lib/install-state.sh"
 source "$REPO_ROOT/scripts/install-lib/db-probe.sh"
+# The copy of planar.db taken before a migration that drops tables.
+source "$REPO_ROOT/scripts/install-lib/db-backup.sh"
 # The managed-subtree and vendor name lists, the vendor ownership rules and the
 # release-record readers shared with the uninstaller (plan 1122, plan 1133).
 source "$REPO_ROOT/scripts/install-lib/managed-lists.sh"
@@ -148,8 +140,8 @@ Options:
   --link             Symlink from this repo instead of copying (dev mode).
                      Refused with --prebuilt (exit 2).
   --prebuilt DIR     Install the unpacked release bundle in DIR instead of
-                     building: take bin/, the skill, the agents, codex-agents/
-                     and release.json from DIR. Needs only base system tools;
+                     building: take bin/, the skill and release.json from
+                     DIR. Needs only base system tools;
                      cmake, ninja, clang and python3 are not checked. An old
                      agent.db is moved, unread, to retired/<date>/.
   --cleanup DIR      Updater only: remove the updater's temporary directory DIR
@@ -289,12 +281,12 @@ fi
 
 # SRC_ROOT is where every staged input is read from: the source checkout, or,
 # with --prebuilt, the unpacked release bundle (tech spec 677, "Prebuilt install
-# mode"). Everything below that reads skills/, agents/, migrations/,
-# templates/, workflows/, scripts/ or install-cleanup.txt reads SRC_ROOT.
+# mode"). Everything below that reads skills/, migrations/,
+# templates/, scripts/ or install-cleanup.txt reads SRC_ROOT.
 # The bundle is validated here, before the prefix guard and before anything is
 # created: a refusal leaves no ~/.planar behind.
 SRC_ROOT="$REPO_ROOT"
-PLANAR_BINARIES=(planar planar-agent planar-watch planar-execute planar-ext)
+PLANAR_BINARIES=(planar planar-agent planar-watch planar-ext)
 if [[ "$PREBUILT" -eq 0 && ( -n "$CLEANUP_DIR" || -n "${PLANAR_MUTATION_HANDOFF-}" ) ]]; then
   printf 'install.sh: --cleanup and the updater handoff (PLANAR_MUTATION_HANDOFF) are accepted only with --prebuilt\n' >&2
   exit 2
@@ -324,12 +316,8 @@ if [[ "$PREBUILT" -eq 1 ]]; then
   [[ -f "$SRC_ROOT/release.json" ]] || _bundle_missing+=("release.json")
   [[ -f "$SRC_ROOT/uninstall.sh" ]] || _bundle_missing+=("uninstall.sh")
   [[ -f "$SRC_ROOT/skills/planar/SKILL.md" ]] || _bundle_missing+=("skills/planar/SKILL.md")
-  [[ -d "$SRC_ROOT/agents" ]] || _bundle_missing+=("agents/")
-  _bundle_toml=0
-  for _b in "$SRC_ROOT"/codex-agents/planar-*.toml; do [[ -f "$_b" ]] && _bundle_toml=1; done
-  [[ "$_bundle_toml" -eq 1 ]] || _bundle_missing+=("codex-agents/planar-*.toml")
   # Every managed subtree is always shipped; an absent one is a broken bundle.
-  for _b in workflows migrations scripts/install-lib; do
+  for _b in migrations scripts/install-lib; do
     [[ -d "$SRC_ROOT/$_b" ]] || _bundle_missing+=("$_b/")
   done
   if [[ ${#_bundle_missing[@]} -gt 0 ]]; then
@@ -341,7 +329,7 @@ else
   # A source install stages every managed subtree from the checkout; one whose
   # source directory is absent is an incomplete checkout, refused before any write.
   _src_missing=()
-  for _b in skills/planar agents scripts/install-lib workflows migrations; do
+  for _b in skills/planar scripts/install-lib migrations; do
     [[ -d "$SRC_ROOT/$_b" ]] || _src_missing+=("$_b/")
   done
   [[ -f "$SRC_ROOT/scripts/uninstall.sh" ]] || _src_missing+=("scripts/uninstall.sh")
@@ -472,8 +460,6 @@ version_ge() {
   return 0
 }
 
-# count_glob — how many of the given paths exist (a non-matching glob passes its
-# literal pattern, which fails the -e test, so the count is 0).
 # rm_managed <path...> — remove a directory tree the installer owns and re-stages,
 # refusing when it is, lies inside, or holds a data path (a relocated data path
 # can sit inside a managed tree). Data paths are never removed by an install.
@@ -486,8 +472,6 @@ rm_managed() {
     if [[ -L "$p" ]]; then rm -f "$p"; else rm -rf "$p"; fi
   done
 }
-
-count_glob() { local n=0 f; for f in "$@"; do [[ -e "$f" ]] && n=$((n + 1)); done; printf '%s' "$n"; }
 
 # Place a file (or directory) at $2 from $1, either by copy or symlink.
 place() {
@@ -571,11 +555,11 @@ fi
 # run_deps:   Planar (the binary + bundled agent skills) needs these at run
 #             time; a miss only warns — the install still produces a binary.
 TOOLCHAIN_DEPS=(
-  "cmake|cmake|configures, builds, and installs the five Planar binaries"
+  "cmake|cmake|configures, builds, and installs the four Planar binaries"
   "ninja|ninja|C++26 module dependency scanning"
   "/opt/homebrew/opt/llvm/bin/clang|llvm|pinned LLVM C compiler required by CMakePresets.json"
   "/opt/homebrew/opt/llvm/bin/clang++|llvm|pinned LLVM C++ compiler required by CMakePresets.json"
-  "python3|python|CMake configure (the Python test runners); install.sh's agent.db retirement reader (scripts/install-lib/queue_retire.py); the counter-reset log helper (scripts/queue-logs-after-reset.py); the Codex agent TOML renderer (scripts/render-codex-agents.py)"
+  "python3|python|CMake configure (the Python test runners); install.sh's agent.db retirement reader (scripts/install-lib/queue_retire.py); the counter-reset log helper (scripts/queue-logs-after-reset.py)"
 )
 BASE_DEPS=(
   "mktemp||capture the queue retirement probe's stderr (scripts/install-lib/queue-retire.sh)"
@@ -613,7 +597,7 @@ BASE_DEPS=(
 BUILD_DEPS=("${TOOLCHAIN_DEPS[@]}" "${BASE_DEPS[@]}")  # bash32: nonempty
 RUN_DEPS=(
   "cmp||compares staged and installed bytes in the installer (also a build dep above)"
-  "git|git|repo discovery + 'planar import' (required at runtime)"
+  "git|git|repo discovery and the worktree and log walks (required at runtime)"
   "jq|jq|bundled agent skills parse 'planar … --json' output"
   "gh|gh|GitHub adapter auth + issue import (degrades gracefully)"
   "rg|ripgrep|agent-workflow code-search recipes (ripgrep)"
@@ -697,9 +681,9 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
     _cleanup_n="$(grep -cE '^[[:space:]]*[^#[:space:]]' "$SRC_ROOT/install-cleanup.txt" || true)"
   title "Dry run — planned actions"
   if [[ "$PREBUILT" -eq 1 ]]; then
-    log "copy 5 Planar binaries from $SRC_ROOT/bin → $PLANAR_HOME/bin  [prebuilt: nothing is built]"
+    log "copy 4 Planar binaries from $SRC_ROOT/bin → $PLANAR_HOME/bin  [prebuilt: nothing is built]"
   else
-    log "build 5 Planar binaries → $PLANAR_HOME/bin  [preset=$BUILD_PRESET]"
+    log "build 4 Planar binaries → $PLANAR_HOME/bin  [preset=$BUILD_PRESET]"
   fi
   log "take the mutation lock $(planar_lock_dir "$ROOT_C") and record a recovery journal in $ROOT_C/.planar-journal"
   if [[ -e "$ROOT_C/.planar-journal" ]]; then
@@ -710,8 +694,13 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
     fi
   fi
   log "stage every managed subtree under $ROOT_C/.staging-<token>/, then probe the database with the staged binaries (an ahead or unusable database stops the install before any change)"
+  log "retire the previous projections, among them the planar-<role> agents an older install placed in the vendor agent directories (with or without --no-vendor)"
   log "run cleanup manifest: $_cleanup_n path(s) checked for removal"
-  log "swap bin/, skills/, agents/, codex-agents/, workflows/, scripts/ and migrations/ in through <name>.old"
+  log "swap bin/, skills/, scripts/ and migrations/ in through <name>.old"
+  _drops="$(planar_migrations_dropping_tables "$SRC_ROOT/migrations" 0 999999 | sed 's/_.*//' | tr '\n' ' ')"
+  if [[ -n "$_drops" ]]; then
+    log "before migrating a behind database, copy it with its -wal and -shm into $PLANAR_HOME/backups/<time>-schema-<version>/ when a pending migration drops tables (migrations in this release's stream that drop tables: ${_drops% }; the dry run does not probe the database, so it cannot say which are pending)"
+  fi
   log "create a missing database, or migrate a behind one, with the installed planar init --skip-project --allow-no-repo"
   if [[ -e "$PLANAR_HOME/agent.db" && "$PREBUILT" -eq 1 ]]; then
     log "move $PLANAR_HOME/agent.db, its sidecars and the old numbered queue logs, unread, into $PLANAR_HOME/retired/<date>/"
@@ -719,13 +708,13 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
     log "re-check $PLANAR_HOME/agent.db for live queue entries, then retire it and its old numbered queue logs"
   fi
   if [[ "$PREBUILT" -eq 1 ]]; then
-    log "stage skills/planar/ and agents/*.md; copy the bundle's codex-agents/ and release.json into $PLANAR_HOME"
+    log "stage skills/planar/; copy the bundle's release.json into $PLANAR_HOME"
   else
-    log "stage skills/planar/ and agents/*.md; render the Codex agent TOML into $PLANAR_HOME/codex-agents; write $PLANAR_HOME/release.json"
+    log "stage skills/planar/; write $PLANAR_HOME/release.json"
   fi
   log "place templates/ (missing-only, --force included); write release.json, then the install stamp last"
   if [[ -n "$VENDORS" ]]; then
-    log "place the planar skill and agents for each vendor found among: $VENDORS (presence markers decide; see the vendor table in install.sh)"
+    log "place the planar skill for each vendor found among: $VENDORS (presence markers decide; see the vendor table in install.sh)"
   else
     log "vendor surfaces: skipped (--no-vendor)"
   fi
@@ -1049,39 +1038,33 @@ stage_uninstaller() {
 # stage_prebuilt -- copy every managed subtree of the bundle into $STAGE.
 stage_prebuilt() {
   local b d
-  mkdir -p "$STAGE/bin" "$STAGE/skills" "$STAGE/agents"
+  mkdir -p "$STAGE/bin" "$STAGE/skills"
   for b in "${PLANAR_BINARIES[@]}"; do  # bash32: nonempty
     cp -f "$SRC_ROOT/bin/$b" "$STAGE/bin/$b"
     chmod 755 "$STAGE/bin/$b"
   done
   stage_uninstaller "$SRC_ROOT/uninstall.sh"
   cp -R "$SRC_ROOT/skills/planar" "$STAGE/skills/planar"
-  find "$SRC_ROOT/agents" -maxdepth 1 -type f -exec cp -f {} "$STAGE/agents/" \;
-  cp -R "$SRC_ROOT/codex-agents" "$STAGE/codex-agents"
-  for d in workflows scripts migrations; do
+  for d in scripts migrations; do
     cp -R "$SRC_ROOT/$d" "$STAGE/$d"
   done
   [[ -d "$STAGE/scripts" ]] && chmod +x "$STAGE/scripts/"* 2>/dev/null
-  log "staged the bundle's bin/, skills/, agents/, codex-agents/, workflows/, scripts/ and migrations/ (prebuilt: nothing is built)"
+  log "staged the bundle's bin/, skills/, scripts/ and migrations/ (prebuilt: nothing is built)"
 }
 
-# stage_source -- build the five binaries and stage every managed subtree from
-# the checkout into $STAGE. In link mode scripts/, workflows/, migrations/ and
-# skills/planar are symlinks into the checkout and agents/ holds links to the
-# authored files (models.md is copied: the prefix owns its tier table).
+# stage_source -- build the four binaries and stage every managed subtree from
+# the checkout into $STAGE. In link mode scripts/, migrations/ and
+# skills/planar are symlinks into the checkout.
 stage_source() {
-  local d f
+  local d
   title "Building the Planar binaries"
-  # CMake configures, builds, and installs all FIVE executable targets:
+  # CMake configures, builds, and installs all FOUR executable targets:
   #
   #   planar         — operator surface
   #   planar-agent   — agent-callable coordination (atomic claim ops,
   #                    nested actions, ingest, operator recovery)
   #   planar-watch   — human-facing read-only viewer (no write verbs,
   #                    strict SQLITE_OPEN_READONLY handle)
-  #   planar-execute — deterministic spawn-free Lua workflow engine
-  #                    (run <wf.lua> --phase; shells planar for state,
-  #                    holds no DB handle, no model-spawn host fn)
   #   planar-ext     — operational-plane binary (Jira, GitHub Issues adapters;
   #                    read-only on planning tables, read-write on exactly
   #                    external_links / external_systems / sync_events)
@@ -1103,28 +1086,16 @@ stage_source() {
   mv "$STAGE/.cmake-install/bin" "$STAGE/bin"
   rm -rf "$STAGE/.cmake-install"
   stage_uninstaller "$REPO_ROOT/scripts/uninstall.sh"
-  title "Staging the planar skill and agents"
-  mkdir -p "$STAGE/skills" "$STAGE/agents"
+  title "Staging the planar skill"
+  mkdir -p "$STAGE/skills"
   place "$SRC_ROOT/skills/planar" "$STAGE/skills/planar"
-  while IFS= read -r -d '' f; do
-    if [[ "$MODE" == "link" && "$(basename "$f")" != "models.md" ]]; then
-      ln -s "$f" "$STAGE/agents/$(basename "$f")"
-    else
-      cp -f "$f" "$STAGE/agents/$(basename "$f")"
-    fi
-  done < <(find "$SRC_ROOT/agents" -maxdepth 1 -type f -print0)
-  # The renderer exits 1 naming a malformed file and writes nothing.
-  local out
-  if ! out="$(python3 "$SRC_ROOT/scripts/render-codex-agents.py" "$SRC_ROOT/agents" "$STAGE/codex-agents" 2>&1)"; then
-    err "rendering the Codex agents failed: $out"
-  fi
-  for d in workflows scripts migrations; do
+  for d in scripts migrations; do
     place "$SRC_ROOT/$d" "$STAGE/$d"
   done
   # Copied script tooling is executable. In link mode the path resolves into the
   # checkout, whose modes are left alone.
   [[ "$MODE" != "link" && -d "$STAGE/scripts" ]] && chmod +x "$STAGE/scripts/"* 2>/dev/null
-  log "staged skills/planar/, agents/, codex-agents/, workflows/, scripts/ and migrations/ ($MODE)"
+  log "staged skills/planar/, scripts/ and migrations/ ($MODE)"
 }
 
 title "Staging into $STAGE"
@@ -1143,7 +1114,7 @@ PLANAR_VERSION_LINE="$("$STAGE/bin/planar" version 2>/dev/null || true)"
 [[ -n "$PLANAR_VERSION_LINE" ]] || \
   err "$STAGE/bin/planar was staged but it failed to run ('planar version' produced no output)"
 PLANAR_BUILD_ID="$(printf '%s' "$PLANAR_VERSION_LINE" | awk '{print $2}')"
-ok "5 Planar binaries staged  ${C_DIM}($PLANAR_VERSION_LINE)${C_RESET}"
+ok "4 Planar binaries staged  ${C_DIM}($PLANAR_VERSION_LINE)${C_RESET}"
 planar_install_fault after-staging || err "test fault after staging"
 
 # ---------- probe the database ----------
@@ -1170,6 +1141,25 @@ esac
 # The still-installed read-only planar-watch names live queue entries before the
 # swap (decision 1327). It never blocks.
 planar_queue_warning "$ROOT_C/bin"
+
+# ---------- back up a database a pending migration drops tables from ----------
+
+# Before a behind database is migrated across a migration that drops tables,
+# it is copied, with its -wal and -shm files, into $PLANAR_HOME/backups/ (tech
+# spec 693, component 12). The copy is taken here, before the mutating record,
+# so a failed backup stops the install with nothing changed.
+if [[ "$INSTALL_DB_STATE" == behind ]]; then
+  _drops="$(planar_migrations_dropping_tables "$STAGE/migrations" "$INSTALL_DB_VERSION" "$INSTALL_DB_TARGET")"
+  if [[ -n "$_drops" ]]; then
+    title "Backing up the database"
+    while IFS= read -r _l; do log "pending migration drops tables: $_l"; done <<< "$_drops"
+    planar_db_backup "$STAGE/bin" "$ROOT_C" "$INSTALL_DB_VERSION" \
+      || err "refusing to migrate: the database $PLANAR_INSTALL_DB could not be backed up before a migration that drops tables: $INSTALL_DB_DETAIL. Nothing was changed."
+    ok "backed up $PLANAR_INSTALL_DB (schema $INSTALL_DB_VERSION) to $INSTALL_DB_BACKUP"
+  else
+    vlog "no pending migration drops a table: no backup"
+  fi
+fi
 
 planar_state_unknown_backup "$ROOT_C" && err "$INSTALL_STATE_ERROR"
 # A managed subtree is moved aside whole, so one that is, or holds, a data path
@@ -1313,12 +1303,11 @@ fi
 
 # ---------- vendor surfaces ----------
 
-# Six vendors, nine targets (plan 1104, M2). A vendor is placed only when its
-# presence marker exists; the sources are the staged trees above:
-#   skill   $PLANAR_HOME/skills/planar/            (a directory)
-#   md      $PLANAR_HOME/agents/planar-<role>.md   (the fifteen role files only,
-#                                                    never the doctrine documents)
-#   toml    $PLANAR_HOME/codex-agents/planar-<role>.toml
+# Six vendors, three skill targets (plan 1104, M2). A vendor is placed only when
+# its presence marker exists; the source is the staged skill directory
+# $PLANAR_HOME/skills/planar/. No role agent is placed: the planar-<role> agents
+# older installs placed are removed by the sweep above (ownership.sh,
+# sweep_role_agents).
 #
 # Presence markers (VENDOR_NAMES order is the order they are reported in):
 #   claude       ~/.claude/ exists
@@ -1344,18 +1333,6 @@ VENDOR_TARGETS=(
   "codex,copilot,gemini,opencode|skill|$HOME/.agents/skills"
   # https://antigravity.google/docs/skills (checked 2026-10-04)
   "antigravity|skill|$HOME/.gemini/antigravity-cli/skills"
-  # https://code.claude.com/docs/en/sub-agents (checked 2026-10-04)
-  "claude|md|$HOME/.claude/agents"
-  # https://learn.chatgpt.com/docs/agent-configuration/subagents (checked 2026-10-04)
-  "codex|toml|$CODEX_HOME/agents"
-  # https://docs.github.com/en/copilot/reference/custom-agents-configuration (checked 2026-10-04)
-  "copilot|copilot|$HOME/.copilot/agents"
-  # https://geminicli.com/docs/core/subagents/ (checked 2026-10-04)
-  "gemini|md|$HOME/.gemini/agents"
-  # https://antigravity.google/docs/skills (checked 2026-10-04)
-  "antigravity|md|$HOME/.gemini/antigravity-cli/agents"
-  # https://opencode.ai/docs/agents (checked 2026-10-04)
-  "opencode|opencode|$HOME/.config/opencode/agents"
 )
 
 # vendor_present <vendor> — the presence marker for one vendor.
@@ -1401,48 +1378,28 @@ prev_manifest_records() {
   [[ "$PREV_MANIFEST_TEXT" == *"$(install_manifest_json_quote "$1")"* ]]
 }
 
-# derive_to <staged agent .md> <out> — opencode_derive into a file.
-derive_to() { opencode_derive "$1" > "$2"; }
-
 # target_content_equal <src> <dst> <fmt> — the bytes at <dst> are what placing
-# <src> would produce, whatever form <dst> has: a link is followed. A skill is a
-# directory tree (same file set, same bytes); an OpenCode agent is compared with
-# its derived form; everything else is a single file.
+# <src> would produce, whatever form <dst> has: a link is followed. Every target
+# is a skill, a directory tree (same file set, same bytes); <fmt> is kept so the
+# manifest and the callers name the target's format.
 target_content_equal() {
-  local src="$1" dst="$2" fmt="$3" tmp rc=0
-  case "$fmt" in
-    skill)
-      [[ -d "$dst" ]] && diff -r "$src/" "$dst/" >/dev/null 2>&1
-      ;;
-    opencode)
-      [[ -f "$dst" ]] || return 1
-      tmp="$(mktemp)"
-      if derive_to "$src" "$tmp" 2>/dev/null; then cmp -s "$tmp" "$dst" || rc=1; else rc=1; fi
-      rm -f "$tmp"
-      return "$rc"
-      ;;
-    *)
-      [[ -f "$dst" ]] && cmp -s "$src" "$dst"
-      ;;
-  esac
+  local src="$1" dst="$2"
+  [[ -d "$dst" ]] && diff -r "$src/" "$dst/" >/dev/null 2>&1
 }
 
 # target_matches <src> <dst> <fmt> — <dst> already is exactly what this run
-# would place under $MODE, so it is left alone. The form matters: in link mode a
-# Markdown/Copilot agent or a skill is a symlink to <src>; in copy mode it is a
-# regular file (a skill: a real directory holding no symlink) with the same
-# bytes; an OpenCode agent is a derived regular file in both modes.
+# would place under $MODE, so it is left alone. The form matters: in link mode
+# the skill is a symlink to <src>; in copy mode it is a real directory holding
+# no symlink, with the same bytes.
 target_matches() {
   local src="$1" dst="$2" fmt="$3"
-  if [[ "$fmt" != opencode && "$MODE" == link ]]; then
+  if [[ "$MODE" == link ]]; then
     [[ -L "$dst" && "$(readlink "$dst" 2>/dev/null || true)" == "$src" ]]
     return
   fi
   [[ ! -L "$dst" ]] || return 1
   target_content_equal "$src" "$dst" "$fmt" || return 1
-  if [[ "$fmt" == skill ]]; then
-    [[ -z "$(find "$dst" -type l 2>/dev/null | head -n 1)" ]]
-  fi
+  [[ -z "$(find "$dst" -type l 2>/dev/null | head -n 1)" ]]
 }
 
 # check_destination <path> [<src> <fmt>] — refuse a destination that cannot be
@@ -1479,44 +1436,19 @@ _try() {
 
 # place_target <src> <dst> <fmt> — put one target at <dst>, replacing whatever
 # is there. A skill is a directory: a link to the staged directory, or a copy of
-# it. A Markdown agent and a Copilot agent follow $MODE (link = a symlink to the
-# staged file, which for Copilot carries the .agent.md name; copy = a copy). An
-# OpenCode agent is a derived file: always a regular file. Returns non-zero with
-# PLACE_REASON set when a step fails; it never calls err, so the caller names
-# the target. Nothing is written through a link into $PLANAR_HOME.
+# it. Returns non-zero with PLACE_REASON set when a step fails; it never calls
+# err, so the caller names the target. Nothing is written through a link into
+# $PLANAR_HOME.
 place_target() {
-  local src="$1" dst="$2" fmt="$3" tmp
+  local src="$1" dst="$2"
   _try mkdir -p "$(dirname "$dst")" || return 1
-  case "$fmt" in
-    skill)
-      _try rm -rf "$dst" || return 1
-      if [[ "$MODE" == "link" ]]; then
-        _try ln -s "$src" "$dst" || return 1
-      else
-        _try mkdir -p "$dst" || return 1
-        _try cp -R "$src/." "$dst/" || return 1
-      fi
-      ;;
-    opencode)
-      tmp="$(mktemp)"
-      if ! _try derive_to "$src" "$tmp"; then
-        rm -f "$tmp"
-        PLACE_REASON="could not derive the OpenCode agent from $src (frontmatter lacks a description?)${PLACE_REASON:+: $PLACE_REASON}"
-        return 1
-      fi
-      _try rm -f "$dst" || { rm -f "$tmp"; return 1; }
-      _try cp -f "$tmp" "$dst" || { rm -f "$tmp"; return 1; }
-      rm -f "$tmp"
-      ;;
-    *)
-      _try rm -f "$dst" || return 1
-      if [[ "$MODE" == "link" ]]; then
-        _try ln -s "$src" "$dst" || return 1
-      else
-        _try cp -f "$src" "$dst" || return 1
-      fi
-      ;;
-  esac
+  _try rm -rf "$dst" || return 1
+  if [[ "$MODE" == "link" ]]; then
+    _try ln -s "$src" "$dst" || return 1
+  else
+    _try mkdir -p "$dst" || return 1
+    _try cp -R "$src/." "$dst/" || return 1
+  fi
 }
 
 # Vendors that are selected by --vendors, and of those the ones found.
@@ -1525,20 +1457,24 @@ VENDORS_SKIPPED=()
 # The placement plan, in placement order. PLAN_STATE[i] is "done" once target i
 # is placed (or found already in place) by this run, "carried" while the
 # previous manifest still owns it and this run has not reached it, else "".
-PLAN_SRC=(); PLAN_DST=(); PLAN_FMT=(); PLAN_STATE=(); PLAN_OWNER=(); PLAN_KIND=(); PLAN_NAME=()
+PLAN_SRC=(); PLAN_DST=(); PLAN_FMT=(); PLAN_STATE=(); PLAN_OWNER=()
 PLAN_PATHS=()            # PLAN_PATHS[i]: the newline-joined manifest paths of target i
 STAGED_EXTRAS=()         # the staged-tree extras, read once (the staged tree does not change)
 STAGED_EXTRAS_READ=0
 
-# target_paths <i> — the manifest paths of planned target <i>: the target itself,
-# and for a skill every file beneath it, sorted so the manifest bytes do not
-# depend on directory order.
+# target_paths <i> — set TARGET_PATHS_OUT to the manifest paths of planned
+# target <i>, newline-joined with no trailing newline: the skill directory
+# itself and every file beneath it, sorted so the manifest bytes do not depend
+# on directory order. The caller reads the variable rather than capturing
+# stdout with $(...): a capture pipe lets a signal interrupt the printf under
+# load ("printf: write error: Interrupted system call"). Only the find|sort
+# process substitution crosses a pipe, and the shell reads it, not a printf.
+TARGET_PATHS_OUT=""
 target_paths() {
   local src="${PLAN_SRC[$1]}" dst="${PLAN_DST[$1]}" f
-  printf '%s\n' "$dst"
-  [[ "${PLAN_FMT[$1]}" == skill ]] || return 0
+  TARGET_PATHS_OUT="$dst"
   while IFS= read -r -d '' f; do
-    printf '%s\n' "$dst/${f#"$src"/}"
+    TARGET_PATHS_OUT+=$'\n'"$dst/${f#"$src"/}"
   done < <(find -L "$src" -type f -print0 | sort -z)
 }
 
@@ -1548,18 +1484,18 @@ target_paths() {
 # of vendors this run found. A row's vendor is the target's only owner, or
 # `shared` for the ~/.agents/skills root that four vendors read: it is placed
 # once, so no one vendor owns it, and the reader accepts `shared` on a row
-# without it being a selectable vendor. A row's install_kind is $MODE, except
-# an OpenCode agent, which is a derived copy in both modes. It is called after
+# without it being a selectable vendor. A row's install_kind is $MODE. It is
+# called after
 # each placed target, so a stop at any point leaves every target placed so far
 # recorded; install_manifest_write renames a temp file into place and skips the
 # rename when the bytes are unchanged. Files found only in vendor destinations
 # (including personal local-* extensions) are deliberately excluded.
 record_manifest() {
-  local i p kind name install_kind
+  local i p
   install_manifest_begin "${PLANAR_BUILD_ID:-unknown}" "$MODE"
   for p in ${VENDORS_FOUND[@]+"${VENDORS_FOUND[@]}"}; do INSTALL_MANIFEST_VENDORS+=("$p"); done
   if [[ "$STAGED_EXTRAS_READ" -eq 0 ]]; then
-    install_manifest_record_staged "$PLANAR_HOME" "$SRC_ROOT"
+    install_manifest_record_staged "$PLANAR_HOME"
     STAGED_EXTRAS=(${INSTALL_MANIFEST_EXTRAS[@]+"${INSTALL_MANIFEST_EXTRAS[@]}"})
     STAGED_EXTRAS_READ=1
   else
@@ -1568,10 +1504,7 @@ record_manifest() {
   for ((i = 0; i < ${#PLAN_DST[@]}; i++)); do
     [[ -n "${PLAN_STATE[$i]:-}" ]] || continue
     while IFS= read -r p; do install_manifest_add_extra "$p"; done <<< "${PLAN_PATHS[$i]}"
-    kind="${PLAN_KIND[$i]}"; name="${PLAN_NAME[$i]}"
-    install_kind="$MODE"
-    [[ "${PLAN_FMT[$i]}" == opencode ]] && install_kind=copy
-    install_manifest_add "${PLAN_OWNER[$i]}" "$kind" "$name" "${PLAN_SRC[$i]}" "${PLAN_DST[$i]}" "$install_kind"
+    install_manifest_add "${PLAN_OWNER[$i]}" skill "${PLAN_DST[$i]##*/}" "${PLAN_SRC[$i]}" "${PLAN_DST[$i]}" "$MODE"
   done
   install_manifest_write "$PLANAR_HOME/install-manifest.json" \
     || err "could not write $PLANAR_HOME/install-manifest.json; the previous manifest is intact (placed targets are still on disk; re-run to finish)"
@@ -1602,10 +1535,9 @@ if [[ -n "$VENDORS" ]]; then
 
   # Plan every placement first, so a foreign destination stops the install before
   # anything is written. PLACEMENT ORDER IS FIXED: the VENDOR_TARGETS rows top to
-  # bottom; within a row the skill is one directory and the agent sources follow
-  # the glob's sorted order (planar-coder first). The install-stage tests rely
-  # on this order (a stop at the Nth target leaves exactly the first N-1 placed
-  # and recorded).
+  # bottom, one skill directory per row. The install-stage tests rely on this
+  # order (a stop at the Nth target leaves exactly the first N-1 placed and
+  # recorded).
   for _row in "${VENDOR_TARGETS[@]}"; do  # bash32: nonempty
     IFS='|' read -r _owners _fmt _dir <<< "$_row"
     _active=0
@@ -1616,42 +1548,14 @@ if [[ -n "$VENDORS" ]]; then
     [[ "$_active" -eq 1 ]] || continue
     _owner="$_owners"
     [[ "${#_owner_list[@]}" -gt 1 ]] && _owner=shared
-    case "$_fmt" in
-      skill)
-        PLAN_SRC+=("$PLANAR_HOME/skills/planar"); PLAN_DST+=("$_dir/planar"); PLAN_FMT+=(skill); PLAN_OWNER+=("$_owner")
-        ;;
-      md|copilot|opencode)
-        for _f in "$PLANAR_HOME"/agents/planar-*.md; do
-          [[ -f "$_f" ]] || continue
-          _name="$(basename "$_f")"
-          [[ "$_fmt" == copilot ]] && _name="${_name%.md}.agent.md"
-          PLAN_SRC+=("$_f"); PLAN_DST+=("$_dir/$_name"); PLAN_FMT+=("$_fmt"); PLAN_OWNER+=("$_owner")
-        done
-        ;;
-      toml)
-        for _f in "$PLANAR_HOME"/codex-agents/planar-*.toml; do
-          [[ -f "$_f" ]] || continue
-          PLAN_SRC+=("$_f"); PLAN_DST+=("$_dir/$(basename "$_f")"); PLAN_FMT+=(toml); PLAN_OWNER+=("$_owner")
-        done
-        ;;
-    esac
-  done
-
-  # The manifest row identity of each target, computed once: record_manifest
-  # runs after every target and must not fork per row.
-  for ((_i = 0; _i < ${#PLAN_DST[@]}; _i++)); do
-    _base="${PLAN_DST[$_i]##*/}"
-    if [[ "${PLAN_FMT[$_i]}" == skill ]]; then
-      PLAN_KIND+=(skill); PLAN_NAME+=("$_base")
-    else
-      PLAN_KIND+=(agent); _base="${_base%.agent.md}"; _base="${_base%.toml}"; PLAN_NAME+=("${_base%.md}")
-    fi
+    PLAN_SRC+=("$PLANAR_HOME/skills/planar"); PLAN_DST+=("$_dir/planar"); PLAN_FMT+=("$_fmt"); PLAN_OWNER+=("$_owner")
   done
 
   load_prev_manifest
   for ((_i = 0; _i < ${#PLAN_DST[@]}; _i++)); do
     check_destination "${PLAN_DST[$_i]}" "${PLAN_SRC[$_i]}" "${PLAN_FMT[$_i]}"
-    PLAN_PATHS+=("$(target_paths "$_i")")
+    target_paths "$_i"
+    PLAN_PATHS+=("$TARGET_PATHS_OUT")
     if prev_manifest_records "${PLAN_DST[$_i]}"; then PLAN_STATE+=(carried); else PLAN_STATE+=(""); fi
   done
 
@@ -1682,9 +1586,8 @@ if [[ -n "$VENDORS" ]]; then
       replaced)  _n_replaced=$((_n_replaced + 1)) ;;
       unchanged) _n_unchanged=$((_n_unchanged + 1)) ;;
     esac
-    vlog "$_word: $_dst ($([[ "$_fmt" == opencode ]] && echo 'derived copy' || echo "$MODE"))"
+    vlog "$_word: $_dst ($MODE)"
   done
-  # Skill dirs and agent files follow $MODE; OpenCode agents are derived regular files.
   if [[ ${#PLAN_DST[@]} -eq 0 ]]; then
     log "no vendor targets to place"
   elif [[ $((_n_placed + _n_replaced)) -eq 0 ]]; then
@@ -1806,13 +1709,9 @@ planar_state_finish "$ROOT_C"
 
 title "Install complete"
 
-# The staged role set (planar-*.md), not the top-level agents/ dir — the latter
-# mixes in shared docs (doctrine, methodology, models).
-agents_n="$(count_glob "$PLANAR_HOME"/agents/planar-*.md)"
-
 ok "Planar ${PLANAR_BUILD_ID:-installed} → $PLANAR_HOME  ${C_DIM}(${SECONDS}s, $MODE mode)${C_RESET}"
-log "binaries:   planar, planar-agent, planar-watch, planar-execute, planar-ext"
-log "surfaces:   planar skill · $agents_n agents · vendors found: ${VENDORS_FOUND[*]:-none}"
+log "binaries:   planar, planar-agent, planar-watch, planar-ext"
+log "surfaces:   planar skill · vendors found: ${VENDORS_FOUND[*]:-none}"
 printf '\n'
 log "database:   $PLANAR_INSTALL_DB (current)"
 log "next:       planar init  (in a project checkout, to register it)"

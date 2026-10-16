@@ -358,7 +358,7 @@ export auto render_link_list_text(std::span<const directed_link> rows, entity_ki
 /// was already resolved by the time it was triaged: a populated listing
 /// emits one NDJSON object per row. What survived was the EMPTY case, which
 /// is this contract, and which is the same shape-split family as 6257
-/// (`scope suggest`) and 6326 (`assoc detect`).
+/// (`scope suggest`) and 6326 (a removed verb, task 7468).
 ///
 /// The three verbs disagreed with each other AND with themselves, so one
 /// rule had to be chosen for all three. It is the one this renderer already

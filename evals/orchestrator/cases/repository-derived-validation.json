@@ -12,8 +12,8 @@
       "mode": "all",
       "paths": [
         "agents/planar-orchestrator.md",
-        "agents/planar-coder.md",
-        "agents/planar-reviewer.md",
+        "examples/agents/planar-coder.md",
+        "examples/agents/planar-reviewer.md",
         "agents/planar-test-coder.md"
       ],
       "pattern": "validation profile|validation-profile"

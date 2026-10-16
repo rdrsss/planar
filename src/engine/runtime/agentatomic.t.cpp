@@ -179,6 +179,14 @@ struct recording_policy {
   /// 6875) — a test asserts on this to prove the roll-up ran, and on its
   /// absence to prove it did NOT run for `fail`/`release`.
   std::vector<std::int64_t> unblock_calls;
+  /// The readiness reasons the injected check reports per task id; a task absent here is ready
+  /// (plan 1142).
+  std::map<std::int64_t, std::vector<std::string>> unready;
+  /// Every task id `unready_reasons` was asked about, in order.
+  std::vector<std::int64_t> readiness_calls;
+  /// Whether each `unready_reasons` call saw the connection inside a transaction: the claim and pull
+  /// checks must run in the transaction that inserts the claim.
+  std::vector<bool> readiness_in_transaction;
 
   auto bind() -> atomic::task_policy {
     return atomic::task_policy{
@@ -204,6 +212,13 @@ struct recording_policy {
                                              std::int64_t blocker_id) -> std::expected<void, aa::agent_error> {
           unblock_calls.push_back(blocker_id);
           return {};
+        },
+        .unready_reasons = [this](planar::db::connection& conn,
+                                  std::int64_t            task_id) -> std::expected<std::vector<std::string>, aa::agent_error> {
+          readiness_calls.push_back(task_id);
+          readiness_in_transaction.push_back(conn.in_transaction());
+          auto const found = unready.find(task_id);
+          return found == unready.end() ? std::vector<std::string>{} : found->second;
         },
     };
   }
@@ -407,7 +422,7 @@ TEST_CASE("peek runs pull's selector and writes nothing at all", "[agentatomic]"
   auto const actions_before = scalar_int(conn, "select count(*) from agent_actions");
   auto const status_before  = scalar_text(conn, std::format("select status from tasks where id = {}", task_id_at(conn, 0)));
 
-  auto const peeked = atomic::peek_next(conn, fx.plan_id);
+  auto const peeked = atomic::peek_next(conn, fx.plan_id, policy.bind());
   REQUIRE(peeked.has_value());
   REQUIRE_FALSE(peeked->no_work);
 
@@ -464,7 +479,8 @@ TEST_CASE("peek_next excludes a task with an outbound depends-on edge to a non-t
                            "values ('task', {}, 'task', {}, 'depends-on')",
                            dependent, blocker));
 
-    auto const peeked = atomic::peek_next(conn, fx.plan_id);
+    recording_policy policy;
+    auto const       peeked = atomic::peek_next(conn, fx.plan_id, policy.bind());
     REQUIRE(peeked.has_value());
 
     if (exp.dependent_eligible) {
@@ -506,7 +522,8 @@ TEST_CASE("peek_next and pull_next agree when a depends-on edge excludes the low
                          "values ('task', {}, 'task', {}, 'depends-on')",
                          dependent, blocker));
 
-  auto const peeked = atomic::peek_next(conn, fx.plan_id);
+  recording_policy peek_policy;
+  auto const       peeked = atomic::peek_next(conn, fx.plan_id, peek_policy.bind());
   REQUIRE(peeked.has_value());
   REQUIRE_FALSE(peeked->no_work);
   CHECK(peeked->task_id == blocker);
@@ -518,6 +535,283 @@ TEST_CASE("peek_next and pull_next agree when a depends-on edge excludes the low
   CHECK(pulled->task_id == blocker);
   CHECK(pulled->task_id == peeked->task_id);
   (void)other;
+}
+
+// ===========================================================================
+// Readiness gate (plan 1142)
+// ===========================================================================
+
+TEST_CASE("claim_entity asks readiness inside the claim transaction and claims a ready task", "[agentatomic][readiness]") {
+  scratch_db_path  scratch;
+  auto             conn = open_migrated(scratch);
+  auto const       fx   = seed(conn, 1);
+  auto const       task = task_id_at(conn, 0);
+  recording_policy policy;
+
+  REQUIRE_FALSE(conn.in_transaction());
+  atomic::claim_readiness readiness;
+  auto const              held = atomic::claim_entity(conn, basic_args(fx, task), true, policy.bind(), &readiness);
+  REQUIRE(held.has_value());
+
+  // Asked exactly once, about this task, with the claim transaction open: a link written by another
+  // process after this read cannot reach the INSERT that follows it.
+  REQUIRE(policy.readiness_calls == std::vector<std::int64_t>{task});
+  REQUIRE(policy.readiness_in_transaction == std::vector<bool>{true});
+  REQUIRE(readiness.unready_reasons.empty());
+  REQUIRE(scalar_int(conn, "select count(*) from agent_actions where action_kind = 'other'") == 0);
+}
+
+TEST_CASE("claim_entity refuses an unready task and writes nothing", "[agentatomic][readiness]") {
+  scratch_db_path  scratch;
+  auto             conn = open_migrated(scratch);
+  auto const       fx   = seed(conn, 1);
+  auto const       task = task_id_at(conn, 0);
+  recording_policy policy;
+  policy.unready[task] = {"blocked_by_open_task", "open_question_linked"};
+
+  atomic::claim_readiness readiness;
+  auto const              held = atomic::claim_entity(conn, basic_args(fx, task), true, policy.bind(), &readiness);
+  REQUIRE_FALSE(held.has_value());
+  CHECK(held.error() == aa::agent_error::task_not_ready);
+  CHECK(readiness.unready_reasons == std::vector<std::string>{"blocked_by_open_task", "open_question_linked"});
+
+  CHECK(scalar_int(conn, "select count(*) from agent_work_claims") == 0);
+  CHECK(scalar_int(conn, "select count(*) from agent_actions") == 0);
+  CHECK(scalar_text(conn, std::format("select status from tasks where id = {}", task)) == "todo");
+  CHECK_FALSE(conn.in_transaction());
+
+  // No readiness slot means no override: the gate cannot be skipped by omission.
+  auto const bare = atomic::claim_entity(conn, basic_args(fx, task), false, policy.bind());
+  REQUIRE_FALSE(bare.has_value());
+  CHECK(bare.error() == aa::agent_error::task_not_ready);
+  CHECK(scalar_int(conn, "select count(*) from agent_work_claims") == 0);
+}
+
+TEST_CASE("claim_entity with allow_unready claims and writes one audit action naming the reasons", "[agentatomic][readiness]") {
+  scratch_db_path  scratch;
+  auto             conn = open_migrated(scratch);
+  auto const       fx   = seed(conn, 1);
+  auto const       task = task_id_at(conn, 0);
+  recording_policy policy;
+  policy.unready[task] = {"blocked_by_open_task", "proposed_decision_linked"};
+
+  atomic::claim_readiness readiness{.allow_unready = true};
+  auto const              held = atomic::claim_entity(conn, basic_args(fx, task), true, policy.bind(), &readiness);
+  REQUIRE(held.has_value());
+  CHECK(readiness.unready_reasons == std::vector<std::string>{"blocked_by_open_task", "proposed_decision_linked"});
+  CHECK(scalar_text(conn, std::format("select status from tasks where id = {}", task)) == "doing");
+
+  // Exactly one override row, closed ok, on this claim and task, readable by a machine.
+  CHECK(scalar_int(conn, "select count(*) from agent_actions where action_kind = 'other'") == 1);
+  CHECK(scalar_text(conn, "select metadata from agent_actions where action_kind = 'other'") ==
+        R"({"unready_override":true,"reasons":["blocked_by_open_task","proposed_decision_linked"]})");
+  CHECK(scalar_text(conn, "select summary from agent_actions where action_kind = 'other'") ==
+        "unready_override: blocked_by_open_task, proposed_decision_linked");
+  CHECK(scalar_text(conn, "select outcome from agent_actions where action_kind = 'other'") == "ok");
+  CHECK(scalar_int(conn, std::format("select count(*) from agent_actions where action_kind = 'other' and claim_id = {} and "
+                                     "entity_kind = 'task' and entity_id = {} and ended_at is not null",
+                                     held->id, task)) == 1);
+  // The transition marker is still there, separately.
+  CHECK(scalar_int(conn, "select count(*) from agent_actions where action_kind = 'claim_check'") == 1);
+}
+
+TEST_CASE("allow_unready on a ready task writes no audit action", "[agentatomic][readiness]") {
+  scratch_db_path  scratch;
+  auto             conn = open_migrated(scratch);
+  auto const       fx   = seed(conn, 1);
+  auto const       task = task_id_at(conn, 0);
+  recording_policy policy;
+
+  atomic::claim_readiness readiness{.allow_unready = true};
+  REQUIRE(atomic::claim_entity(conn, basic_args(fx, task), true, policy.bind(), &readiness).has_value());
+  CHECK(scalar_int(conn, "select count(*) from agent_actions where action_kind = 'other'") == 0);
+}
+
+TEST_CASE("contention and illegal_transition outrank readiness, and plan claims are not gated", "[agentatomic][readiness]") {
+  scratch_db_path  scratch;
+  auto             conn = open_migrated(scratch);
+  auto const       fx   = seed(conn, 2);
+  auto const       held = task_id_at(conn, 0);
+  auto const       done = task_id_at(conn, 1);
+  recording_policy policy;
+  policy.unready[held] = {"open_question_linked"};
+  policy.unready[done] = {"invalid_task_status"};
+
+  // A live claim is contention before readiness is ever asked (an operator re-claim stays refused).
+  atomic::claim_readiness allow{.allow_unready = true};
+  REQUIRE(atomic::claim_entity(conn, basic_args(fx, held), false, policy.bind(), &allow).has_value());
+  policy.readiness_calls.clear();
+  auto const again = atomic::claim_entity(conn, basic_args(fx, held), false, policy.bind(), &allow);
+  REQUIRE_FALSE(again.has_value());
+  CHECK(again.error() == aa::agent_error::claim_contention);
+  CHECK(policy.readiness_calls.empty());
+
+  // A transitioning claim on a task that is not todo keeps its IllegalTransition tag.
+  exec(conn, std::format("update tasks set status = 'done' where id = {}", done));
+  atomic::claim_readiness plain;
+  auto const              refused = atomic::claim_entity(conn, basic_args(fx, done), true, policy.bind(), &plain);
+  REQUIRE_FALSE(refused.has_value());
+  CHECK(refused.error() == aa::agent_error::illegal_transition);
+  CHECK(policy.readiness_calls.empty());
+
+  // A plan claim is not a task claim: readiness is not asked.
+  auto plan_args =
+      aa::acquire_args{.session_id = fx.session_id, .kind = aa::entity_kind::plan, .entity_id = fx.plan_id, .vendor = "test"};
+  auto const plan_claim = atomic::claim_entity(conn, plan_args, true, policy.bind(), &plain);
+  REQUIRE(plan_claim.has_value());
+  CHECK(policy.readiness_calls.empty());
+}
+
+TEST_CASE("pull skips an unready first-priority task and claims the next ready one", "[agentatomic][readiness]") {
+  scratch_db_path  scratch;
+  auto             conn   = open_migrated(scratch);
+  auto const       fx     = seed(conn, 3);
+  auto const       first  = task_id_at(conn, 0);
+  auto const       second = task_id_at(conn, 1);
+  recording_policy policy;
+  policy.unready[first] = {"blocked_by_open_task"};
+
+  auto const pulled = atomic::pull_next(
+      conn, atomic::pull_args{.plan_id = fx.plan_id, .session_id = fx.session_id, .vendor = "test"}, policy.bind());
+  REQUIRE(pulled.has_value());
+  REQUIRE_FALSE(pulled->no_work);
+  CHECK(pulled->task_id == second);
+  REQUIRE(pulled->skipped.size() == 1);
+  CHECK(pulled->skipped[0].task_id == first);
+  CHECK(pulled->skipped[0].reasons == std::vector<std::string>{"blocked_by_open_task"});
+  CHECK(scalar_text(conn, std::format("select status from tasks where id = {}", first)) == "todo");
+  CHECK(scalar_text(conn, std::format("select status from tasks where id = {}", second)) == "doing");
+
+  // Readiness was asked for the skipped task and the chosen one, both inside the pull transaction,
+  // and not for the third, which was never reached.
+  CHECK(policy.readiness_calls == std::vector<std::int64_t>{first, second});
+  CHECK(policy.readiness_in_transaction == std::vector<bool>{true, true});
+}
+
+TEST_CASE("pull with only unready tasks is no_work, names them, and writes nothing", "[agentatomic][readiness]") {
+  scratch_db_path  scratch;
+  auto             conn = open_migrated(scratch);
+  auto const       fx   = seed(conn, 2);
+  recording_policy policy;
+  policy.unready[task_id_at(conn, 0)] = {"open_question_linked"};
+  policy.unready[task_id_at(conn, 1)] = {"blocked_by_open_task", "proposed_decision_linked"};
+
+  auto const pulled = atomic::pull_next(
+      conn, atomic::pull_args{.plan_id = fx.plan_id, .session_id = fx.session_id, .vendor = "test"}, policy.bind());
+  REQUIRE(pulled.has_value());
+  CHECK(pulled->no_work);
+  REQUIRE(pulled->skipped.size() == 2);
+  CHECK(pulled->skipped[1].reasons.size() == 2);
+  CHECK(scalar_int(conn, "select count(*) from agent_work_claims") == 0);
+  CHECK(scalar_int(conn, "select count(*) from agent_actions") == 0);
+  CHECK(scalar_int(conn, "select count(*) from tasks where status = 'todo'") == 2);
+
+  // peek reports what pull would: nothing, and the same skipped list.
+  auto const peeked = atomic::peek_next(conn, fx.plan_id, policy.bind());
+  REQUIRE(peeked.has_value());
+  CHECK(peeked->no_work);
+  CHECK(peeked->skipped.size() == 2);
+}
+
+TEST_CASE("a readiness failure aborts pull and claim without claiming", "[agentatomic][readiness]") {
+  scratch_db_path  scratch;
+  auto             conn = open_migrated(scratch);
+  auto const       fx   = seed(conn, 1);
+  recording_policy recording;
+  auto             broken = recording.bind();
+  broken.unready_reasons = [](planar::db::connection&, std::int64_t) -> std::expected<std::vector<std::string>, aa::agent_error> {
+    return std::unexpected(aa::agent_error::query_failed);
+  };
+
+  auto const pulled =
+      atomic::pull_next(conn, atomic::pull_args{.plan_id = fx.plan_id, .session_id = fx.session_id, .vendor = "test"}, broken);
+  REQUIRE_FALSE(pulled.has_value());
+  CHECK(pulled.error() == aa::agent_error::query_failed);
+  auto const claimed = atomic::claim_entity(conn, basic_args(fx, task_id_at(conn, 0)), true, broken);
+  REQUIRE_FALSE(claimed.has_value());
+  CHECK(claimed.error() == aa::agent_error::query_failed);
+  CHECK(scalar_int(conn, "select count(*) from agent_work_claims") == 0);
+}
+
+// ===========================================================================
+// Claim policy (plan 1142)
+// ===========================================================================
+
+TEST_CASE("claim_policy is asked inside the claim transaction and its digest is stored on the claim",
+          "[agentatomic][claim-policy]") {
+  scratch_db_path                    scratch;
+  auto                               conn = open_migrated(scratch);
+  auto const                         fx   = seed(conn, 2);
+  recording_policy                   recording;
+  auto                               policy = recording.bind();
+  std::vector<atomic::claim_request> asked;
+  std::vector<bool>                  in_transaction;
+  policy.claim_policy = [&](planar::db::connection&      c,
+                            const atomic::claim_request& request) -> std::expected<std::optional<std::string>, aa::agent_error> {
+    asked.push_back(request);
+    in_transaction.push_back(c.in_transaction());
+    return std::optional<std::string>{"digest-for-test"};
+  };
+
+  auto args          = basic_args(fx, task_id_at(conn, 0));
+  args.role          = "coder";
+  args.model         = "m-1";
+  auto const claimed = atomic::claim_entity(conn, args, true, policy);
+  REQUIRE(claimed.has_value());
+  REQUIRE(asked.size() == 1);
+  CHECK(asked[0].kind == aa::entity_kind::task);
+  CHECK(asked[0].entity_id == task_id_at(conn, 0));
+  CHECK(asked[0].role == std::optional<std::string_view>{"coder"});
+  CHECK(asked[0].model == std::optional<std::string_view>{"m-1"});
+  CHECK(in_transaction == std::vector<bool>{true});
+  CHECK(scalar_text(conn, "select policy_digest from agent_work_claims") == "digest-for-test");
+
+  // A pull asks once, with the plan, before any task is read, and records the digest on the claim it takes.
+  asked.clear();
+  recording.readiness_calls.clear();
+  auto const pulled =
+      atomic::pull_next(conn, atomic::pull_args{.plan_id = fx.plan_id, .session_id = fx.session_id, .vendor = "test"}, policy);
+  REQUIRE(pulled.has_value());
+  REQUIRE(asked.size() == 1);
+  CHECK(asked[0].kind == aa::entity_kind::plan);
+  CHECK(asked[0].entity_id == fx.plan_id);
+  CHECK(scalar_text(conn, "select policy_digest from agent_work_claims order by id desc limit 1") == "digest-for-test");
+
+  // An unbound decision admits the claim and records NULL.
+  auto const unbound   = recording.bind();
+  auto       plan_args = basic_args(fx, fx.plan_id);
+  plan_args.kind       = aa::entity_kind::plan;
+  auto const plain     = atomic::claim_entity(conn, plan_args, false, unbound);
+  REQUIRE(plain.has_value());
+  CHECK(scalar_int(conn, "select policy_digest is null from agent_work_claims order by id desc limit 1") == 1);
+}
+
+TEST_CASE("a claim_policy refusal aborts claim and pull before anything is read or written", "[agentatomic][claim-policy]") {
+  scratch_db_path  scratch;
+  auto             conn = open_migrated(scratch);
+  auto const       fx   = seed(conn, 1);
+  recording_policy recording;
+  auto             policy = recording.bind();
+  policy.claim_policy     = [](planar::db::connection&,
+                               const atomic::claim_request&) -> std::expected<std::optional<std::string>, aa::agent_error> {
+    return std::unexpected(aa::agent_error::claim_policy_unmet);
+  };
+
+  auto const claimed = atomic::claim_entity(conn, basic_args(fx, task_id_at(conn, 0)), true, policy);
+  REQUIRE_FALSE(claimed.has_value());
+  CHECK(claimed.error() == aa::agent_error::claim_policy_unmet);
+  CHECK(aa::error_name(claimed.error()) == "PolicyUnmet");
+  CHECK(recording.readiness_calls.empty());
+
+  auto const pulled =
+      atomic::pull_next(conn, atomic::pull_args{.plan_id = fx.plan_id, .session_id = fx.session_id, .vendor = "test"}, policy);
+  REQUIRE_FALSE(pulled.has_value());
+  CHECK(pulled.error() == aa::agent_error::claim_policy_unmet);
+  CHECK(recording.readiness_calls.empty());
+
+  CHECK(scalar_int(conn, "select count(*) from agent_work_claims") == 0);
+  CHECK(scalar_int(conn, "select count(*) from agent_actions") == 0);
+  CHECK(scalar_text(conn, "select status from tasks") == "todo");
 }
 
 // ===========================================================================
@@ -848,7 +1142,6 @@ TEST_CASE("release succeeds on a plan claim, unlike complete (task 6890)", "[age
   auto const released = atomic::release_work(conn, held->claim_token, "handing off", policy.bind());
   REQUIRE(released.has_value());
   REQUIRE(released->released.status == aa::claim_status::released);
-  REQUIRE_FALSE(released->replayed);
   // A plan claim holds no task: `fx.plan_id` is a PLAN id and a task row may
   // share the number, so the result must not name one (task 7118).
   REQUIRE_FALSE(released->task_id.has_value());
@@ -1379,4 +1672,297 @@ TEST_CASE("only one of two racing terminal verbs succeeds", "[agentatomic][concu
   // prevent.
   REQUIRE(scalar_text(first, std::format("select status from tasks where id = {}", pulled->task_id)) == "done");
   REQUIRE(scalar_text(first, std::format("select status from agent_work_claims where claim_token = '{}'", token)) == "completed");
+}
+
+// ===========================================================================
+// record_review (plan 1142, task mo-review-record)
+// ===========================================================================
+
+namespace {
+
+/// Pull the plan's only task under a vendor session and return its claim.
+auto pull_under_session(planar::db::connection& conn, const fixture& fx, std::optional<std::string_view> vendor_session)
+    -> aa::claim {
+  recording_policy policy;
+  auto const       pulled = atomic::pull_next(conn,
+                                              atomic::pull_args{.plan_id           = fx.plan_id,
+                                                                .session_id        = fx.session_id,
+                                                                .vendor            = "claude",
+                                                                .vendor_session_id = vendor_session,
+                                                                .role              = "coder"},
+                                              policy.bind());
+  REQUIRE(pulled.has_value());
+  REQUIRE(pulled->acquired.has_value());
+  return *pulled->acquired;
+}
+
+auto count_actions(planar::db::connection& conn) -> std::int64_t {
+  return scalar_int(conn, "select count(*) from agent_actions");
+}
+
+auto count_sessions(planar::db::connection& conn) -> std::int64_t {
+  return scalar_int(conn, "select count(*) from sessions");
+}
+
+auto review_args_for(std::string_view reviewed, std::optional<std::string_view> session,
+                     std::optional<std::string_view> reviewer_claim = std::nullopt) -> atomic::review_args {
+  return atomic::review_args{.reviewed_claim_token    = reviewed,
+                             .reviewer_claim_token    = reviewer_claim,
+                             .reviewer_vendor_session = session,
+                             .vendor                  = "claude",
+                             .verdict                 = aa::review_verdict::approve,
+                             .summary                 = "reads well"};
+}
+
+} // namespace
+
+TEST_CASE("a review under a different session writes one closed review action, a child of the claim's action",
+          "[agentatomic][review]") {
+  scratch_db_path scratch;
+  auto            conn   = open_migrated(scratch);
+  auto const      fx     = seed(conn, 1);
+  auto const      coder  = pull_under_session(conn, fx, "claude:coder-1");
+  auto const      root   = scalar_int(conn, std::format("select min(id) from agent_actions where claim_id = {}", coder.id));
+  auto const      before = count_actions(conn);
+
+  auto args       = review_args_for(coder.claim_token, "claude:reviewer-1");
+  args.verdict    = aa::review_verdict::request_changes;
+  auto const done = atomic::record_review(conn, args);
+  REQUIRE(done.has_value());
+  REQUIRE(count_actions(conn) == before + 1);
+  CHECK(done->parent_action_id == root);
+  CHECK(done->verdict == aa::review_verdict::request_changes);
+
+  auto const row = aa::get_action_by_id(conn, done->action_id);
+  REQUIRE(row.has_value());
+  CHECK(row->kind == aa::action_kind::review);
+  CHECK(row->verdict == aa::review_verdict::request_changes);
+  CHECK(row->claim_id == coder.id);
+  CHECK(row->parent_action_id == root);
+  CHECK(row->summary == "reads well");
+  CHECK(row->ended_at.has_value());
+  CHECK(row->result == aa::outcome::ok);
+  CHECK(row->metadata == R"({"reviewer_session":"claude:reviewer-1"})");
+  // The action belongs to the REVIEWER's session, not the coder's.
+  CHECK(row->session_id != coder.session_id);
+  CHECK(scalar_text(conn, std::format("select vendor_session_id from sessions where id = {}", row->session_id)) ==
+        "claude:reviewer-1");
+
+  auto const found = aa::reviews_for_claim(conn, coder.claim_token);
+  REQUIRE(found.has_value());
+  REQUIRE(found->size() == 1);
+  CHECK(found->front().action_id == done->action_id);
+  CHECK(found->front().verdict == aa::review_verdict::request_changes);
+  CHECK(found->front().reviewer_session == "claude:reviewer-1");
+  CHECK_FALSE(found->front().reviewer_claim.has_value());
+}
+
+TEST_CASE("a review from the reviewed claim's own session is refused and writes nothing", "[agentatomic][review]") {
+  scratch_db_path scratch;
+  auto            conn     = open_migrated(scratch);
+  auto const      fx       = seed(conn, 1);
+  auto const      coder    = pull_under_session(conn, fx, "claude:coder-1");
+  auto const      actions  = count_actions(conn);
+  auto const      sessions = count_sessions(conn);
+
+  auto const same = atomic::record_review(conn, review_args_for(coder.claim_token, "claude:coder-1"));
+  REQUIRE_FALSE(same.has_value());
+  CHECK(same.error() == aa::agent_error::reviewer_not_independent);
+
+  // The coder's own claim, named as the reviewer claim, is the same session too.
+  auto const self = atomic::record_review(conn, review_args_for(coder.claim_token, std::nullopt, coder.claim_token));
+  REQUIRE_FALSE(self.has_value());
+  CHECK(self.error() == aa::agent_error::reviewer_not_independent);
+
+  CHECK(count_actions(conn) == actions);
+  CHECK(count_sessions(conn) == sessions);
+  CHECK(aa::reviews_for_claim(conn, coder.claim_token)->empty());
+}
+
+TEST_CASE("a reviewer claim that shares the coder's vendor session is refused; a distinct one is accepted",
+          "[agentatomic][review]") {
+  scratch_db_path scratch;
+  auto            conn  = open_migrated(scratch);
+  auto const      fx    = seed(conn, 1);
+  auto const      coder = pull_under_session(conn, fx, "claude:coder-1");
+  exec(conn, "insert into sessions (vendor, vendor_session_id) values ('claude', 'claude:rev')");
+  auto const reviewer_session = scalar_int(conn, "select id from sessions where vendor_session_id = 'claude:rev'");
+  exec(conn, "insert into plans (scope_kind, title, slug, status) values ('global','r','rev-plan','active')");
+  exec(conn, "insert into plans (scope_kind, title, slug, status) values ('global','r2','rev-plan-2','active')");
+  auto const rev_plan   = scalar_int(conn, "select id from plans where slug = 'rev-plan'");
+  auto const rev_plan_2 = scalar_int(conn, "select id from plans where slug = 'rev-plan-2'");
+
+  auto mint = [&](std::string_view vendor_session, std::int64_t entity) {
+    auto const claim = aa::acquire_claim(conn, aa::acquire_args{.session_id        = reviewer_session,
+                                                                .kind              = aa::entity_kind::plan,
+                                                                .entity_id         = entity,
+                                                                .scope             = aa::claim_scope::shared,
+                                                                .vendor            = "claude",
+                                                                .vendor_session_id = vendor_session,
+                                                                .role              = "reviewer"});
+    REQUIRE(claim.has_value());
+    return *claim;
+  };
+  auto const colliding = mint("claude:coder-1", rev_plan);
+  auto const distinct  = mint("claude:rev", rev_plan_2);
+
+  auto const before  = count_actions(conn);
+  auto const refused = atomic::record_review(conn, review_args_for(coder.claim_token, std::nullopt, colliding.claim_token));
+  REQUIRE_FALSE(refused.has_value());
+  CHECK(refused.error() == aa::agent_error::reviewer_not_independent);
+  CHECK(count_actions(conn) == before);
+
+  auto const accepted = atomic::record_review(conn, review_args_for(coder.claim_token, std::nullopt, distinct.claim_token));
+  REQUIRE(accepted.has_value());
+  auto const row = aa::get_action_by_id(conn, accepted->action_id);
+  REQUIRE(row.has_value());
+  // The reviewer claim's own session owns the action, and the metadata names both.
+  CHECK(row->session_id == reviewer_session);
+  CHECK(row->metadata == std::format(R"({{"reviewer_session":"claude:rev","reviewer_claim":"{}"}})", distinct.claim_token));
+  auto const found = aa::reviews_for_claim(conn, coder.claim_token);
+  REQUIRE(found.has_value());
+  REQUIRE(found->size() == 1);
+  CHECK(found->front().reviewer_claim == distinct.claim_token);
+}
+
+TEST_CASE("a reviewed claim with no vendor session is reviewed only under a reviewer claim that has one",
+          "[agentatomic][review]") {
+  scratch_db_path scratch;
+  auto            conn  = open_migrated(scratch);
+  auto const      fx    = seed(conn, 1);
+  auto const      coder = pull_under_session(conn, fx, std::nullopt);
+  exec(conn, "insert into plans (scope_kind, title, slug, status) values ('global','r','rev-plan','active')");
+  exec(conn, "insert into plans (scope_kind, title, slug, status) values ('global','r2','rev-plan-2','active')");
+  auto const rev_plan   = scalar_int(conn, "select id from plans where slug = 'rev-plan'");
+  auto const rev_plan_2 = scalar_int(conn, "select id from plans where slug = 'rev-plan-2'");
+  exec(conn, "insert into sessions (vendor, vendor_session_id) values ('claude', 'claude:rev')");
+  auto const reviewer_session = scalar_int(conn, "select id from sessions where vendor_session_id = 'claude:rev'");
+
+  auto mint = [&](std::optional<std::string_view> vendor_session, std::int64_t entity) {
+    auto const claim = aa::acquire_claim(conn, aa::acquire_args{.session_id        = reviewer_session,
+                                                                .kind              = aa::entity_kind::plan,
+                                                                .entity_id         = entity,
+                                                                .scope             = aa::claim_scope::shared,
+                                                                .vendor            = "claude",
+                                                                .vendor_session_id = vendor_session,
+                                                                .role              = "reviewer"});
+    REQUIRE(claim.has_value());
+    return *claim;
+  };
+  auto const without = mint(std::nullopt, rev_plan);
+  auto const with    = mint("claude:rev", rev_plan_2);
+  auto const before  = count_actions(conn);
+
+  // Nothing to compare a bare session id against.
+  auto const by_session = atomic::record_review(conn, review_args_for(coder.claim_token, "claude:rev"));
+  REQUIRE_FALSE(by_session.has_value());
+  CHECK(by_session.error() == aa::agent_error::reviewer_not_independent);
+  // A reviewer claim without a vendor session cannot be told apart either.
+  auto const by_blank = atomic::record_review(conn, review_args_for(coder.claim_token, std::nullopt, without.claim_token));
+  REQUIRE_FALSE(by_blank.has_value());
+  CHECK(by_blank.error() == aa::agent_error::reviewer_not_independent);
+  CHECK(count_actions(conn) == before);
+
+  auto const by_claim = atomic::record_review(conn, review_args_for(coder.claim_token, std::nullopt, with.claim_token));
+  REQUIRE(by_claim.has_value());
+  CHECK(count_actions(conn) == before + 1);
+}
+
+TEST_CASE("record_review refuses an unknown claim, an unknown reviewer claim and an anonymous caller without writing",
+          "[agentatomic][review]") {
+  scratch_db_path scratch;
+  auto            conn     = open_migrated(scratch);
+  auto const      fx       = seed(conn, 1);
+  auto const      coder    = pull_under_session(conn, fx, "claude:coder-1");
+  auto const      actions  = count_actions(conn);
+  auto const      sessions = count_sessions(conn);
+
+  auto const unknown = atomic::record_review(conn, review_args_for("0123456789abcdef0123456789abcdef", "claude:reviewer-1"));
+  REQUIRE_FALSE(unknown.has_value());
+  CHECK(unknown.error() == aa::agent_error::claim_not_found);
+
+  auto const no_reviewer =
+      atomic::record_review(conn, review_args_for(coder.claim_token, std::nullopt, "0123456789abcdef0123456789abcdef"));
+  REQUIRE_FALSE(no_reviewer.has_value());
+  CHECK(no_reviewer.error() == aa::agent_error::reviewer_claim_not_found);
+
+  auto const anonymous = atomic::record_review(conn, review_args_for(coder.claim_token, std::nullopt));
+  REQUIRE_FALSE(anonymous.has_value());
+  CHECK(anonymous.error() == aa::agent_error::reviewer_unidentified);
+
+  CHECK(count_actions(conn) == actions);
+  CHECK(count_sessions(conn) == sessions);
+}
+
+TEST_CASE("a review may follow the claim's completion and is found by the reviewed claim", "[agentatomic][review]") {
+  scratch_db_path  scratch;
+  auto             conn  = open_migrated(scratch);
+  auto const       fx    = seed(conn, 1);
+  auto const       coder = pull_under_session(conn, fx, "claude:coder-1");
+  recording_policy policy;
+  REQUIRE(atomic::complete_work(conn, coder.claim_token, std::nullopt, policy.bind()).has_value());
+
+  REQUIRE(atomic::record_review(conn, review_args_for(coder.claim_token, "claude:reviewer-1")).has_value());
+  auto second    = review_args_for(coder.claim_token, "claude:reviewer-2");
+  second.verdict = aa::review_verdict::request_changes;
+  REQUIRE(atomic::record_review(conn, second).has_value());
+
+  auto const found = aa::reviews_for_claim(conn, coder.claim_token);
+  REQUIRE(found.has_value());
+  REQUIRE(found->size() == 2);
+  CHECK(found->at(0).verdict == aa::review_verdict::approve);
+  CHECK(found->at(1).verdict == aa::review_verdict::request_changes);
+  CHECK(aa::reviews_for_claim(conn, "0123456789abcdef0123456789abcdef")->empty());
+}
+
+TEST_CASE("no review row can carry a NULL verdict, and the schema refuses a foreign verdict", "[agentatomic][review]") {
+  scratch_db_path scratch;
+  auto            conn  = open_migrated(scratch);
+  auto const      fx    = seed(conn, 1);
+  auto const      coder = pull_under_session(conn, fx, "claude:coder-1");
+  REQUIRE(atomic::record_review(conn, review_args_for(coder.claim_token, "claude:reviewer-1")).has_value());
+  REQUIRE(atomic::record_review(conn, review_args_for(coder.claim_token, "claude:reviewer-2")).has_value());
+
+  CHECK(scalar_int(conn, "select count(*) from agent_actions where action_kind = 'review'") == 2);
+  CHECK(scalar_int(conn, "select count(*) from agent_actions where action_kind = 'review' and verdict is null") == 0);
+  CHECK(scalar_int(conn, "select count(*) from agent_actions where action_kind <> 'review' and verdict is not null") == 0);
+  auto const bad = conn.execute("update agent_actions set verdict = 'lgtm' where action_kind = 'review'");
+  CHECK_FALSE(bad.has_value());
+}
+
+TEST_CASE("a review row does not make a bare claim look like it moved the task", "[agentatomic][review]") {
+  // `reconcile` returns a task to todo only when the claim owns the move; any action on the claim
+  // counts as that evidence except the bookkeeping kinds. A review is somebody else's verdict.
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto const      fx   = seed(conn, 1);
+  auto const      task = task_id_at(conn, 0);
+
+  auto bare              = basic_args(fx, task);
+  bare.ttl_secs          = -60;
+  bare.vendor_session_id = "claude:coder-1";
+  auto const held        = aa::acquire_claim(conn, bare);
+  REQUIRE(held.has_value());
+  exec(conn, std::format("update tasks set status = 'doing' where id = {}", task));
+
+  REQUIRE(atomic::record_review(conn, review_args_for(held->claim_token, "claude:reviewer-1")).has_value());
+  REQUIRE(aa::reconcile_stale(conn, aa::reconcile_policy{}).has_value());
+  CHECK(scalar_text(conn, std::format("select status from tasks where id = {}", task)) == "doing");
+}
+
+TEST_CASE("a review never becomes the claim's latest activity", "[agentatomic][review]") {
+  scratch_db_path scratch;
+  auto            conn   = open_migrated(scratch);
+  auto const      fx     = seed(conn, 1);
+  auto const      coder  = pull_under_session(conn, fx, "claude:coder-1");
+  auto const      before = aa::latest_action_for_claim(conn, coder.id);
+  REQUIRE(before.has_value());
+  REQUIRE(before->has_value());
+
+  REQUIRE(atomic::record_review(conn, review_args_for(coder.claim_token, "claude:reviewer-1")).has_value());
+  auto const after = aa::latest_action_for_claim(conn, coder.id);
+  REQUIRE(after.has_value());
+  REQUIRE(after->has_value());
+  CHECK((*after)->id == (*before)->id);
+  CHECK((*after)->kind != aa::action_kind::review);
 }

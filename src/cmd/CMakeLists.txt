@@ -1,32 +1,32 @@
 # src/cmd/ — layer-3 command binaries (tech-spec § Target layout; D15's
 # `cmd -> engine.* -> {cli, db} -> vendored`).
 #
-# `planar` (plan 996, task 6105) is the first. `planar-agent`,
-# `planar-watch` and `planar-execute` (task 6107) land beside it.
-# `planar-ext` (task 6418; task 6412, decisions 995-1000) is the fifth
-# and owns the external-plane `ext` and `sync` families.
+# `planar` (plan 996, task 6105) is the first. `planar-agent` and
+# `planar-watch` land beside it. `planar-ext` (task 6418; task 6412,
+# decisions 995-1000) is the fourth and owns the external-plane `ext` and
+# `sync` families.
 #
-# The five binaries share invocation values, path resolution and the lazy
+# The four binaries share invocation values, path resolution and the lazy
 # database holder through `cmd_internal`, a command-support target classified
 # below the binary layer. Each binary supplies its own database open policy;
 # the architecture guard still forbids binary-to-binary `cmd_* -> cmd_*`
-# links. `planar-execute` does not link `cmd_internal` because it holds no
-# SQLite handle.
+# links.
 #
 # `parity_harness.hpp` is test-only and remains a plain included header.
 #
 # Every binary here MUST be declared with planar_binary() (cmake/module.cmake),
 # never a bare add_executable(): the helper is what registers the target into
 # PLANAR_MODULE_TARGETS so cmake/architecture.cmake's D15 walk sees it at all.
-# A raw add_executable() sits outside the guard entirely — the exact gap task
-# 6050 found and cmake/tests/architecture-guard-fixture/cmd-binary-db/ still
-# stands guard over.
+# A raw add_executable() sits outside the guard entirely, the gap task 6050
+# found. cmake/tests/architecture-guard-fixture/cmd-binary-db/ proves a
+# registered executable is walked, and planar-binary-real/ proves
+# planar_binary()'s registration runs. unregistered-target-caught/ guards a
+# different gap: an unregistered planar_* intermediate target hiding edges.
 
 add_subdirectory(internal)
 add_subdirectory(planar)
 add_subdirectory(planar-agent)
 add_subdirectory(planar-watch)
-add_subdirectory(planar-execute)
 add_subdirectory(planar-ext)
 add_subdirectory(integration_tests)
 
@@ -53,12 +53,10 @@ if(TARGET planar_cmd_planar_tests)
   target_compile_definitions(planar_cmd_planar_tests PRIVATE
     "PLANAR_AGENT_CPP_BIN=\"$<TARGET_FILE:planar_cmd_planar_agent>\""
     "PLANAR_WATCH_CPP_BIN=\"$<TARGET_FILE:planar_cmd_planar_watch>\""
-    "PLANAR_EXECUTE_CPP_BIN=\"$<TARGET_FILE:planar_cmd_planar_execute>\""
     "PLANAR_EXT_CPP_BIN=\"$<TARGET_FILE:planar_cmd_planar_ext>\"")
   add_dependencies(planar_cmd_planar_tests
     planar_cmd_planar_agent
     planar_cmd_planar_watch
-    planar_cmd_planar_execute
     planar_cmd_planar_ext)
 endif()
 
@@ -89,19 +87,6 @@ if(TARGET planar_cmd_planar_watch_tests)
     planar_cmd_planar_ext)
 endif()
 
-# --- planar-execute's golden flow.result fixtures (plan 1033 M0, task 6484) --
-#
-# `planar-execute/golden.t.cpp` seeds its scratch database with the OPERATOR
-# binary, and every workflow it runs shells `planar` beside the built
-# `planar-execute` — so the operator binary must be built first. Same
-# placement reason and the same absence of a link edge as the two blocks
-# above.
-if(TARGET planar_cmd_planar_execute_tests)
-  target_compile_definitions(planar_cmd_planar_execute_tests PRIVATE
-    "PLANAR_OPERATOR_CPP_BIN=\"$<TARGET_FILE:planar_cmd_planar>\"")
-  add_dependencies(planar_cmd_planar_execute_tests planar_cmd_planar)
-endif()
-
 # --- compile-fail check for the flag-declaration helpers (plan 1104, task 7200)
 #
 # Every helper that declares a flag or positional takes a REQUIRED
@@ -123,7 +108,8 @@ endif()
 #
 # The probes compile the three helper interface units themselves (the
 # executables' module sources are not linkable libraries) and link nothing,
-# so the check costs a handful of translation units. It is RUN_SERIAL
+# so the check costs a handful of translation units, plus building
+# `planar_engine_runtime` for the module the shared cli.cppm imports. It is RUN_SERIAL
 # because it drives a nested build of this build directory.
 # The probe sources live under cmake/tests/ rather than src/: the negative
 # probes are deliberately ill-formed, and `make cpp-lint` runs clang-tidy over
@@ -150,7 +136,10 @@ foreach(_probe IN LISTS _planar_compile_fail_probes)
     CXX_STANDARD 26
     CXX_STANDARD_REQUIRED ON
     CXX_MODULE_STD ON)
-  target_link_libraries(${_target} PRIVATE planar_cliapp CLI11::CLI11_Module)
+  # planar_engine_runtime provides `planar.engine.runtime.agentactivity`, which
+  # the planar-agent shared cli.cppm imports; linking it gives the probe that
+  # module's BMI (an OBJECT library's own link step never runs).
+  target_link_libraries(${_target} PRIVATE planar_cliapp planar_engine_runtime CLI11::CLI11_Module)
 endforeach()
 
 add_test(NAME compile_fail_check
@@ -162,7 +151,7 @@ add_test(NAME compile_fail_check
 set_tests_properties(compile_fail_check PROPERTIES LABELS "compile_fail" RUN_SERIAL TRUE)
 
 # Distribution checks never appear in developer configurations. Use target
-# locations so the same check covers the exact five products being bundled.
+# locations so the same check covers the exact products being bundled.
 if(PLANAR_PORTABLE)
   find_package(Python3 COMPONENTS Interpreter REQUIRED)
   add_test(NAME portable.binaries
@@ -199,7 +188,7 @@ endif()
 # warning, kill-and-resume at every swap point, concurrent owners, the updater
 # handoff and --cleanup, and uninstall over a pending install.
 if(TARGET planar_cmd_planar AND TARGET planar_cmd_planar_agent AND TARGET planar_cmd_planar_watch
-   AND TARGET planar_cmd_planar_execute AND TARGET planar_cmd_planar_ext)
+   AND TARGET planar_cmd_planar_ext)
   # One ctest entry per group of scenarios (INSTALL_ORDER_GROUP; the groups are listed in
   # the script): the whole file took 757 s on a loaded host and the five-minute ceiling
   # applies to every installer test. Running the script with no group runs all of them.
@@ -208,7 +197,7 @@ if(TARGET planar_cmd_planar AND TARGET planar_cmd_planar_agent AND TARGET planar
       COMMAND "${CMAKE_COMMAND}" -E env "INSTALL_ORDER_GROUP=${_order_group}"
         /bin/bash "${PROJECT_SOURCE_DIR}/scripts/install-order-test.sh"
         "$<TARGET_FILE:planar_cmd_planar>" "$<TARGET_FILE:planar_cmd_planar_agent>"
-        "$<TARGET_FILE:planar_cmd_planar_watch>" "$<TARGET_FILE:planar_cmd_planar_execute>"
+        "$<TARGET_FILE:planar_cmd_planar_watch>"
         "$<TARGET_FILE:planar_cmd_planar_ext>")
     set_tests_properties(install.order_${_order_group} PROPERTIES LABELS "install_order;install_order_${_order_group}" TIMEOUT ${PLANAR_INSTALLER_TEST_TIMEOUT})
   endforeach()

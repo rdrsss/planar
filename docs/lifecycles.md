@@ -27,7 +27,7 @@ Three mechanisms, in layers, decide whether a status write lands:
    which is why re-answering an answered question or re-retiring a retired
    scenario is a silent no-op rather than a refusal.
 2. **Verb-level guards** layered on top by the handler: the claim-atomic
-   guard on task verbs, the cross-scope guard on ten verbs, required
+   guard on task verbs, the cross-scope guard on seven verbs, required
    flags such as `--reason`.
 3. **Engine roll-ups** that run *after* a write inside the same transaction
    and can move a *different* entity: plan auto-promotion, dependency
@@ -41,8 +41,8 @@ The lifecycle families, grouped by which binary owns the write:
 
 | Owner | State machines |
 |---|---|
-| `planar` | plan, plan step, task, question, decision, scenario, artifact, annotation, handoff, session, workbench sync, feedback triage, runs (bench) |
-| `planar-agent` | agent work claim, agent action, workflow run, context record, routing dispatch preview/snapshot, host queue entry |
+| `planar` | plan, plan step, task, question, decision, scenario, artifact, annotation, handoff, session, workbench sync |
+| `planar-agent` | agent work claim, agent action, host queue entry |
 | `planar-ext` | external link sync status, sync event |
 | derived (read-only) | health, resume readiness, closeout gate |
 
@@ -133,6 +133,7 @@ Verb to edge map (`src/cmd/planar/handlers/task/command.cpp`,
 | `task reopen --reason <r> [--status s] [--force]` | `done`/`cancelled` → `todo` (default) or `--status` | `--reason` refused if empty; writes `task_reopens` row; recompute |
 | `task update --status <s> [--force] [--no-auto-promote]` | any matrix edge | claim guard only when `--status` present; `--force` bypasses matrix and claim guard; cross-scope guard runs here only |
 | `planar-agent complete / fail / release / block` | see 3.1 | claim must be live; same transaction flips claim and task |
+| `planar-agent complete` (policy) | `doing` → `done` | additionally refused, in the same transaction and before any write, while `review_required` lacks an independent approving review or `task_gate` lacks a passing queued run under the claim (exit 1, claim stays active) |
 
 Guards:
 
@@ -216,8 +217,8 @@ stateDiagram-v2
     [*] --> draft : artifact add --status draft
     draft --> active : artifact update --status active
     active --> draft : artifact update --status draft
-    active --> superseded : artifact update --status superseded · import / synthesize replace
-    active --> retired : artifact update --status retired · import: source doc disappeared
+    active --> superseded : artifact update --status superseded
+    active --> retired : artifact update --status retired
     superseded --> [*]
     retired --> [*]
 ```
@@ -328,7 +329,7 @@ unknown token); `IllegalTransition` when the task is not in a state the
 verb can move (for example `complete` on a `--no-transition` claim whose task
 is still `todo`). Both exit 1 with the transaction rolled back.
 
-TTL: default 600 s on `pull`, `claim` and `heartbeat --ttl`. A heartbeat
+TTL: default 7200 s (two hours) on `pull` and `claim` when `--ttl` is omitted. A heartbeat
 without `--ttl` renews the lease by its *current* length (task 6093); it does
 not resurrect an already-expired lease.
 
@@ -344,7 +345,7 @@ sequenceDiagram
     O->>A: peek PLAN (read-only preview)
     O->>A: pull PLAN --role coder [--parent-action]
     A->>DB: BEGIN IMMEDIATE
-    A->>DB: select next todo task (priority asc, id asc)<br/>not held by a live claim
+    A->>DB: select next todo task (priority asc, id asc)<br/>not held by a live claim, skipping any task the packet reports unready
     A->>DB: insert claim(active), task → doing,<br/>open agent_actions(kind=coder)
     A->>DB: COMMIT
     A-->>O: {claim_token, task_id, action_id} | {no_work:true}
@@ -382,58 +383,20 @@ stateDiagram-v2
 `action_kind` set: `planner`, `ingestor`, `coder`, `test_coder`,
 `reviewer`, `ext_sync`, `ext_propagate`, `orchestrator`, `resume`,
 `workbench_sync`, `spec_draft`, `claim_check`, `heartbeat`, `tool_call`,
-`user_message`, `assistant_message`, `other`. `outcome` set: `ok`, `error`,
-`aborted`, `timeout`. `parent_action_id` builds the orchestrator → coder
-forest that `planar-watch tree` walks.
+`user_message`, `assistant_message`, `other`, `review`. `outcome` set: `ok`,
+`error`, `aborted`, `timeout`. `parent_action_id` builds the orchestrator →
+coder forest that `planar-watch tree` walks.
 
-### 3.4 Workflow run and context records (context plane)
+A `review` action is not part of that open/closed lifecycle: `planar-agent
+review` writes it already closed, with a `verdict` (`approve` or
+`request-changes`), under the reviewer's own session and linked to the
+reviewed claim (`claim_id`) and, as a child, to the reviewed claim's earliest
+action. It is refused when the caller's session is the reviewed claim's
+session, so a review is evidence that someone other than the coder looked.
+`action start --kind review` is refused and `pull --role review` degrades to
+`coder`.
 
-```mermaid
-stateDiagram-v2
-    state "workflow_runs.status" as R {
-        [*] --> running : planar-agent run start
-        running --> completed : run end --status completed
-        running --> failed : run end --status failed
-        running --> interrupted : run end --status interrupted
-        running --> abandoned : planar-agent reconcile (pid no longer alive)
-    }
-    state "context_records.status" as X {
-        [*] --> active : planar-agent context add --claim --kind
-        active --> consumed : stage close, folded into a capsule
-        active --> superseded : stage close, overridden by a later record
-    }
-```
-
-`context_records.kind` set: `finding`, `risk`, `artifact`, `followup`,
-`summary`, `capsule`. Raw records are never deleted; a `capsule` row's
-`compiled_from` lists the ids it distilled. Claims carry nullable
-`run_id`/`stage` so `context add` can stamp them server-side.
-
-The separate `runs` table (`planar run start/event/finish`, `planar bench`)
-is the measurement rig: its `status` is free text with default `running`,
-and `finish` accepts any caller-supplied terminal string.
-
-### 3.5 Routing dispatch authorization
-
-Two-phase, immutable-evidence flow in `src/engine/routing/`:
-
-```mermaid
-flowchart LR
-    P[dispatch preview] -->|insert routing_dispatch_previews<br/>mint single-use preview_token| T{dispatch confirm<br/>revalidate binding}
-    T -->|unchanged| S[insert routing_dispatch_snapshots<br/>mark preview consumed]
-    T -->|drift| E[stale_preview: expired, already_consumed,<br/>packet/profile/policy/capability/<br/>cohort/claim/candidate_changed]
-    S --> V[routing_dispatch_events<br/>attempt_started → attempt_finished → outcome → supersession]
-```
-
-Snapshot `terminal_state` set: `pending`, `completed`, `quality_failed`,
-`spawn_failed`, `cancelled`, `aborted`, `candidate_mismatch`,
-`missing_evidence`. `operator_decision`: `confirmed`, `overridden`.
-`reviewer_disposition`: `required`, `approved`, `request_changes`,
-`bypassed`, `not_reached`. Snapshots and events are trigger-protected
-against update and delete. This machine is independent of the claim
-machine; a preview only *carries* the claim token as one bound value.
-
-### 3.6 Host queue entry
+### 3.4 Host queue entry
 
 One row of `queue_entries` in `planar.db`, from `queue run` to its
 `queue_history` row. The store's `state` column holds only `waiting` and
@@ -629,7 +592,7 @@ Phase selection keys off the anchor plan status: `draft` without artifacts
 3.7 and 4 on request); `done` → offer Phase 5. Double-bordered nodes
 are operator gates; the orchestrator never crosses one silently.
 
-Reviewer verdicts and what each triggers (`agents/planar-reviewer.md`):
+Reviewer verdicts and what each triggers (`examples/agents/planar-reviewer.md`):
 
 | Verdict | Terminal verb | Then |
 |---|---|---|
@@ -639,31 +602,34 @@ Reviewer verdicts and what each triggers (`agents/planar-reviewer.md`):
 | `abort` | `planar-agent fail` | halt cycle (whole queue under barrel-deferred), escalate with WIP |
 
 Janitor result contract: `closed`, `blocked-with-reasons`, `abort`. Its
-preferred closeout path is
-`planar-execute run workflows/finalize_closeout.lua --phase closeout`,
-falling back to `planar plan closeout --dry-run` then apply.
+closeout path is `planar plan closeout --dry-run`, then apply.
 
 ### 5.2 Spec ingest
 
-Only `spec ingest` exists as a binary verb; drafting and review are skills.
-Inputs are the anchor's `tech_spec`, `roadmap` and `test_spec` artifacts,
-read back from the workbench feature directory.
+Only `spec ingest` exists as a binary verb; drafting and review are not Planar verbs.
+Inputs are the anchor's artifacts, read back from the workbench feature
+directory. A work list is required: the `roadmap` artifact, or, when the
+anchor has none, the single artifact that parses as one. Decisions, questions
+and scenarios are read from any artifact on the anchor, so a `tech_spec` and a
+`test_spec` are optional.
 
 ```mermaid
 flowchart LR
     T[tech-spec.md<br/>## Decisions H3 → decision<br/>## Open Questions H3 → question] --> D
     R[roadmap.md<br/>## H2 → child milestone plan<br/>bullet → task with touches/depends/slug] --> D
     S[test-spec.md<br/>### Scenario: → test_scenario<br/>Verifies: task:slug] --> D
-    D[diff engine<br/>title-keyed, case-insensitive<br/>ops: add / update / remove] --> C{coverage.has_gaps?<br/>slug collisions?}
-    C -->|--strict and gaps| REF[refuse]
+    D[diff engine<br/>title-keyed, case-insensitive<br/>ops: add / update / remove] --> C{slug collision or<br/>unresolved reference?}
+    C -->|--strict and yes| REF[refuse]
     C -->|preview| OUT[report, no writes]
-    C -->|--apply| TX[one transaction per anchor:<br/>plans, tasks, decisions, questions,<br/>scenarios, touches edges,<br/>routing task facts,<br/>anchor draft → active once]
+    C -->|--apply| TX[one transaction per anchor:<br/>plans, tasks, decisions, questions,<br/>scenarios, touches edges,<br/>cites links to the reviewed artifacts,<br/>anchor draft → active once]
     TX -->|--apply-removals| RM[missing bullets → task cancelled]
 ```
 
 Preservation rules: a task body is overwritten only when it still
-byte-matches a Planar-generated body; a slug is back-filled only when
-empty; provenance citations are always restaged; a colliding slug is
+byte-matches a Planar-generated body. A body in the earlier generated shape,
+which ended with a `## Required validation` section, counts as unchanged and is
+never rewritten; a human-edited one is operator work. A slug is back-filled only when
+empty; `cites` links to the reviewed artifacts are reconciled on every apply; a colliding slug is
 warned in preview and fails apply with `SlugConflict` because `tasks.slug`
 is globally unique. Ingest does not touch the workbench filesystem; run
 `workbench push` afterwards.
@@ -803,27 +769,7 @@ Template kinds by role: Jira `epic` / `story` / `sub-task`; GitHub
 subtree's mirror links and writes `strategy-abandoned` events; remote
 counterparts are never deleted.
 
-### 5.6 Import and synthesize
-
-Both stage an LLM hand-off through a fingerprint-keyed cache under
-`~/.planar/cache/` and converge on the same downstream pipeline
-(workbench review → `spec ingest`).
-
-```mermaid
-flowchart LR
-    I[planar import repo] --> SC[deterministic scan:<br/>AGENTS.md / CLAUDE.md / *.md, tree summary, fingerprint]
-    SC -->|no --interpret| OUT[report only]
-    SC -->|--interpret| CH{cache/FP.json exists?}
-    CH -->|no| PEND[write _pending.json, vendor skill runs LLM, re-invoke]
-    CH -->|yes| AP[--apply: child plans per phase, tasks,<br/>artifacts reconciled by source path,<br/>decisions superseded by title,<br/>--apply-removals → cancelled / abandoned]
-    SY[planar synthesize repo] --> SC2[scan docs + source areas + tests + CI] --> CH
-```
-
-Synthesize additionally requires that a proposed task with `status ≠ todo`
-cite a `code_evidence` path that exists. Original docs are kept as
-`kind=research` artifacts.
-
-### 5.7 Handoff and resume
+### 5.6 Handoff and resume
 
 ```mermaid
 sequenceDiagram
@@ -842,7 +788,7 @@ sequenceDiagram
     A2->>P: planar-agent claim --entity task:ID --no-transition (task already doing)
 ```
 
-### 5.8 Health and doctor
+### 5.7 Health and doctor
 
 ```mermaid
 flowchart TD
@@ -864,48 +810,10 @@ flowchart TD
 `planar health` is read-only; the recovery reference (`skills/planar/references/recovery.md`) is the guided-write companion.
 Genuinely active or blocked work can keep `overall = degraded` by design.
 
-### 5.9 Introspect, triage, report
+### 5.8 Feedback triage
 
-```mermaid
-flowchart LR
-    I1[planar report --json --days N] --> I2[redacted signal:<br/>failure-cluster, retry-pattern,<br/>abandoned-workflow, gap-feature]
-    I2 --> I3{{preview, --apply confirm}}
-    I3 --> I4[question add / task add on the<br/>association's planar-feedback plan, title-deduped]
-    I4 --> T1{{planar-feedback-triager preview, confirm}}
-    T1 --> T2["feedback triage set task:N|question:N<br/>--severity --disposition --reproduction"]
-    T2 --> R1{{issue-report preview, confirm}}
-    R1 --> R2[gh issue create] --> R3[external_links linkback]
-    R3 --> T3[triage set --disposition reported-external]
-```
-
-Triage value sets (`feedback_triage` table): severity `info`, `low`,
-`medium`, `high`, `critical`; disposition `untriaged`,
-`needs-reproduction`, `accepted`, `retained-question`, `dismissed`,
-`reported-external`, `duplicate`; reproduction `not-run`, `reproduced`,
-`not-reproduced`, `inconclusive`. `duplicate` requires `duplicate_of` and
-the chain is cycle-checked. A finding outside the `planar-feedback` plan is
-refused as `different_feedback_plan`.
-
-### 5.10 Deterministic workflow run (`planar-execute`)
-
-```mermaid
-flowchart LR
-    C[caller: LLM harness, janitor,<br/>planar workflow run name] --> E[planar-execute run wf.lua --phase p --args json]
-    E --> L{load + init}
-    L -->|init_failed / load_failed / phase_missing| X1[exit 1]
-    L --> PH[call phase function]
-    PH -->|flow.fail| X2[phase_failed, exit 1]
-    PH -->|flow.result table| OUT[JSON on stdout, exit 0]
-    PH -. host calls .-> HF["cli.* (planar, planar-agent, planar-watch only)<br/>git.* (-C worktree)<br/>fs.* (sandbox root)<br/>flow.* / ctx.*"]
-```
-
-Each invocation is one stateless phase; there is no run record or
-checkpoint inside `planar-execute`. Resumption means the caller invokes the
-next `--phase` using Planar state it reads through `cli.*`. The
-twenty-five-entry host manifest is frozen and compile-time disjoint from a
-spawn-shaped denylist (`agent`, `parallel`, `spawn`, `claude`, `codex`,
-`model`, …). `planar workflow run <name>` only resolves the file and execs
-this binary.
+Removed in plan 1142 (task 7473). The verbs and the `planar-feedback-triager` role are
+preserved at tag `archive/feedback-triage`; the `feedback_triage` table (migration 00028) stays in the schema.
 
 ---
 
@@ -923,7 +831,7 @@ flowchart TD
     N -->|0| UNSET[unset: project_unassociated]
     N -->|1| ONE[that association]
     N -->|2+| UNSET2[unset: project_multiple_associations]
-    U & REPO & ONE --> G{guarded verb?<br/>spec ingest --apply, feedback triage set,<br/>audit publish-decision, decision accept/withdraw,<br/>task update, closure compute, sync push/pull/resolve}
+    U & REPO & ONE --> G{guarded verb?<br/>spec ingest --apply,<br/>decision accept/withdraw,<br/>task update, sync push/pull/resolve}
     G -->|no| WRITE[write]
     G -->|yes| CMP{operator scope covers entity scope?<br/>assoc:org covers repo:member since decision 1121}
     CMP -->|yes| WRITE
@@ -943,12 +851,10 @@ bug, unless noted.
 
 | Claim | Where | What the code does |
 |---|---|---|
-| Plan status flips write a `session_entries` note beginning `plan_status: <id>`, recoverable with `audit trail --grep "^plan_status:"` | `docs/concepts.md` § Plan (**fixed at task 6825** — now describes the `audit_log` row), `agents/methodology.md` § Plan-status invariant (since fixed) | The C++ roll-up writes an `audit_log` `status_change` row with a free-text summary; no `plan_status:` sentinel is produced anywhere in `src/` |
+| Plan status flips write a `session_entries` note beginning `plan_status: <id>`, recoverable with `audit trail --grep "^plan_status:"` | `docs/concepts.md` § Plan (**fixed at task 6825** — now describes the `audit_log` row) | The C++ roll-up writes an `audit_log` `status_change` row with a free-text summary; no `plan_status:` sentinel is produced anywhere in `src/` |
 | `planar health` `overall` is one of `ok`, `degraded`, `critical` | the retired health skill (since removed; fixed — now names `ok` and `degraded`) | Two values only, `ok` and `degraded` (`src/engine/health/health.cpp`) |
 | Whole-tree `ext propagate <plan>` is not yet implemented | the retired propagate skill (since removed); `docs/cli-reference.md` § `planar-ext ext propagate`, its `workbench publish` and `link --propagate` cross-references (**fixed at task 6825**) | Both the `github-parent-issue` arm and the generic tree-walk arm (task 6451) are wired in `src/cmd/planar-ext/handlers/ext/propagate.cpp`; only `github-projects-v2` refuses (decision 1001) |
-| `planar models list\|refresh\|routing\|apply\|candidates` exist, and `models evals` takes only `--json` | `docs/cli-reference.md` § Domain `models`, `docs/concepts.md` § Model routing, `docs/workflows.md` Recipe 25, `docs/skill-reference.md` § Role values on flags (**all fixed at task 6825**) | The `models` group's subcommands are exactly `evals`, `resolve`, `experiments`, `outcomes`, `registry`; `evals` declares ten cohort flags (`src/cmd/planar/handlers/models/evals.cppm`). The binary's own `planar models --help` group description still narrates the removed family — a binary-side drift, not fixed here |
 | Workbench terminal filter's primary module is `src/engine/workbench/terminal.zig` | `docs/concepts.md` § Workbench (**fixed at task 6926** — now cites `src/engine/workbench/terminal.cppm`) | `src/engine/workbench/terminal.cppm` |
-| `closure compute` is deferred with its dependencies | header comment in `src/engine/closure/store.cppm` | `compute.cpp` implements the tree-sitter extraction and is wired to `planar closure compute` |
 | `derive_from_cwd` redirects a git-worktree cwd to its parent repo | Zig-era behaviour | Not ported; the module header names it as a residual gap |
 
 ---
@@ -963,14 +869,10 @@ bug, unless noted.
 | dependency unblock | `clear_unblocked_dependents`, `src/engine/planning/task.cpp` | `00033_rename_blocks_to_depends_on.up.sql` |
 | closeout gate | `src/engine/planning/closeout.cppm` | |
 | agent claim, action | `src/engine/runtime/agentactivity.cpp`, `agentatomic.cpp` | `00015_agent_activity.up.sql`, `00029_agent_failure_categories.up.sql` |
-| workflow run, context record | `src/engine/runtime/workflowruns.cppm` | `00022_workflow_context_plane.up.sql` |
 | host queue entry | `src/engine/hostqueue/{poll,terminate,history,queue}.cpp`, `src/cmd/planar-agent/handlers/queue/queue.cpp` | `00040_host_queue.up.sql` |
-| routing dispatch | `src/engine/routing/routing.cppm` | `00030_adaptive_routing_evidence.up.sql`, `00031_dispatch_confirmation_tokens.up.sql` |
 | resume readiness | `src/engine/runtime/resumecheck.cppm` | |
 | health | `src/engine/health/health.cpp` | |
 | workbench sync | `src/engine/workbench/sync.cppm`, `terminal.cppm` | `00007_workbench.up.sql` |
-| spec ingest | `src/engine/ingest/{parse,diff,coverage,materialize}.cppm` | |
+| spec ingest | `src/engine/ingest/{parse,diff,coverage,materialize,packet}.cppm` | |
 | external link, sync event | `src/engine/external/sync.cpp`, `link.cpp` | `00006_external.up.sql`, `00027_external_sync_baseline.up.sql` |
-| feedback triage | `src/engine/planning/feedback_triage.cppm` | `00028_feedback_triage.up.sql` |
 | scope | `src/engine/identity/scope.cppm` | |
-| planar-execute | `src/engine/execute/manifest.cpp`, `src/cmd/planar-execute/handlers/run/engine.cppm` | |

@@ -15,6 +15,7 @@ import planar.engine.runtime.agentatomic;
 import planar.engine.runtime.agentrender;
 import planar.engine.runtime.sessioncommits;
 import planar.cmd.planar_agent.args;
+import planar.cmd.planar_agent.completion_policy;
 import planar.cmd.planar_agent.context;
 import planar.cmd.planar_agent.exit;
 import planar.cmd.planar_agent.handler;
@@ -113,12 +114,6 @@ auto emit(context& ctx, const atomic::terminal_result& result, bool json,
 /// claim's locality snapshot.
 /// @param no_locality_probe The verb's `--no-locality-probe` flag.
 auto collect_commits(context& ctx, const atomic::terminal_result& result, bool no_locality_probe) -> void {
-  // A replay (an engine terminal verb repeated under the attempt that
-  // already landed it) wrote nothing; harvesting again would double-record
-  // the claim window.
-  if (result.replayed) {
-    return;
-  }
   auto conn = ctx.db().ensure_db();
   if (!conn) {
     return;
@@ -140,15 +135,19 @@ auto complete(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   if (!conn) {
     return std::unexpected(conn.error());
   }
-  auto const flags = parse_gate_flags(args);
-  if (!flags) {
-    return std::unexpected(flags.error());
-  }
   auto const   summary = cliapp::flag_string(args, "--summary");
   plan_roll_up observed;
-  auto const   result = atomic::complete_work(**conn, cliapp::flag_string(args, "--claim").value_or(std::string{}), view(summary),
-                                              task_policy(&observed), flags->gate());
+  // Plan 1142: only `complete` is held to the configured review and gate requirements. The check runs
+  // inside the transaction that would end the claim, so a refusal writes nothing.
+  completion_report report;
+  auto              policy = task_policy(&observed);
+  policy.check_completion  = completion_check(internal::resolve_config_path(ctx.env()), &report);
+  auto const result =
+      atomic::complete_work(**conn, cliapp::flag_string(args, "--claim").value_or(std::string{}), view(summary), policy);
   if (!result) {
+    if (result.error() == aa::agent_error::completion_unmet) {
+      return std::unexpected(completion_refusal(report));
+    }
     return std::unexpected(verb_error("complete", result.error()));
   }
   collect_commits(ctx, *result, cliapp::flag_bool(args, "--no-locality-probe"));
@@ -164,15 +163,11 @@ auto fail(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   // to "unknown", so this lookup cannot miss — but it falls back rather
   // than asserting, because a tree-authoring mistake should not abort in
   // an operator's shell.
-  auto const flags = parse_gate_flags(args);
-  if (!flags) {
-    return std::unexpected(flags.error());
-  }
   auto const category_text = cliapp::flag_string(args, "--category").value_or(std::string{"unknown"});
   auto const category      = aa::failure_category_from_text(category_text).value_or(aa::failure_category::unknown);
   auto const reason        = cliapp::flag_string(args, "--reason").value_or(std::string{});
-  auto const result = atomic::fail_work(**conn, cliapp::flag_string(args, "--claim").value_or(std::string{}), reason, category,
-                                        task_policy(), flags->gate());
+  auto const result =
+      atomic::fail_work(**conn, cliapp::flag_string(args, "--claim").value_or(std::string{}), reason, category, task_policy());
   if (!result) {
     return std::unexpected(verb_error("fail", result.error()));
   }
@@ -185,13 +180,9 @@ auto release(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   if (!conn) {
     return std::unexpected(conn.error());
   }
-  auto const flags = parse_gate_flags(args);
-  if (!flags) {
-    return std::unexpected(flags.error());
-  }
   auto const reason = cliapp::flag_string(args, "--reason");
-  auto const result = atomic::release_work(**conn, cliapp::flag_string(args, "--claim").value_or(std::string{}), view(reason),
-                                           task_policy(), flags->gate());
+  auto const result =
+      atomic::release_work(**conn, cliapp::flag_string(args, "--claim").value_or(std::string{}), view(reason), task_policy());
   if (!result) {
     return std::unexpected(verb_error("release", result.error()));
   }
@@ -204,14 +195,9 @@ auto block(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   if (!conn) {
     return std::unexpected(conn.error());
   }
-  auto const flags = parse_gate_flags(args);
-  if (!flags) {
-    return std::unexpected(flags.error());
-  }
   auto const reason = cliapp::flag_string(args, "--reason");
-  auto const result =
-      atomic::block_work(**conn, cliapp::flag_string(args, "--claim").value_or(std::string{}),
-                         cliapp::flag_int(args, "--blocker").value_or(0), view(reason), task_policy(), flags->gate());
+  auto const result = atomic::block_work(**conn, cliapp::flag_string(args, "--claim").value_or(std::string{}),
+                                         cliapp::flag_int(args, "--blocker").value_or(0), view(reason), task_policy());
   if (!result) {
     return std::unexpected(verb_error("block", result.error()));
   }

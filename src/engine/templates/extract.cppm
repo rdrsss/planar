@@ -4,8 +4,8 @@
 ///
 /// Behavior-preserving port (D2) of `zig/src/engine/templates/init.zig`'s
 /// `initOnDisk`. Named `extract` rather than `init` because this bucket
-/// sits beside `engine/config`, which already owns an `init` module for the
-/// unrelated `planar config init` verb; two `planar.engine.*.init` modules
+/// sits beside `engine/config`, which already owns an `init` module; two
+/// `planar.engine.*.init` modules
 /// one directory apart is a coin-flip at every import site.
 ///
 /// ## Idempotent, and NOT overridable

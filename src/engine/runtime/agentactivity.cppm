@@ -179,20 +179,30 @@ export enum class action_kind : std::uint8_t {
   user_message,
   assistant_message,
   other,
-  // Engine supervision (migration 00038, plan 1033 task 6487/6488). Written
-  // ONLY by the atomic supervision paths in `agentatomic`, never by
-  // `action start` — see `is_supervision_kind`.
-  claim_associate,     ///< A claim handed to (or re-attempted by) the engine supervisor.
-  claim_terminal,      ///< The engine's one terminal verb on a claim.
-  supervisor_override, ///< An operator terminating an engine claim with `--override-supervisor`.
-  run_submitted,       ///< A Centurion run's submission.
-  run_reconciled,      ///< A terminal verb re-issued by post-crash reconciliation.
+  // Engine supervision (migration 00038, plan 1033 task 6487/6488). No verb
+  // writes these kinds any more; they remain so that rows written before the
+  // removal still decode, and `action start --kind` still refuses them (see
+  // `is_supervision_kind`).
+  claim_associate,     ///< Legacy: a claim handed to the engine supervisor (no verb writes it now).
+  claim_terminal,      ///< Legacy: the engine's terminal verb on a claim (no verb writes it now).
+  supervisor_override, ///< Legacy: an operator terminating an engine claim (no verb writes it now).
+  run_submitted,       ///< Legacy: a Centurion run's submission (no verb writes it now).
+  run_reconciled,      ///< Legacy: a terminal verb re-issued by post-crash reconciliation (no verb writes it now).
+  /// A review verdict on a claim, written only by `planar-agent review` (migration 00042, plan 1142).
+  /// `action start --kind` refuses it and `pull --role` degrades it to `coder`, so the verdict
+  /// rows are the audit trail of the review verb alone.
+  review,
 };
 
-/// @brief Whether `kind` is one of the five engine-supervision kinds.
+/// @brief A reviewer's verdict. Mirrors `agent_actions.verdict`.
+export enum class review_verdict : std::uint8_t {
+  approve,         ///< `approve`.
+  request_changes, ///< `request-changes`.
+};
+
+/// @brief Whether `kind` is one of the engine-supervision kinds.
 ///
-/// Those rows are the audit trail of who terminated an engine-supervised
-/// claim, so they are written only inside the atomic supervision paths;
+/// Those rows are the audit trail of the engine's supervised claims, so
 /// `action start --kind` and `pull --role` refuse or ignore them, or any
 /// agent could forge a `claim_terminal` row.
 /// @param kind The kind.
@@ -226,6 +236,16 @@ export enum class dirty_state : std::uint8_t {
   dirty,
   unknown,
 };
+
+/// @brief The stored token for `value`.
+/// @param value The enumerator.
+/// @return The exact text the CHECK constraint accepts.
+export auto to_text(review_verdict value) -> std::string_view;
+
+/// @brief Parse a verdict token; unset for anything but `approve` and `request-changes`.
+/// @param text The candidate token.
+/// @return The verdict, or unset.
+export auto review_verdict_from_text(std::string_view text) -> std::optional<review_verdict>;
 
 /// @brief The stored token for `value`.
 /// @param value The enumerator.
@@ -369,6 +389,7 @@ export struct action {
   std::optional<std::string>        head_sha;         ///< Locality: HEAD sha.
   std::optional<dirty_state>        dirty;            ///< Locality: cleanliness.
   std::optional<std::string>        metadata;         ///< Opaque caller text; never parsed here.
+  std::optional<review_verdict>     verdict;          ///< Set on `review` actions only.
 };
 
 /// @brief The subset of a `tasks` row the agent verbs render.
@@ -427,14 +448,32 @@ export enum class agent_error : std::uint8_t {
   /// 6843; see `db::is_busy`). Distinct from `query_failed` because an
   /// operator or orchestrator should retry, not escalate.
   busy,
-  /// The caller is not the claim's supervisor: a caller terminal verb or
-  /// lease extension on an engine claim, or an engine verb on a caller
-  /// claim, or a supervisor change back to `caller` (plan 1033 D3). New
-  /// with the engine supervisor; the Zig oracle has no such tag.
+  /// The actor is not the claim's supervisor: an engine actor on a caller
+  /// claim (plan 1033 D3). New with the engine supervisor; the Zig oracle
+  /// has no such tag. No verb passes an engine actor any more (task 7458),
+  /// and a caller is never refused on a legacy engine-supervised claim.
   supervisor_mismatch,
   /// An engine verb named a different Centurion attempt than the one the
   /// claim is associated with (plan 1033 D4).
   attempt_mismatch,
+  /// The task is not ready to be claimed: its coordination packet lists at least one readiness
+  /// reason and the caller did not ask to override (plan 1142). New with the readiness gate; the
+  /// Zig oracle has no such tag. The reasons travel in the caller's `claim_readiness`, not here.
+  task_not_ready,
+  /// A review was asked for from the reviewed claim's own session, or from a claim whose session
+  /// cannot be told apart from it (plan 1142). Writes nothing.
+  reviewer_not_independent,
+  /// A review named neither a reviewer claim nor a vendor session, so the caller's session is unknown.
+  reviewer_unidentified,
+  /// A review named a reviewer claim that does not exist.
+  reviewer_claim_not_found,
+  /// `complete` was refused because the policy requires a review or a gate run the claim has not
+  /// shown (plan 1142). The unmet requirements travel in the caller's report, not here.
+  completion_unmet,
+  /// `claim` or `pull` was refused by the configured policy: a coder claim without a model while
+  /// `require_model` is set, or a policy that cannot be applied (plan 1142). The text travels in the
+  /// caller's report, not here. Writes nothing.
+  claim_policy_unmet,
 };
 
 /// @brief The Zig error TAG for `err`, as it appears on the operator's
@@ -451,6 +490,20 @@ export auto error_name(agent_error err) -> std::string_view;
 // Acquire
 // =========================================================================
 
+/// @brief The lease length, in seconds, of a claim taken without an explicit `--ttl`: two hours.
+///
+/// `claim` and `pull` default to it. `heartbeat` without `--ttl` does not use it: that renews the
+/// length the claim already holds. The reconcile stale threshold is a separate value.
+export inline constexpr std::int64_t default_lease_secs = 7200;
+
+/// @brief The `agent_actions.metadata` of the open action `claim_entity` writes for a claim that
+/// has no `claim_check` marker but was asked for a `--parent-action`.
+///
+/// Together with the audit row's `"unready_override":true` it marks an action as bookkeeping that is
+/// NOT evidence the claim moved the task: `reconcile` ignores marked rows when it decides whether to
+/// return a task to `todo`.
+export inline constexpr std::string_view claim_nest_metadata = R"({"claim_nest":true})";
+
 /// @brief Arguments to `acquire_claim`. Mirrors zig's `AcquireArgs`.
 export struct acquire_args {
   std::int64_t                    session_id{};                   ///< Owning session.
@@ -465,17 +518,26 @@ export struct acquire_args {
   std::optional<std::string_view> worktree_path;                  ///< Worktree path.
   std::optional<std::string_view> purpose;                        ///< Free-text purpose.
   std::optional<std::string_view> base_ref;                       ///< Git ref.
+  /// Digest of the effective policy the claim is taken under, stored in `agent_work_claims.policy_digest`;
+  /// unset stores NULL.
+  std::optional<std::string_view> policy_digest;
   /// Lease TTL in seconds. Rendered into the SQL text, not bound — see
   /// this file's header. Negative values are legal at this API (they mint
   /// an already-expired claim for tests) and unreachable from the CLI.
-  std::int64_t ttl_secs = 600;
+  std::int64_t ttl_secs = default_lease_secs;
   locality     loc; ///< Git snapshot to record.
   /// Take over a live claim: mark every active claim on the same
   /// `(kind, entity_id)` stale first. Operator recovery only; the normal
   /// path returns `claim_contention` instead.
-  bool                            force = false;
-  std::optional<std::int64_t>     run_id; ///< `workflow_runs` FK.
-  std::optional<std::string_view> stage;  ///< Workflow stage name.
+  bool force = false;
+  /// Parent action for the action row `agentatomic::claim_entity` opens for this claim, so
+  /// `planar-watch tree` nests it under that action. `acquire_claim` itself ignores it.
+  std::optional<std::int64_t> parent_action_id;
+  /// Runs after the exclusivity check (and the `force` takeover) and before the INSERT, inside the
+  /// caller's immediate transaction, so a refusal it returns leaves no claim row and a competing
+  /// writer cannot change what it read between the check and the insert. Unset runs nothing. Its
+  /// failure is returned unchanged by `acquire_claim`.
+  std::function<std::expected<void, agent_error>(db::connection&)> admit;
 };
 
 /// @brief Insert a new claim.
@@ -491,8 +553,8 @@ export struct acquire_args {
 /// host-side. It is opaque: never parse meaning out of it.
 /// @param conn An open, migrated connection, inside an immediate transaction.
 /// @param args The claim to insert.
-/// @return The inserted row, or `claim_contention` / `worktree_not_found` /
-/// `query_failed`.
+/// @return The inserted row, or `claim_contention` / `worktree_not_found` / the
+/// `args.admit` refusal / `query_failed`.
 export auto acquire_claim(db::connection& conn, const acquire_args& args) -> std::expected<claim, agent_error>;
 
 // =========================================================================
@@ -518,8 +580,8 @@ export auto acquire_claim(db::connection& conn, const acquire_args& args) -> std
 /// reading the delta while overwriting both columns is safe.
 ///
 /// HISTORY: this used to reset the lease to `now + ttl_secs` with the CLI
-/// defaulting an omitted `--ttl` to 600, so a claim taken with `--ttl 8h`
-/// and then heartbeated bare had its lease CUT from eight hours to ten
+/// defaulting an omitted `--ttl` to a fixed 600 (the lease default was then ten minutes), so a
+/// claim taken with `--ttl 8h` and then heartbeated bare had its lease CUT from eight hours to ten
 /// minutes — a faithfully-heartbeating long dispatch was MORE likely to
 /// lose its claim than one that never heartbeated. That was Planar task
 /// 6093, and this port pinned it as observed oracle behavior. The ORACLE
@@ -645,6 +707,19 @@ export auto is_claim_active_unexpired(db::connection& conn, std::string_view cla
 /// lease exists on this task, or `query_failed`.
 export auto has_active_claim_on_task(db::connection& conn, std::int64_t task_id) -> std::expected<bool, agent_error>;
 
+/// @brief The token of the live claim holding this task, when one does.
+///
+/// The same predicate as `has_active_claim_on_task`, answered with the token
+/// so a refusal can name the `planar-agent <terminal verb> --claim <token>`
+/// that would succeed. When more than one live claim holds the task (a
+/// `shared` claim), the newest row's token is returned.
+/// @param conn An open, migrated connection.
+/// @param task_id The task's row id.
+/// @return The newest live claim's token, `nullopt` when none holds the task,
+/// or `query_failed`.
+export auto active_claim_token_on_task(db::connection& conn, std::int64_t task_id)
+    -> std::expected<std::optional<std::string>, agent_error>;
+
 // =========================================================================
 // Reads
 // =========================================================================
@@ -685,19 +760,6 @@ export auto task_plan_id(db::connection& conn, std::int64_t task_id) -> std::opt
 // Run association
 // =========================================================================
 
-/// @brief Stamp a `workflow_runs` id (and optional stage) onto a live claim.
-///
-/// Returns the number of rows updated rather than an error when the token
-/// is unknown or terminal — `0` is a legitimate answer the CLI surfaces as
-/// `updated:0` with exit 0. Not wrapped in a transaction (a single UPDATE).
-/// @param conn An open, migrated connection.
-/// @param claim_token The token to stamp.
-/// @param run_id The `workflow_runs` row id.
-/// @param stage The stage name, or unset for NULL.
-/// @return The number of rows updated, or `query_failed`.
-export auto associate_claim_run(db::connection& conn, std::string_view claim_token, std::int64_t run_id,
-                                std::optional<std::string_view> stage) -> std::expected<std::int64_t, agent_error>;
-
 // =========================================================================
 // Engine supervision (migration 00038, plan 1033 D3/D4)
 // =========================================================================
@@ -715,17 +777,6 @@ export struct supervision {
 /// @param claim_token The claim.
 /// @return The supervision, or `claim_not_found` / `query_failed`.
 export auto get_supervision(db::connection& conn, std::string_view claim_token) -> std::expected<supervision, agent_error>;
-
-/// @brief Mark a claim engine-supervised under `attempt_id`.
-///
-/// One-way: nothing here sets a claim back to `caller`. MUST be called
-/// inside the caller's transaction, after the claim has been checked live.
-/// @param conn An open, migrated connection.
-/// @param claim_id The claim row.
-/// @param attempt_id The Centurion attempt.
-/// @return Success, or `query_failed`.
-export auto set_engine_supervision(db::connection& conn, std::int64_t claim_id, std::string_view attempt_id)
-    -> std::expected<void, agent_error>;
 
 // =========================================================================
 // Actions
@@ -843,11 +894,6 @@ export struct reconcile_policy {
   std::optional<std::int64_t>     session_id;               ///< Scope to one session; unset sweeps globally.
   std::optional<std::int64_t>     plan_id;                  ///< Scope to one plan; unset sweeps globally.
   std::optional<failure_category> category;                 ///< Category to stamp on claims made stale.
-  /// Reconcile engine-supervised claims too (plan 1033 task 6489). Off by
-  /// default: an engine claim's lease and terminal verb are the engine's,
-  /// so the sweep reports it as skipped instead of taking it over. Each
-  /// claim swept under this flag gets one `supervisor_override` action.
-  bool override_supervisor = false;
 };
 
 /// @brief What a sweep did (or, in dry-run, would do).
@@ -859,9 +905,6 @@ export struct reconcile_result {
   std::int64_t       claims_marked_stale = 0;
   std::int64_t       actions_closed      = 0; ///< Number of action rows closed.
   std::vector<claim> candidates;              ///< The expired claims found (populated in every mode).
-  /// Expired ENGINE-supervised claims left untouched (plan 1033 task 6489);
-  /// always empty under `override_supervisor`.
-  std::vector<claim> skipped_engine;
 };
 
 /// @brief Mark expired claims stale, return their tasks to `todo` where
@@ -876,45 +919,6 @@ export struct reconcile_result {
 /// @param policy The sweep policy.
 /// @return The sweep result, or `query_failed`.
 export auto reconcile_stale(db::connection& conn, const reconcile_policy& policy) -> std::expected<reconcile_result, agent_error>;
-
-/// @brief A `workflow_runs` row the sweep considers dead.
-export struct run_candidate {
-  std::int64_t                id{};           ///< Row id.
-  std::string                 run_identifier; ///< The caller-supplied identifier.
-  std::int64_t                pid{};          ///< The recorded process id (0 for a pid-less, lease-supervised run).
-  std::optional<std::int64_t> plan_id;        ///< The owning plan, when set.
-};
-
-/// @brief What the run sweep did.
-export struct reconcile_runs_result {
-  std::int64_t               abandoned = 0;  ///< Rows moved to `abandoned`.
-  std::vector<run_candidate> candidates;     ///< The dead-pid rows found.
-  std::vector<run_candidate> skipped_engine; ///< Dead-pid `engine='centurion'` rows left running (task 6489).
-};
-
-/// @brief Is a process id live?
-///
-/// POSIX `kill(pid, 0)`: `ESRCH` means gone, `EPERM` means it exists under
-/// another owner (so: alive), any other errno is treated as alive because
-/// the conservative direction here is to NOT abandon a run we are unsure
-/// about. A non-positive pid is dead by definition.
-/// @param pid The process id.
-/// @return `true` when the process appears to exist.
-export auto pid_alive(std::int64_t pid) -> bool;
-
-/// @brief Abandon `running` workflow runs that are dead: a pid-bound run
-/// whose recorded pid is gone, or a pid-less run whose `expires_at` lease
-/// has lapsed (decision D11, task 6847). A pid-less run with a live lease
-/// is left running — reconcile never probes a lease it has not seen expire.
-/// @param conn An open, migrated connection.
-/// @param dry_run When true, collect candidates and write nothing.
-/// A `centurion` run's liveness is the Centurion host's to judge, not a pid
-/// probe's, so it is reported as skipped unless `override_supervisor`.
-/// @param plan_id Scope to one plan; unset sweeps globally.
-/// @param override_supervisor Abandon dead-pid/expired-lease `centurion` runs too.
-/// @return The sweep result, or `query_failed`.
-export auto reconcile_runs(db::connection& conn, bool dry_run, std::optional<std::int64_t> plan_id,
-                           bool override_supervisor = false) -> std::expected<reconcile_runs_result, agent_error>;
 
 // =========================================================================
 // Read paths — the display half (task 6120)
@@ -1033,6 +1037,29 @@ export auto list_actions(db::connection& conn, std::int64_t limit) -> std::expec
 /// @return The action, unset when the claim has none, or `query_failed`.
 export auto latest_action_for_claim(db::connection& conn, std::int64_t claim_id)
     -> std::expected<std::optional<action>, agent_error>;
+
+/// @brief One recorded review of a claim.
+export struct review_row {
+  std::int64_t               action_id{};           ///< The `review` action's row id.
+  review_verdict             verdict{};             ///< The reviewer's verdict.
+  std::string                summary;               ///< The reviewer's summary; empty when none was stored.
+  std::string                recorded_at;           ///< When the review was recorded.
+  std::optional<std::string> reviewer_session;      ///< The reviewer's vendor session id, when known.
+  std::optional<std::string> reviewer_claim;        ///< The reviewer's own claim token, when it named one.
+  std::int64_t               reviewer_session_id{}; ///< The `sessions` row the review action belongs to.
+};
+
+/// @brief Every review recorded against a claim, oldest first.
+///
+/// A review is an `agent_actions` row of kind `review` whose `claim_id` is the REVIEWED claim, so
+/// this finds reviews by the claim they are about, whichever session wrote them. Rows without a
+/// verdict never appear (the `review` verb cannot write one). A token that names no claim yields an
+/// empty list, not an error. Read-only; the claim-gate checks (task 7492) and conformance read it.
+/// @param conn An open connection.
+/// @param claim_token The reviewed claim's token.
+/// @return The reviews, or `query_failed`.
+export auto reviews_for_claim(db::connection& conn, std::string_view claim_token)
+    -> std::expected<std::vector<review_row>, agent_error>;
 
 /// @brief `planar-watch log`'s action source, filtered to one entity.
 /// @param conn An open connection.
@@ -1189,7 +1216,9 @@ export struct forest_node {
   std::int64_t                depth{};          ///< 0 at a root.
   /// @brief Whether this node has no later sibling — the `└──` vs `├──`
   /// decision. Computed in a second pass over the flattened walk.
-  bool is_last_sibling = false;
+  bool                          is_last_sibling = false;
+  action_kind                   kind            = action_kind::other; ///< The action's kind.
+  std::optional<review_verdict> verdict;                              ///< The verdict, on `review` actions.
 };
 
 /// @brief Walk the orchestrator -> sub-agent action forest.

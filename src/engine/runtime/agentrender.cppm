@@ -130,15 +130,31 @@ export auto append_action(std::string& out, const aa::action& value) -> void;
 // pull / peek
 // =========================================================================
 
-/// @brief `{"ok":true,"no_work":true}` — shared verbatim by `pull` and `peek`.
+/// @brief The most unready tasks `--json` lists by id and reason; the count is never capped.
+export inline constexpr std::size_t skipped_listing_cap = 20;
+
+/// @brief `{"ok":true,"no_work":true,"skipped_unready":<n>,"unready":[...]}` — shared by `pull` and `peek`.
+///
+/// `skipped_unready` is the number of eligible tasks passed over because they were not ready;
+/// `unready` lists the first `skipped_listing_cap` of them as `{"task_id":<id>,"reasons":[...]}`.
+/// @param skipped The tasks passed over, in selector order.
 /// @return The COMPLETE payload, newline included.
-export auto no_work_json() -> std::string;
+export auto no_work_json(const std::vector<agentatomic::skipped_task>& skipped) -> std::string;
 
 /// @brief `no_work` — shared verbatim by `pull` and `peek`.
 /// @return The COMPLETE payload, newline included.
 export auto no_work_text() -> std::string;
 
-/// @brief `pull`'s success payload.
+/// @brief One stderr line naming the tasks passed over as not ready, or empty when none were.
+///
+/// `skipped N unready task(s): task:<id> (<reason>, ...); ...`, listing at most
+/// `skipped_listing_cap` tasks.
+/// @param skipped The tasks passed over, in selector order.
+/// @return The COMPLETE line with its newline, or the empty string.
+export auto skipped_text(const std::vector<agentatomic::skipped_task>& skipped) -> std::string;
+
+/// @brief `pull`'s success payload; carries the `skipped_unready` keys of `no_work_json` only when a
+/// task was skipped, so the payload of a plan with nothing unready is unchanged.
 /// @param result The pull outcome (must not be `no_work`).
 /// @param task The claimed task.
 /// @return The COMPLETE payload, newline included.
@@ -149,10 +165,11 @@ export auto pull_json(const agentatomic::pull_result& result, const aa::task_row
 /// @return The COMPLETE payload, newline included.
 export auto pull_text(const agentatomic::pull_result& result) -> std::string;
 
-/// @brief `peek`'s success payload.
+/// @brief `peek`'s success payload; carries the `skipped_unready` keys only when a task was skipped.
 /// @param task The task `pull` would take.
+/// @param skipped The tasks `pull` would pass over first.
 /// @return The COMPLETE payload, newline included.
-export auto peek_json(const aa::task_row& task) -> std::string;
+export auto peek_json(const aa::task_row& task, const std::vector<agentatomic::skipped_task>& skipped) -> std::string;
 
 /// @brief `next: task:<id> status:<status>`.
 /// @param task The task `pull` would take.
@@ -218,7 +235,7 @@ export auto terminal_text(const agentatomic::terminal_result& result) -> std::st
 export auto terminal_text(const agentatomic::terminal_result& result, const aa::task_row& task) -> std::string;
 
 // =========================================================================
-// abort / claim-associate
+// abort
 // =========================================================================
 
 /// @brief `abort`'s payload, which carries the aborting session id — the
@@ -233,32 +250,6 @@ export auto abort_json(const aa::claim& value, std::int64_t aborting_session) ->
 /// @param aborting_session The session that performed the abort.
 /// @return The COMPLETE payload, newline included.
 export auto abort_text(const aa::claim& value, std::int64_t aborting_session) -> std::string;
-
-/// @brief `{"ok":true,"updated":<n>}`.
-/// @param updated The number of claims stamped.
-/// @return The COMPLETE payload, newline included.
-export auto associate_json(std::int64_t updated) -> std::string;
-
-/// @brief `ok updated:<n> claim:<token>`.
-/// @param updated The number of claims stamped.
-/// @param claim_token The token the operator passed.
-/// @return The COMPLETE payload, newline included.
-export auto associate_text(std::int64_t updated, std::string_view claim_token) -> std::string;
-
-/// @brief `claim-associate --supervisor`'s payload (plan 1033 task 6488):
-/// `{"ok":true,"claim_token":…,"supervisor":"engine"|"caller","attempt_id":…|null,"changed":…}`,
-/// plus `"updated":<n>` when `--run` was also given.
-/// @param result The association outcome.
-/// @param run_updated The `--run` stamp count, when `--run` was given.
-/// @return The COMPLETE payload, newline included.
-export auto supervisor_json(const agentatomic::associate_result& result, std::optional<std::int64_t> run_updated) -> std::string;
-
-/// @brief The text form of `supervisor_json`:
-/// `ok claim:<token> supervisor:<s> attempt:<a|-> changed:<bool>[ updated:<n>]`.
-/// @param result The association outcome.
-/// @param run_updated The `--run` stamp count, when `--run` was given.
-/// @return The COMPLETE payload, newline included.
-export auto supervisor_text(const agentatomic::associate_result& result, std::optional<std::int64_t> run_updated) -> std::string;
 
 // =========================================================================
 // action start / end
@@ -283,36 +274,40 @@ export auto action_start_text(const aa::action& value, std::string_view claim_to
 export auto action_end_text(std::int64_t action_id, aa::outcome result) -> std::string;
 
 // =========================================================================
+// review
+// =========================================================================
+
+/// @brief `review recorded: action <id> verdict <verdict> for claim <first 8 token chars>`.
+///
+/// A review whose claim had no action to hang under (`parent_action_id` unset) says so after the
+/// claim, so the root placement is visible rather than silent.
+/// @param value The recorded review.
+/// @return The COMPLETE payload, newline included.
+export auto review_text(const agentatomic::review_result& value) -> std::string;
+
+/// @brief `{"ok":true,"action_id":<id>,"verdict":"…","reviewed_claim":"<token>","parent_action_id":<id|null>}`.
+/// @param value The recorded review.
+/// @return The COMPLETE payload, newline included.
+export auto review_json(const agentatomic::review_result& value) -> std::string;
+
+// =========================================================================
 // reconcile
 // =========================================================================
 
 /// @brief `reconcile`'s JSON payload.
 ///
-/// `dry_run` selects between two genuinely different documents, not just
-/// different numbers: the dry-run form appends `candidates` and
-/// `run_candidates` arrays that the applied form omits entirely.
-///
-/// KNOWN DEFECT, REPRODUCED DELIBERATELY: `run_identifier` inside
-/// `run_candidates` is emitted WITHOUT JSON escaping, exactly as the
-/// oracle's `"{s}"` format string does it, so an identifier containing a
-/// quote or backslash produces invalid JSON. Every other string in this
-/// module is escaped. It is preserved under D2 and pinned by a test so
-/// that fixing it is a deliberate contract change rather than an
-/// accidental divergence.
+/// `dry_run` selects between two documents: the dry-run form appends the
+/// `candidates` array that the applied form omits.
 /// @param result The claim sweep result.
-/// @param runs The run sweep result.
 /// @param dry_run Whether this was a dry run.
 /// @return The COMPLETE payload, newline included.
-export auto reconcile_json(const aa::reconcile_result& result, const aa::reconcile_runs_result& runs, bool dry_run)
-    -> std::string;
+export auto reconcile_json(const aa::reconcile_result& result, bool dry_run) -> std::string;
 
 /// @brief `reconcile`'s text payload — a one-line summary when applied, a
 /// header plus one indented line per candidate when dry-run.
 /// @param result The claim sweep result.
-/// @param runs The run sweep result.
 /// @param dry_run Whether this was a dry run.
 /// @return The COMPLETE payload, newline included.
-export auto reconcile_text(const aa::reconcile_result& result, const aa::reconcile_runs_result& runs, bool dry_run)
-    -> std::string;
+export auto reconcile_text(const aa::reconcile_result& result, bool dry_run) -> std::string;
 
 } // namespace planar::engine::runtime::agentrender

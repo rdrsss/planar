@@ -1,21 +1,17 @@
 /// @file main.cpp
 /// @brief `cli_usage_lint` — validate authored CLI invocations against the
-/// live command schema, and the closed command policy against the same
-/// catalogs. It began as a C++ port of `zig/tools/cli_usage_lint.zig` (plan
-/// 996, task 6402).
+/// live command schema. It began as a C++ port of `zig/tools/cli_usage_lint.zig`
+/// (plan 996, task 6402).
 ///
 /// Every Planar binary exposes `<bin> schema`, a deterministic flat JSON
 /// catalog of its command tree (commands, subcommands, and per-command
 /// flags with inherited flags already merged in). This tool dumps that
 /// schema for each binary, then scans the authored workflow surfaces
-/// (agents/, skills/, docs/) for command invocations inside code
+/// (agents/, examples/agents/, skills/, docs/) for command invocations inside code
 /// spans and fenced blocks, and reports any `--flag` referenced on a
 /// command that the binary does not actually expose.
 ///
-/// It also lints `workflows/command-policy.json` (plan 1033, task 6707):
-/// every entry for a Planar binary must name a runnable leaf command in that
-/// binary's catalog. It is the schema-driven half of `make cli-usage-check`;
-/// the semantic half, including the host-queue rule (`surface-queue-command`),
+/// It is the schema-driven half of `make cli-usage-check`; the semantic half
 /// is `surface_lint`, and the two share no finding codes.
 ///
 /// The scan is a port of the zig original and keeps its helpers' shape, so
@@ -28,11 +24,8 @@
 /// KEPT EXACTLY: the `cli-lint-ignore` escape hatch (a line containing that
 /// marker is skipped entirely), and the subprocess contract — this tool
 /// shells `<bin-path> schema`, so it lints the ACTUAL SHIPPED BINARY
-/// rather than any in-process command declaration. Since decision 1030
-/// (D18, task 6486) `planar-execute schema` exists too, so all FIVE
-/// binaries are passed as bin-paths; the binary's Lua host-function
-/// manifest is a separate surface, still covered by unit tests, not by
-/// this tool.
+/// rather than any in-process command declaration. Every shipped binary is
+/// passed as a bin-path.
 
 #include <cstdio>
 #include <cstdlib>
@@ -56,8 +49,9 @@ constexpr std::array<std::string_view, 2> k_global_ok_flags{"--help", "-h"};
 
 /// Directories under the repo root that hold authored CLI prose. `skills` is
 /// the whole skills tree (plan 1104, task ask-skill-lint): the Agent Skills
-/// layout `skills/<name>/SKILL.md` plus `references/`.
-constexpr std::array<std::string_view, 3> k_scan_dirs{"agents", "skills", "docs"};
+/// layout `skills/<name>/SKILL.md` plus `references/`. `examples/agents` holds
+/// the role agents Planar no longer installs, which still name its commands.
+constexpr std::array<std::string_view, 4> k_scan_dirs{"agents", "examples/agents", "skills", "docs"};
 
 /// Single authored files, outside those directories, that carry commands
 /// agents are told to run.
@@ -636,69 +630,8 @@ auto check_catalog_examples(catalog_t& catalog, std::vector<std::string> const& 
 
 } // namespace
 
-/// @brief Lint `workflows/command-policy.json` (plan 1033 task 6707): every
-/// entry whose binary is one of the linted binaries must name a LEAF command
-/// in that binary's schema catalog, so the closed policy Centurion enforces
-/// can never list a verb path the binary does not have. Entries for other
-/// programs (`git`) are skipped: they have no catalog.
-/// @param catalog The loaded catalogs.
-/// @param bin_names The linted binaries' basenames.
-/// @param repo_root The repository root.
-/// @return One message per bad entry (empty when clean), plus the number of
-/// entries checked; or a reason the file could not be read or parsed.
-auto check_command_policy(catalog_t const& catalog, std::vector<std::string> const& bin_names, fs::path const& repo_root)
-    -> std::expected<std::pair<std::vector<std::string>, std::size_t>, std::string> {
-  constexpr std::string_view rel = "workflows/command-policy.json";
-  // A tree without a policy has nothing to check (the lint also runs over
-  // synthetic roots); this repository's own file is required to exist by
-  // src/cmd/planar-execute/policy.t.cpp.
-  std::error_code exists_ec;
-  if (!fs::exists(repo_root / rel, exists_ec)) {
-    return std::pair{std::vector<std::string>{}, std::size_t{0}};
-  }
-  std::ifstream in(repo_root / rel, std::ios::binary);
-  if (!in) {
-    return std::unexpected{std::format("{}: cannot read", rel)};
-  }
-  std::ostringstream buf;
-  buf << in.rdbuf();
-  auto const parsed = parse_json(buf.str());
-  if (!parsed.has_value()) {
-    return std::unexpected{std::format("{}: not valid JSON", rel)};
-  }
-  json_value const* entries = parsed->find("entries");
-  if (entries == nullptr || entries->kind != json_kind::array) {
-    return std::unexpected{std::format("{}: no \"entries\" array", rel)};
-  }
-  std::vector<std::string> problems;
-  std::size_t              checked = 0;
-  for (auto const& e : entries->array) {
-    json_value const* binary = e.find("binary");
-    json_value const* path   = e.find("path");
-    if (binary == nullptr || binary->kind != json_kind::string || path == nullptr || path->kind != json_kind::array) {
-      problems.push_back(std::format("{}: an entry lacks a string \"binary\" or an array \"path\"", rel));
-      continue;
-    }
-    if (std::ranges::find(bin_names, binary->string) == bin_names.end()) {
-      continue;
-    }
-    std::string command = binary->string;
-    for (auto const& token : path->array) {
-      command += " " + (token.kind == json_kind::string ? token.string : std::string{"?"});
-    }
-    ++checked;
-    auto const it = catalog.commands.find(command);
-    if (it == catalog.commands.end()) {
-      problems.push_back(std::format("{}: `{}` is not a command in the schema catalogs", rel, command));
-    } else if (!it->second.is_leaf) {
-      problems.push_back(std::format("{}: `{}` is a command group, not a runnable leaf", rel, command));
-    }
-  }
-  return std::pair{std::move(problems), checked};
-}
-
 /// @brief Entry point: validate authored CLI invocations under
-/// `<repo-root>/{agents,skills,docs}` against the live `<bin> schema`
+/// `<repo-root>/{agents,examples/agents,skills,docs}` against the live `<bin> schema`
 /// catalog of every `<bin-path>` given.
 /// @param argc Argument count; must be at least 3 (`<repo-root> <bin-path>...`).
 /// @param argv Argument vector: `argv[1]` is the repo root, `argv[2..]` are
@@ -776,18 +709,9 @@ auto main(int argc, char** argv) -> int {
     std::println("{}", problem);
   }
 
-  auto const policy = check_command_policy(catalog, bin_names, fs::path{repo_root});
-  if (!policy.has_value()) {
-    std::println(stderr, "error: {}", policy.error());
-    return 2;
-  }
-  for (auto const& problem : policy->first) {
-    std::println("{}", problem);
-  }
-
-  if (violations.empty() && policy->first.empty() && catalog_problems.empty()) {
-    std::println("cli-usage-lint: clean ({} files, {} commands, {} command-policy entries, {} catalog examples)", files_scanned,
-                 catalog.commands.size(), policy->second, examples_checked);
+  if (violations.empty() && catalog_problems.empty()) {
+    std::println("cli-usage-lint: clean ({} files, {} commands, {} catalog examples)", files_scanned, catalog.commands.size(),
+                 examples_checked);
     return 0;
   }
 
@@ -810,8 +734,7 @@ auto main(int argc, char** argv) -> int {
       std::println("{}:{}: `{}` has no flag `{}`", v.file, v.line, v.command, v.flag);
     }
   }
-  std::println("cli-usage-lint: {} violation(s) across {} files, {} command-policy problem(s), {} catalog problem(s), "
-               "{} catalog examples",
-               violations.size(), files_scanned, policy->first.size(), catalog_problems.size(), examples_checked);
+  std::println("cli-usage-lint: {} violation(s) across {} files, {} catalog problem(s), {} catalog examples", violations.size(),
+               files_scanned, catalog_problems.size(), examples_checked);
   return 1;
 }

@@ -24,7 +24,7 @@ auto positional_for(entity_kind kind) -> std::string {
 /// @brief Parse the id the way `view` and `edit` do: integer check only.
 ///
 /// NO positive check. `question view 0` reaches the resolver and reports
-/// what the resolver finds, where `question diff 0` refuses at exit 2. The
+/// what the resolver finds, where `artifact diff 0` refuses at exit 2. The
 /// asymmetry is the oracle's; see this module's interface header.
 /// @param args The parsed arguments.
 /// @param kind The entity kind.
@@ -147,17 +147,8 @@ auto review_verb(context& ctx, const cliapp::parsed_args& args, entity_kind kind
 // was run against the oracle before these entry points were added. See this
 // module's interface header for the one place their observable behaviour
 // diverges from the other four.
-auto plan_edit(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  return edit_verb(ctx, args, entity_kind::plan);
-}
 auto plan_view(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   return view_verb(ctx, args, entity_kind::plan);
-}
-auto plan_diff(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  return diff_verb(ctx, args, entity_kind::plan);
-}
-auto plan_review(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  return review_verb(ctx, args, entity_kind::plan);
 }
 
 auto task_edit(context& ctx, const cliapp::parsed_args& args) -> handler_result {
@@ -179,21 +170,12 @@ auto question_edit(context& ctx, const cliapp::parsed_args& args) -> handler_res
 auto question_view(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   return view_verb(ctx, args, entity_kind::question);
 }
-auto question_diff(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  return diff_verb(ctx, args, entity_kind::question);
-}
-auto question_review(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  return review_verb(ctx, args, entity_kind::question);
-}
 
 auto decision_edit(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   return edit_verb(ctx, args, entity_kind::decision);
 }
 auto decision_view(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   return view_verb(ctx, args, entity_kind::decision);
-}
-auto decision_diff(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  return diff_verb(ctx, args, entity_kind::decision);
 }
 auto decision_review(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   return review_verb(ctx, args, entity_kind::decision);
@@ -204,9 +186,6 @@ auto scenario_edit(context& ctx, const cliapp::parsed_args& args) -> handler_res
 }
 auto scenario_view(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   return view_verb(ctx, args, entity_kind::scenario);
-}
-auto scenario_diff(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  return diff_verb(ctx, args, entity_kind::scenario);
 }
 auto scenario_review(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   return review_verb(ctx, args, entity_kind::scenario);

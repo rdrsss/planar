@@ -19,7 +19,6 @@ import planar.cmd.planar.handlers.atvalue;
 import planar.cmd.planar.handlers.scenario.add;
 import planar.cmd.planar.handlers.scenario.edit;
 import planar.cmd.planar.handlers.scenario.view;
-import planar.cmd.planar.handlers.scenario.diff;
 import planar.cmd.planar.handlers.scenario.review;
 import planar.cmd.planar.handlers.scenario.verify;
 import planar.cmd.planar.handlers.scenario.retire;
@@ -416,8 +415,6 @@ auto declare_scenario_children(CLI::App& scenario) -> void {
   scenario_cli::attach_edit(scenario);
 
   scenario_cli::attach_view(scenario);
-
-  scenario_cli::attach_diff(scenario);
 
   scenario_cli::attach_review(scenario);
 

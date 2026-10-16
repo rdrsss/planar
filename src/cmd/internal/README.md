@@ -2,8 +2,7 @@
 
 These modules supply invocation plumbing to `planar`, `planar-agent`,
 `planar-watch` and `planar-ext`. They do not define a CLI application or own
-domain rules. `planar-execute` does not link this library and has no SQLite
-handle.
+domain rules.
 
 | Module | Responsibility |
 | --- | --- |

@@ -12,9 +12,10 @@ working in that area. `AGENTS.md` is a symlink to this file.
 - **Stack:** C++26, modules only, built with CMake (`>= 4.3`) and a pinned
   LLVM with `libc++`. State is one SQLite database. Every third-party
   dependency is vendored and compiled from source.
-- **Binaries:** `planar`, `planar-agent`, `planar-watch`, `planar-execute`,
-  `planar-ext`. The `planar` skill and the `planar-<role>` agents ship as
-  authored files and need no renderer.
+- **Binaries:** `planar`, `planar-agent`, `planar-watch` and `planar-ext`.
+  The `planar` skill ships as authored files and needs no renderer; it is
+  the only agent surface the installer places. The `planar-<role>` agents
+  are examples under `examples/agents/` and are not installed.
 - **History:** Planar was written in Go, ported to Zig, then ported to C++26.
   Neither earlier tree exists here. Nothing builds, tests or lints against
   them, and "check it against the oracle" is not an answerable question. In
@@ -30,10 +31,9 @@ not a runtime ACL.
 | Binary | Role | Writes |
 |--------|------|--------|
 | `planar` | Operator surface | Planning entities, and manual `tasks.status` transitions. Outside the database, `update` writes the mutation-lock record and a download directory before it execs the bundled installer; it opens no database. |
-| `planar-agent` | Agent-callable | `agent_actions`, `agent_work_claims`, the `routing_dispatch_*` tables, and `tasks.status` as part of a coordinated operation. Also the host-queue tables `queue_entries`, `queue_history` and `queue_schema`, through `queue run`. |
+| `planar-agent` | Agent-callable | `agent_actions`, `agent_work_claims`, and `tasks.status` as part of a coordinated operation. Also the host-queue tables `queue_entries`, `queue_history` and `queue_schema`, through `queue run`. |
 | `planar-watch` | Read-only viewer | Nothing. Opens SQLite with `mode=ro`. |
 | `planar-ext` | Jira and GitHub Issues adapters | `external_links`, `external_systems`, `sync_events` only, enforced by a `sqlite3_set_authorizer` allowlist. Read-only on planning tables. |
-| `planar-execute` | Workflow entry point and client | Nothing. Holds no SQLite handle; reaches state by shelling `planar` and `planar-agent`. |
 
 - `planar-agent`, `planar-watch` and `planar-ext` each have a
   `capability.t.cpp` that locks the boundary. `planar`'s surface is pinned by
@@ -80,28 +80,14 @@ not a runtime ACL.
   `planar-ext sync pull` does not apply remote values to planning entities.
   It emits `remote_title` and `remote_status`; an agent verifies them and
   writes through `planar`.
-- All five binaries expose a `schema` JSON catalog, and `make
-  cli-usage-check` lints authored surfaces against all five.
+- All four binaries expose a `schema` JSON catalog, and `make
+  cli-usage-check` lints authored surfaces against all four.
 
-### `planar-execute` is mid-transition
+### `planar-execute`
 
-`planar-execute run <wf.lua> --phase <name>` runs a deterministic Lua
-workflow locally over allowlisted host functions (`cli`, `git`, `fs`, `flow`,
-`ctx`). It exposes no model-spawning host function and is outside the claim
-ritual. The binary also carries `profile` and the Centurion client verbs:
-`submit`, `status`, `cancel`, `follow` and `host`.
-
-Decision 1007 and plan 1033 make Centurion the workflow engine, with
-`planar-execute` as its configuration, bootstrap and client entry point. Master
-does NOT link Centurion: the integration lives on
-`dev/centurion-integration`, and here the five client verbs require a
-Centurion-enabled build and refuse with "planar-execute was built without the
-Centurion engine" (exit 1). The engine-side contract that compiles without
-Centurion ships here: migration 00038, engine-supervised claims, the engine
-selector and `profile show`. The local `run` path stays until plan 1033's
-cutover milestone (M5). Until then, every guard and boundary test that pins
-the embedded runner stays in force. Do not relax one ahead of the milestone
-that replaces it. Planar itself still never shells a headless model.
+`planar-execute` lives on the branch `dev/planar-execute`. Master has no
+workflow runner, no Lua and no Centurion client; Planar never shells a
+headless model.
 
 ### Claim ritual
 
@@ -118,7 +104,8 @@ Never split that into `planar task done` plus `planar-agent release`; a
 process death between the two strands the claim. In orchestrator dispatch the
 orchestrator owns the terminal verb, and coders heartbeat and return. In
 direct-claim dispatch the caller runs it. Full sequence:
-`agents/methodology.md` § Coordination claims.
+`skills/planar/references/claim-ritual.md` and
+`skills/planar/references/dispatch.md`.
 
 ## Operating rules
 
@@ -147,18 +134,18 @@ direct-claim dispatch the caller runs it. Full sequence:
 | Content | Location |
 |---------|----------|
 | Project tooling, one directory per tool | `src/tools/<tool-name>/` |
-| Installable agents | `agents/planar-<role>.md`, with the doctrine documents beside them |
+| Example role agents (not installed) | `examples/agents/planar-<role>.md`; `agents/` keeps `planar-orchestrator.md`, `planar-test-coder.md` and the doctrine documents, which the orchestrator eval reads |
 | The `planar` skill | `skills/planar/` |
-| Agent-role model routing table, hand-maintained | `agents/models.md` |
 | User-facing reference docs | `docs/` |
 | Planning artifacts: specs, roadmaps, ADRs | Planar artifacts under `~/.planar/`, through `planar artifact` and the workbench |
 | Operational state | SQLite |
 | Operator-local skills and agents | `~/.planar/local/{skills,agents}/`, linked with `planar local link` |
 
-- The skill tree is `skills/planar/` and the agents are
-  `agents/planar-*.md`. `install.sh` stages them under `$PLANAR_HOME` and
-  places them into six vendors' directories (Claude Code, Codex, Copilot,
-  Gemini CLI, Antigravity, OpenCode). Nothing is rendered; see
+- The skill tree is `skills/planar/`. `install.sh` stages it under
+  `$PLANAR_HOME` and places it into six vendors' skill directories (Claude
+  Code, Codex, Copilot, Gemini CLI, Antigravity, OpenCode). Nothing is
+  rendered, and no role agent is staged or placed: an upgrade removes the
+  `planar-<role>` agents an older install placed. See
   [docs/skill-reference.md](docs/skill-reference.md).
 - Do not author agent, skill or instruction files under vendor dot
   directories such as `.claude/`, `.codex/` or `.github/`; the installer
@@ -169,11 +156,10 @@ direct-claim dispatch the caller runs it. Full sequence:
 
 ### Cross-scope guard
 
-The guard runs on ten verbs, not on every mutation: `spec ingest --apply`,
-`feedback triage set`, `audit publish-decision`, `decision accept`, `decision
-withdraw`, `task update`, `closure compute`, and `planar-ext sync push`,
-`sync pull` and `sync resolve`. Every other mutation writes without comparing
-scopes. `grep -rn guard_with_membership src/cmd` is the measurement.
+The guard runs on seven verbs, not on every mutation: `spec ingest --apply`,
+`decision accept`, `decision withdraw`, `task update`, and `planar-ext sync
+push`, `sync pull` and `sync resolve`. Every other mutation writes without
+comparing scopes. `grep -rn guard_with_membership src/cmd` is the measurement.
 
 - The comparison is membership-aware. Operator scope `assoc:<org>` covers an
   entity at `repo:<member>`. The reverse direction refuses.
@@ -221,17 +207,20 @@ use `install.sh` or `make build`. Detail: [docs/architecture.md](docs/architectu
 - **Bundle.** `planar-<os>-<arch>.tar.gz` for `macos-arm64` (macOS 26.0 or
   later) and `linux-x86_64` (glibc 2.36 or later), no version in the name.
   Layout: `release.json`, `install.sh`, `uninstall.sh`, `get-planar.sh`,
-  `install-cleanup.txt`, `bin/`, `skills/planar/`, `agents/`, `codex-agents/`,
-  `templates/`, `workflows/`, `migrations/`, `scripts/install-lib/`.
+  `install-cleanup.txt`, `bin/`, `skills/planar/`, `templates/`,
+  `migrations/`, `scripts/install-lib/`.
 - **Install order.** Both the bootstrap and `planar update` end in
   `install.sh --prebuilt`: lock, journal, stage, probe the database with the
-  staged binaries, swap the managed subtrees (`bin/`, `skills/`, `agents/`,
-  `codex-agents/`, `workflows/`, `scripts/`, `migrations/`) through `<name>.old`,
-  create or migrate the database, place vendor surfaces, write `release.json`
-  and then the install stamp last.
+  staged binaries, copy `planar.db` with its `-wal` and `-shm` into
+  `$PLANAR_HOME/backups/` when the database is behind and a pending migration
+  drops a table (a copy that cannot be written or opened stops the install
+  before anything changes), retire the role agents older installs placed, swap
+  the managed subtrees (`bin/`, `skills/`, `scripts/`, `migrations/`) through
+  `<name>.old`, create or migrate the database, place the skill, write
+  `release.json` and then the install stamp last.
 - **Data paths** are never removed by an install and are kept by
   `planar-uninstall` without `--purge`: `planar.db` (with `-wal` and `-shm`),
-  `queue-logs/`, `retired/`, `workbench/`, `config.toml`, `local/`,
+  `queue-logs/`, `retired/`, `backups/`, `workbench/`, `config.toml`, `local/`,
   `workspaces/`, `models/`, `execute/`, `templates/`. The one list is
   `scripts/install-lib/data-paths.sh`; INSTALL.md carries a checked copy.
 - **`PLANAR_PORTABLE`** (CMake option, default `OFF`, set by the `dist` preset
@@ -253,16 +242,16 @@ use `install.sh` or `make build`. Detail: [docs/architecture.md](docs/architectu
 | `src/cmd/parity_harness.hpp` | The black-box test harness: `make_arena()` and `run_pinned()`. |
 | `src/engine/` | Domain logic and state transitions, one `engine_*` target per directory. |
 | `src/lib/` | Shared base modules: `db`, `core`, `cliapp`, `http`, `git`, `process`, `json_dom`, `json_text`, `log` and others. |
-| `src/tools/` | Project tooling: `cli_usage_lint`, `surface_lint`, `cli_docs_coverage`, `queue_contention_probe`. |
+| `src/tools/` | Project tooling: `cli_usage_lint`, `surface_lint`, `cli_docs_coverage`. |
 | `vendor/` | Committed CPM cache of third-party release archives. |
 | `migrations/` | Schema migrations in sqlx-cli format. See `migrations/README.md`. |
 | `templates/` | Propagation templates and operator-editable defaults. |
-| `workflows/` | Lua workflows and `command-policy.json`. |
-| `agents/`, `skills/planar/` | Authored agent and skill sources. |
+| `skills/planar/` | The authored `planar` skill, the one installed agent surface. |
+| `agents/`, `examples/` | The orchestrator and test-coder agents and doctrine documents the orchestrator eval reads; example role agents and walkthroughs, none of them installed. |
 | `evals/` | Eval harnesses, fixtures and the results ledger. |
 | `docs/` | User-facing reference documentation. |
 | `scripts/` | Bash and Python tooling: gates, validators, git hooks. |
-| `install.sh` | Builds and installs the binaries, then stages and places the skill and agents into each present vendor's directories. |
+| `install.sh` | Builds and installs the binaries, then stages the skill and places it into each present vendor's skill directories. |
 
 ## Build and test
 
@@ -315,7 +304,9 @@ ctest --test-dir build/debug --output-on-failure
   running. Older queue-capable installs without `wait` use a finite JSON
   status observer. `planar-agent queue rule` prints the full rule, including
   what to do when the queue refuses (exit 125: stop and report, never run the
-  command directly). The queue does not replace any gate; see
+  command directly); the operator enables its mandate with
+  `[policy] use_queue = true` (or an `[associations."<slug>".policy]` table)
+  in `config.toml`. The queue does not replace any gate; see
   [docs/testing.md](docs/testing.md).
 - `clang-tidy` is advisory. `clang-format --Werror` and the Doxygen pass
   gate.
@@ -344,7 +335,7 @@ Test layers, harness, conventions and rationale:
   `struct`, have no underscore at either end. Template parameters are
   CamelCase.
 - **Errors.** `std::expected<T, E>` at API boundaries for expected failures.
-  Wrap SQLite, curl and Lua errors into the module's own error enum at the
+  Wrap SQLite and curl errors into the module's own error enum at the
   boundary. Exceptions are for unrecoverable conditions.
 - **Invariants.** Use `planar::core::check()`, never `assert()`. The
   `release` preset defines `NDEBUG`, so an `assert` is absent from the binary
@@ -359,9 +350,8 @@ Test layers, harness, conventions and rationale:
   SQL in the runtime.
 - **CLI.** CLI11 does tokenization and value coercion only. Help text, the
   `schema` catalog, exit-code mapping and completion are Planar's own, in
-  `src/lib/cliapp/`, and are pinned by tests. `planar-execute` keeps a manual
-  parser. Register a binary through the helper in `src/cmd/CMakeLists.txt`,
-  never a bare `add_executable()`.
+  `src/lib/cliapp/`, and are pinned by tests. Register a binary through the
+  helper in `src/cmd/CMakeLists.txt`, never a bare `add_executable()`.
 - **HTTP.** libcurl behind `src/lib/http/`, always with a client timeout.
   Adapters live under `src/engine/external/` behind `external_adapter`.
 - **Serialization.** Glaze for JSON and TOML. JSON for machine-read data;
@@ -395,8 +385,10 @@ Test layers, harness, conventions and rationale:
 3. Put each table's indexes directly after its `create table`.
 4. Put a `-- <table>: ...` comment above every `create table`.
 5. Add CHECK constraints for enum-shaped columns.
-6. Do not write `BEGIN`, `COMMIT` or any `PRAGMA` in the file. The runtime
-   wraps each migration in a transaction.
+6. Do not write `BEGIN`, `COMMIT` or any `PRAGMA` in the file, except the
+   `pragma writable_schema` pair that migrations 00038, 00039 and 00042 use to
+   edit a stored constraint. The runtime wraps each migration in a
+   transaction.
 7. End the up migration with `insert into schema_migrations (version,
    description) values (<N>, '<summary>');` and delete that row in the down
    migration.
@@ -417,6 +409,7 @@ Test layers, harness, conventions and rationale:
 ### Workflow surface change
 
 1. Edit `skills/planar/SKILL.md`, a file under `skills/planar/references/`,
-   or `agents/planar-<role>.md`. There is no rendered output to check in.
+   `agents/planar-orchestrator.md`, `agents/planar-test-coder.md` or
+   `examples/agents/planar-<role>.md`. There is no rendered output to check in.
 2. Use the current CLI and the SQLite-backed model in all workflow text.
 3. Run `make cli-usage-check` and `make surface-lint`.

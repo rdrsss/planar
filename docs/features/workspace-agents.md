@@ -23,8 +23,9 @@ table across every member project.
 - Regenerates AGENTS.md by rendering the workspace doc-kind template
   against the routing table plus live database queries. The
   documentation manifest layer tracks drift.
-- Always carries the host build and test queue rule in the generated
-  AGENTS.md, once. The default template places it with `{{.QueueRule}}`;
+- Always carries the host queue's how-to text (not the mandate, which is
+  the operator's policy and printed by `planar-agent queue rule`) in the
+  generated AGENTS.md, once. The default template places it with `{{.QueueRule}}`;
   a template in `~/.planar/templates/doc-prompts/agents.md` that does not
   place it gets the rule appended after the rendered text, and one that
   does keeps its own placement.

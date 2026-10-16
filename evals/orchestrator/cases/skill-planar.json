@@ -2,7 +2,7 @@
   "schema_version": 1,
   "id": "skill-planar-contract",
   "skill": "orchestrator",
-  "description": "The unified planar skill states the thirteen invariants, names the five binaries, cites the feedback contract, and carries no legacy /pl- command, scriptorium reference or split terminal verb.",
+  "description": "The planar skill is a short reference: it states the seven mechanism invariants, names the four binaries and `planar-agent brief`, routes to the dispatch, preparation, queue and claim-ritual references, names no role agent or orchestrator phase, and carries no legacy /pl- command, scriptorium reference or split terminal verb.",
   "tags": [
     "skill",
     "planar",
@@ -22,13 +22,13 @@
       "pattern": "Claim, heartbeat, one terminal verb\\."
     },
     {
-      "id": "invariant-02-never-split-terminal",
-      "description": "SKILL.md states invariant 2: Never split the terminal verb.",
+      "id": "invariant-02-claim-aware-next",
+      "description": "SKILL.md states invariant 2: Choose next work with the claim-aware verbs.",
       "mode": "all",
       "paths": [
         "skills/planar/SKILL.md"
       ],
-      "pattern": "Never split the terminal verb\\."
+      "pattern": "Choose next work with the claim-aware verbs\\."
     },
     {
       "id": "invariant-03-write-through-owner",
@@ -40,89 +40,35 @@
       "pattern": "Write through the owning binary\\."
     },
     {
-      "id": "invariant-04-guard-ten-verbs",
-      "description": "SKILL.md states invariant 4: Cross-scope guard: ten verbs.",
+      "id": "invariant-04-cross-scope-guard",
+      "description": "SKILL.md states invariant 4: Cross-scope guard.",
       "mode": "all",
       "paths": [
         "skills/planar/SKILL.md"
       ],
-      "pattern": "Cross-scope guard: ten verbs\\."
+      "pattern": "Cross-scope guard\\."
     },
     {
-      "id": "invariant-05-scope-four-things",
-      "description": "SKILL.md states invariant 5: `--scope` means four things.",
+      "id": "invariant-05-worktree-planning-refusal",
+      "description": "SKILL.md states invariant 5: Planning writes refuse in a git worktree",
       "mode": "all",
       "paths": [
         "skills/planar/SKILL.md"
       ],
-      "pattern": "`--scope` means four things\\."
+      "pattern": "Planning writes refuse in a git worktree"
     },
     {
-      "id": "invariant-06-read-back-mutations",
-      "description": "SKILL.md states invariant 6: Read back every mutation.",
+      "id": "invariant-06-plan-status-recomputed",
+      "description": "SKILL.md states invariant 6: Task writes and terminal verbs recompute the owning plan's status",
       "mode": "all",
       "paths": [
         "skills/planar/SKILL.md"
       ],
-      "pattern": "Read back every mutation\\."
+      "pattern": "Task writes and terminal verbs recompute the owning plan's status"
     },
     {
-      "id": "invariant-07-worktree-planning-refusal",
-      "description": "SKILL.md states invariant 7: Planning verbs refuse in worktrees.",
-      "mode": "all",
-      "paths": [
-        "skills/planar/SKILL.md"
-      ],
-      "pattern": "Planning verbs refuse in worktrees\\."
-    },
-    {
-      "id": "invariant-08-claim-aware-next",
-      "description": "SKILL.md states invariant 8: Next work is claim-aware.",
-      "mode": "all",
-      "paths": [
-        "skills/planar/SKILL.md"
-      ],
-      "pattern": "Next work is claim-aware\\."
-    },
-    {
-      "id": "invariant-09-plan-status-follows-tasks",
-      "description": "SKILL.md states invariant 9: Plan status follows its tasks.",
-      "mode": "all",
-      "paths": [
-        "skills/planar/SKILL.md"
-      ],
-      "pattern": "Plan status follows its tasks\\."
-    },
-    {
-      "id": "invariant-10-operator-gates",
-      "description": "SKILL.md states invariant 10: Operator gates are never automatic.",
-      "mode": "all",
-      "paths": [
-        "skills/planar/SKILL.md"
-      ],
-      "pattern": "Operator gates are never automatic\\."
-    },
-    {
-      "id": "invariant-11-sync-pull-no-write",
-      "description": "SKILL.md states invariant 11: Sync pull writes no planning entity.",
-      "mode": "all",
-      "paths": [
-        "skills/planar/SKILL.md"
-      ],
-      "pattern": "Sync pull writes no planning entity\\."
-    },
-    {
-      "id": "invariant-12-announce-cross-scope",
-      "description": "SKILL.md states invariant 12: Announce cross-scope writes exactly.",
-      "mode": "all",
-      "paths": [
-        "skills/planar/SKILL.md"
-      ],
-      "pattern": "Announce cross-scope writes exactly\\."
-    },
-    {
-      "id": "invariant-13-isolate-from-source",
-      "description": "SKILL.md states invariant 13: Isolate from-source binaries.",
+      "id": "invariant-07-isolate-from-source",
+      "description": "SKILL.md states invariant 7: Isolate from-source binaries.",
       "mode": "all",
       "paths": [
         "skills/planar/SKILL.md"
@@ -166,22 +112,58 @@
       "pattern": "\\| `planar-ext` \\|"
     },
     {
-      "id": "binary-planar-execute",
-      "description": "SKILL.md names the planar-execute binary in the write-surface table.",
+      "id": "names-brief",
+      "description": "SKILL.md names `planar-agent brief` as the place to start.",
       "mode": "all",
       "paths": [
         "skills/planar/SKILL.md"
       ],
-      "pattern": "\\| `planar-execute` \\|"
+      "pattern": "planar-agent brief"
     },
     {
-      "id": "cites-feedback-contract",
-      "description": "SKILL.md cites references/feedback-contract.md.",
+      "id": "routes-dispatch",
+      "description": "SKILL.md routes to references/dispatch.md.",
       "mode": "all",
       "paths": [
         "skills/planar/SKILL.md"
       ],
-      "pattern": "references/feedback-contract\\.md"
+      "pattern": "references/dispatch\\.md"
+    },
+    {
+      "id": "routes-preparation",
+      "description": "SKILL.md routes to references/preparation.md.",
+      "mode": "all",
+      "paths": [
+        "skills/planar/SKILL.md"
+      ],
+      "pattern": "references/preparation\\.md"
+    },
+    {
+      "id": "routes-queue",
+      "description": "SKILL.md routes to references/queue.md.",
+      "mode": "all",
+      "paths": [
+        "skills/planar/SKILL.md"
+      ],
+      "pattern": "references/queue\\.md"
+    },
+    {
+      "id": "routes-claim-ritual",
+      "description": "SKILL.md routes to references/claim-ritual.md.",
+      "mode": "all",
+      "paths": [
+        "skills/planar/SKILL.md"
+      ],
+      "pattern": "references/claim-ritual\\.md"
+    },
+    {
+      "id": "forbid-orchestrator-phase-or-role",
+      "description": "SKILL.md names no role agent and no orchestrator phase: roles and phases are one workflow's choices, and the role agents are examples.",
+      "mode": "none",
+      "paths": [
+        "skills/planar/SKILL.md"
+      ],
+      "pattern": "\\bplanar-(orchestrator|coder|test-coder|reviewer|janitor|research|planner|spec-reviewer|ingestor|ext-sync|sync-reconciler)\\b|\\bPhase [0-9]"
     },
     {
       "id": "forbid-legacy-pl-commands",
@@ -190,13 +172,14 @@
       "paths": [
         "skills/planar/SKILL.md",
         "skills/planar/references/claim-ritual.md",
+        "skills/planar/references/dispatch.md",
         "skills/planar/references/external-sync.md",
-        "skills/planar/references/feedback-contract.md",
         "skills/planar/references/knowledge.md",
         "skills/planar/references/local.md",
+        "skills/planar/references/preparation.md",
+        "skills/planar/references/queue.md",
         "skills/planar/references/recovery.md",
         "skills/planar/references/resume-handoff.md",
-        "skills/planar/references/spec-pipeline.md",
         "skills/planar/references/status.md"
       ],
       "pattern": "/pl-"
@@ -208,13 +191,14 @@
       "paths": [
         "skills/planar/SKILL.md",
         "skills/planar/references/claim-ritual.md",
+        "skills/planar/references/dispatch.md",
         "skills/planar/references/external-sync.md",
-        "skills/planar/references/feedback-contract.md",
         "skills/planar/references/knowledge.md",
         "skills/planar/references/local.md",
+        "skills/planar/references/preparation.md",
+        "skills/planar/references/queue.md",
         "skills/planar/references/recovery.md",
         "skills/planar/references/resume-handoff.md",
-        "skills/planar/references/spec-pipeline.md",
         "skills/planar/references/status.md"
       ],
       "pattern": "scriptorium"
@@ -226,13 +210,14 @@
       "paths": [
         "skills/planar/SKILL.md",
         "skills/planar/references/claim-ritual.md",
+        "skills/planar/references/dispatch.md",
         "skills/planar/references/external-sync.md",
-        "skills/planar/references/feedback-contract.md",
         "skills/planar/references/knowledge.md",
         "skills/planar/references/local.md",
+        "skills/planar/references/preparation.md",
+        "skills/planar/references/queue.md",
         "skills/planar/references/recovery.md",
         "skills/planar/references/resume-handoff.md",
-        "skills/planar/references/spec-pipeline.md",
         "skills/planar/references/status.md"
       ],
       "pattern": "planar task done` then `planar-agent release"

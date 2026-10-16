@@ -1,6 +1,6 @@
 /// @file queuerule.cpp
 /// @brief Implementation of `planar.queuerule` (see queuerule.cppm).
-/// `queue-rule.md` is embedded via `#embed`, the same mechanism as
+/// `queue-rule.md` and `queue-mandate.md` are embedded via `#embed`, the same mechanism as
 /// `planar.engine.config.effective`'s `defaults.toml`: one fixed file beside
 /// the unit.
 
@@ -17,6 +17,10 @@ constexpr unsigned char k_rule_bytes[] = {
 #embed "queue-rule.md"
 };
 
+constexpr unsigned char k_mandate_bytes[] = {
+#embed "queue-mandate.md"
+};
+
 } // namespace
 
 auto queue_rule_text() -> std::string_view {
@@ -26,6 +30,10 @@ auto queue_rule_text() -> std::string_view {
   // array is constant-initialised, so this is safe at any time. Not
   // `constexpr` because `reinterpret_cast` is not a core constant expression.
   return {reinterpret_cast<const char*>(k_rule_bytes), sizeof(k_rule_bytes)};
+}
+
+auto queue_mandate_text() -> std::string_view {
+  return {reinterpret_cast<const char*>(k_mandate_bytes), sizeof(k_mandate_bytes)};
 }
 
 } // namespace planar::queuerule

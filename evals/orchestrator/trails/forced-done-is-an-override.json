@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "id": "forced-done-is-an-override",
+  "description": "An operator --force status change is listed as an override and does not fail the trail.",
+  "tasks": [
+    {
+      "title": "forced",
+      "final": "done-forced"
+    }
+  ],
+  "claims": [],
+  "expected": {
+    "conforms": true,
+    "violations": [],
+    "overrides": [
+      1
+    ]
+  }
+}

@@ -8,8 +8,8 @@
 /// ## THE READ SIDE WAS ALREADY PORTED; THE COMPOSE SIDE WAS NOT
 ///
 /// `engine_ingest` (task 6035, M4) ported `parse`, `diff`, `coverage`,
-/// `render` and `materialize` — the whole read path: workbench markdown in,
-/// proposed diff plus strict-gate coverage plus provenance facts out. That
+/// and `render` — the whole read path: workbench markdown in,
+/// proposed diff plus strict-gate coverage out. That
 /// bucket's own CMakeLists.txt documents `apply.zig` (1616 Zig lines) as
 /// DELIBERATELY not ported, and gives an architectural reason: `apply`
 /// reaches into `engine_planning`'s plan/task/decision/question/scenario
@@ -34,8 +34,8 @@
 /// ## APPLY ATOMICITY MATCHES THE ORACLE
 ///
 /// The oracle wraps every write `apply` performs — child plans, tasks,
-/// decisions, scenarios, questions, dependency edges, touch links, the
-/// materializer's fact-set replacement, and the anchor's draft→active flip
+/// decisions, scenarios, questions, dependency edges, touch links, and the
+/// anchor's draft→active flip
 /// — inside ONE SQLite SAVEPOINT, so a failure partway through rolls back
 /// everything already written in that call.
 ///

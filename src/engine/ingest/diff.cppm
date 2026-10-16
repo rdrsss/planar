@@ -186,9 +186,11 @@ export [[nodiscard]] auto compute(db::connection& conn, std::int64_t anchor_plan
                                   std::span<const parse::decision> decisions, std::span<const parse::question> questions,
                                   std::span<const parse::scenario> scenarios) -> std::expected<diff, diff_error>;
 
-/// @brief Whether a task body warrants an auto-drafted test scenario.
+/// @brief Whether a task body holds at least two bullet lines.
 ///
-/// The heuristic is two or more bullet lines, mirroring the Zig original.
+/// Apply no longer gates scenario drafting on this: every newly added task
+/// without authored coverage is drafted one. Kept as the bullet-count
+/// heuristic the Zig original used.
 /// @param body The task body.
 /// @return `true` when the body holds at least two bullets.
 export [[nodiscard]] auto is_non_trivial(std::string_view body) -> bool;

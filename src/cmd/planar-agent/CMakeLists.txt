@@ -27,7 +27,7 @@
 #                            `planar-watch`  opens STRICT READ-ONLY, creates
 #                                            NOTHING, sets no WAL pragma,
 #                                            never migrates.
-#                            `planar-execute` has no SQLite handle at all.
+#                            `planar-execute` (removed) held no SQLite handle.
 #
 #     exit codes             `parse_error` is 2 on `planar` and 1 here;
 #                            `schema_version_behind` is 1 on `planar` and 7
@@ -64,9 +64,13 @@
 #             renderer (schema_json documents "no trailing newline"), the
 #             counterexample to a blanket append-nothing rule.
 #   the claim ritual (task 6038)
-#             pull / peek / claim / heartbeat / claim-associate /
+#             pull / peek / claim / heartbeat /
 #             complete / fail / release / block / action start|end /
 #             reconcile / abort. See the section below.
+#   review    (plan 1142, task mo-review-record) -- records a reviewer's verdict
+#             on a claim; refused from the claim's own session.
+#   brief     (plan 1142, task mo-brief-verb) -- the read-only single entry point:
+#             one plan's state, claims, wave, readiness, policy and claim templates.
 #
 # Parse failures (exit 1 — NOT the operator binary's 2) are covered across
 # the set, so 0 and 1 are both produced by this binary and a mapping
@@ -85,6 +89,9 @@
 #                    `agentatomic::task_policy`. `policy.cpp` is the whole
 #                    of that seam -- one function, so every handler in this
 #                    binary runs under the same policy.
+#   engine_ingest    the task packet, whose readiness reasons `policy.cpp`
+#                    injects as `task_policy::unready_reasons` so `claim` and
+#                    `pull` refuse an unready task (plan 1142). Read-only.
 #
 # Layer 3 depending on two layer-2 buckets is exactly what the layering
 # allows and what makes the injection legal; see engine/runtime's
@@ -123,6 +130,9 @@ planar_binary(planar_agent
     args.cppm
     locality.cppm
     policy.cppm
+    completion_policy.cppm
+    claim_policy.cppm
+    brief.cppm
     main.cppm
     handlers/shared/cli.cppm
     handlers/version/command.cppm
@@ -134,15 +144,13 @@ planar_binary(planar_agent
     handlers/block/command.cppm
     handlers/claim/command.cppm
     handlers/heartbeat/command.cppm
-    handlers/claim_associate/command.cppm
     handlers/action/command.cppm
+    handlers/review/command.cppm
+    handlers/brief/command.cppm
     handlers/ingest/command.cppm
     handlers/reconcile/command.cppm
     handlers/abort/command.cppm
     handlers/schema/command.cppm
-    handlers/run/command.cppm
-    handlers/dispatch/command.cppm
-    handlers/context/command.cppm
     handlers/queue/command.cppm
 
     surface.cppm
@@ -154,9 +162,9 @@ planar_binary(planar_agent
     handlers/shared/terminal.cppm
     handlers/shared/recovery.cppm
     handlers/action/action.cppm
-    handlers/dispatch/dispatch.cppm
-    handlers/context/context.cppm
-    handlers/run/runs.cppm
+    handlers/review/review.cppm
+    handlers/brief/brief.cppm
+    handlers/ingest/ingest.cppm
     handlers/queue/queue.cppm
     handlers/queue/status.cppm
     handlers/queue/wait.cppm
@@ -168,16 +176,18 @@ planar_binary(planar_agent
     queue_store.cpp
     locality.cpp
     policy.cpp
+    completion_policy.cpp
+    claim_policy.cpp
+    brief.cpp
     handlers/version/version.cpp
     handlers/schema/schema.cpp
     handlers/shared/claims.cpp
     handlers/shared/terminal.cpp
     handlers/shared/recovery.cpp
     handlers/action/action.cpp
-    handlers/dispatch/dispatch.cpp
-    handlers/context/context.cpp
+    handlers/review/review.cpp
+    handlers/brief/brief.cpp
     handlers/ingest/ingest.cpp
-    handlers/run/runs.cpp
     handlers/queue/queue.cpp
     handlers/queue/status.cpp
     handlers/queue/wait.cpp
@@ -189,19 +199,20 @@ planar_binary(planar_agent
     db
     git
     engine_runtime
-    engine_routing
     json_text
     textview
     json_dom
     engine_planning
+    engine_ingest
     engine_hostqueue
     engine_config
+    engine_identity
     engine_diagnose
     core
     process)
 
 # `--metadata` is validated with glz::validate_json -- the same purpose-built
-# probe engine/config and engine/runs use, and the only one that enables
+# probe engine/config uses, and the only one that enables
 # Glaze's validate_trailing_whitespace (task 6086). PRIVATE: Glaze is an
 # implementation detail of two flag validators, not part of any interface.
 target_link_libraries(planar_cmd_planar_agent PRIVATE glaze::glaze)
@@ -218,6 +229,7 @@ if(TARGET planar_cmd_planar_agent_tests)
     "PLANAR_CPP_BIN=\"$<TARGET_FILE:planar_cmd_planar_agent>\""
     # queue_rule.t.cpp holds the built binary to the authored rule file.
     "PLANAR_QUEUE_RULE_SOURCE=\"${PROJECT_SOURCE_DIR}/src/lib/queuerule/queue-rule.md\""
+    "PLANAR_QUEUE_MANDATE_SOURCE=\"${PROJECT_SOURCE_DIR}/src/lib/queuerule/queue-mandate.md\""
     # queue_roles.t.cpp reads the authored role files and skill sources.
     "PLANAR_REPO_ROOT=\"${PROJECT_SOURCE_DIR}\"")
   target_include_directories(planar_cmd_planar_agent_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")

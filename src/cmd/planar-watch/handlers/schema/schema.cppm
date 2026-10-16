@@ -7,9 +7,9 @@
 /// FRAGMENT renderer: `planar.cliapp.schema::schema_json` documents itself as
 /// returning no trailing newline and the Zig handler appends one at the
 /// write site (`writeAll(catalog)` then `writeAll("\n")`), so this handler
-/// appends. Read each renderer's own `@return`; the opposite case is live
-/// in this same tree's sibling binary (`planar workflow list --json`,
-/// whose renderer returns a complete payload and must not be appended to).
+/// appends. Read each renderer's own `@return`; the opposite case was live
+/// in the removed `planar workflow list --json`, whose renderer returned a
+/// complete payload and must not have been appended to.
 module;
 
 export module planar.cmd.planar_watch.handlers.schema;

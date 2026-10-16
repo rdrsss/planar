@@ -147,7 +147,7 @@ auto parse_args(std::span<const std::string> argv_tail) -> parsed_args_shape {
   bool past_verbs = false;
 
   // Set by the first flag. Until then a token past the recorded verb depth
-  // can still name a third-level subcommand (`feedback triage set`), which
+  // can still name a third-level subcommand (`task touches add`), which
   // only widens the chain flags are checked against; it is still counted as
   // a positional and never recorded.
   bool flag_seen = false;
@@ -217,8 +217,7 @@ auto parse_args(std::span<const std::string> argv_tail) -> parsed_args_shape {
     //     import /Users/private/clients/acme-secret
     //     synthesize /Users/private/clients/acme-secret
     //
-    // `introspect` selects this column verbatim into `[invocations]`,
-    // `[failure tail]` and the JSONL boundary of `planar report`, so a
+    // The readers of `cli_invocations` select this column verbatim, so a
     // search term or a client directory name could leave the machine inside
     // a diagnostic bundle.
     //

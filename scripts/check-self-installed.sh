@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# Check that this host's installed Planar skill and agents match the staged
-# authority under $PLANAR_HOME. The comparison is `planar health`'s
-# installed-surface classifier (the nine vendor roots, against
-# $PLANAR_HOME/skills/planar, agents and codex-agents); this script only reads
-# its `projection_freshness` contributor.
+# Check that this host's installed Planar skill matches the staged authority
+# under $PLANAR_HOME. The comparison is `planar health`'s installed-surface
+# classifier (the vendor roots, against $PLANAR_HOME/skills/planar); this
+# script only reads its `projection_freshness` contributor.
 set -euo pipefail
 
 PLANAR_HOME="${PLANAR_HOME:-$HOME/.planar}"
@@ -40,4 +39,4 @@ if [ "$manifest_status" != "current" ] || [ "$managed" -eq 0 ] || [ "$stale" -ne
   exit 1
 fi
 
-echo "PASS: $managed installed projections match the staged skill and agents"
+echo "PASS: $managed installed projections match the staged skill"

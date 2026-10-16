@@ -48,16 +48,15 @@ namespace planar::cmd::ext {
 /// write scope reaching an association entity) is never widened.
 ///
 /// Lived in `planar.cmd.planar_ext.handlers.sync` until task 6303, which gave it
-/// its second caller family (`feedback triage set`). It sits here rather than
+/// its second caller family. It sits here rather than
 /// in either handler because a handler importing another handler is the
 /// `cmd_* -> cmd_*` edge D18 prohibits, and because every caller invokes
 /// `resolve_write_scope` immediately before it — the guard's second argument
 /// is that call's result.
 ///
 /// NOTE the refusal MESSAGE is deliberately not here. `sync` says "target is
-/// outside the operator write scope", `feedback triage set` says "Refusing
-/// cross-scope write; pass --scope ...", and `task` says a third thing; all
-/// three were captured from the oracle and are not one string.
+/// outside the operator write scope" and the planar verbs say a third thing;
+/// all were captured from the oracle and are not one string.
 /// @param conn An open, migrated database connection.
 /// @param entity_scope The entity's scope label (unset = global).
 /// @param write_scope The operator's resolved write scope (unset = global).

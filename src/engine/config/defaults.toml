@@ -4,7 +4,7 @@
 # embedded defaults shipped in the binary. Run `planar config show --defaults`
 # to see the full baseline.
 #
-# Environment variables override config values. See:
+# Environment variables override config values, except the [policy] keys. See:
 #   planar config show --effective
 # for the resolved value of every key plus its provenance.
 
@@ -27,13 +27,6 @@ dir = "~/.planar/templates"
 # Default template set selected when an association has no override.
 default_set = "default"
 
-[execute]
-# Which engine `planar-execute run` uses when neither --engine nor
-# $PLANAR_EXECUTE_ENGINE is set (plan 1033, decision 1017). Acceptable:
-# embedded, centurion. `embedded` until plan 1033's cutover flips it;
-# `centurion` is refused at dispatch until the Centurion host lands.
-engine = "embedded"
-
 [queue]
 # Host-wide build and test queue (`planar-agent queue run`). Read at each
 # poll, so an edit takes effect without restarting a waiting submitter.
@@ -52,6 +45,27 @@ stale_after = "30s"
 grace = "10s"
 # How many days finished-entry history and its log files are kept. At least 1.
 history_days = 30
+
+[policy]
+# Facts Planar checks at one verb, or only displays. A key that says what
+# happens next (a step, retry, branch or condition) is workflow and is
+# refused by `planar config validate`, as is any unknown key. Environment
+# variables do NOT override these keys. An `[associations."<slug>".policy]`
+# table overrides this one for that association.
+#
+# `complete` requires an approving review row for the task.
+review_required = false
+# `complete` requires a recorded queued run whose argv equals this array,
+# for example task_gate = ["make", "test"]. Unset by default (no gate).
+# task_gate = ["make", "test"]
+# A coder `claim` or `pull` must name a model.
+require_model = false
+# Verb paths the orchestrator confirms with the operator first. Display only.
+confirm_before = []
+# `spec ingest --strict` requires scenario coverage.
+require_scenario_coverage = false
+# Builds and tests go through the host queue (`planar-agent queue run`).
+use_queue = false
 
 [external.jira]
 # Base URL of the Jira instance. Required for ext-sync against Jira.
@@ -92,22 +106,6 @@ cli_log = false
 # are pruned statelessly on the capture write path. No last-prune
 # bookkeeping is stored anywhere.
 retention_days = 90
-
-# `planar report`'s transcript read budget: the bytes streamed from disk, newest
-# files first, across the enabled transcript vendors (an integer above 0;
-# default 64 MiB). The scan keeps only the lines that can be a planar call or
-# its result, inside a separate, fixed 4 MiB retained budget.
-transcript_scan_bytes = 67108864
-
-[introspection.transcripts]
-# Each adapter may be disabled independently. An empty path selects the
-# built-in vendor location; a non-empty path is an operator override.
-claude_enabled = true
-claude_path = ""
-codex_enabled = true
-codex_path = ""
-copilot_enabled = true
-copilot_path = ""
 
 # Per-association overrides. Keys here shadow the top-level sections when
 # the named association is in active scope. Slug is the association.slug.

@@ -29,10 +29,6 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-// `getpid()` — the run sweep's liveness probe is the one thing here that
-// asks the kernel a question, so the tests need a pid they KNOW is alive.
-#include <unistd.h>
-
 import std;
 import planar.db;
 import planar.db.migrate;
@@ -626,42 +622,6 @@ TEST_CASE("start_action's dirty predicate differs from acquire_claim's", "[agent
 }
 
 // ===========================================================================
-// associate_claim_run
-// ===========================================================================
-
-TEST_CASE("associate_claim_run reports 0 for an unknown or terminal claim", "[agentactivity]") {
-  scratch_db_path scratch;
-  auto            conn = open_migrated(scratch);
-  auto const      fx   = seed(conn, 1);
-  auto const      held = aa::acquire_claim(conn, basic_args(fx, task_id_at(conn, 0)));
-  REQUIRE(held.has_value());
-  exec(conn, std::format("insert into workflow_runs (plan_id, workflow_name, run_identifier, pid, repo_root) "
-                         "values ({}, 'wf', 'run-1', 1, '/tmp')",
-                         fx.plan_id));
-  auto const run_id = scalar_int(conn, "select id from workflow_runs where run_identifier = 'run-1'");
-
-  auto const stamped = aa::associate_claim_run(conn, held->claim_token, run_id, "code");
-  REQUIRE(stamped.has_value());
-  REQUIRE(*stamped == 1);
-  auto const reread = aa::get_claim_by_token(conn, held->claim_token);
-  REQUIRE(reread.has_value());
-  REQUIRE(reread->run_id == run_id);
-  REQUIRE(reread->stage == "code");
-
-  // Unknown token: NOT an error. The external harness that calls this is
-  // stamping metadata, not asserting ownership.
-  auto const missing = aa::associate_claim_run(conn, "nosuchtoken", run_id, std::nullopt);
-  REQUIRE(missing.has_value());
-  REQUIRE(*missing == 0);
-
-  // Terminal claim: likewise 0, because the UPDATE is guarded on `active`.
-  REQUIRE(aa::release_claim(conn, held->claim_token, aa::claim_status::completed, std::nullopt, std::nullopt).has_value());
-  auto const on_terminal = aa::associate_claim_run(conn, held->claim_token, run_id, std::nullopt);
-  REQUIRE(on_terminal.has_value());
-  REQUIRE(*on_terminal == 0);
-}
-
-// ===========================================================================
 // reconcile
 // ===========================================================================
 
@@ -877,90 +837,6 @@ TEST_CASE("reconcile closes actions orphaned by an ENDED session", "[agentactivi
   REQUIRE(scalar_text(conn, std::format("select outcome from agent_actions where id = {}", *opened)) == "aborted");
   REQUIRE(scalar_text(conn, std::format("select ended_at from agent_actions where id = {}", *opened)) ==
           scalar_text(conn, std::format("select ended_at from sessions where id = {}", fx.session_id)));
-}
-
-// ===========================================================================
-// run sweep
-// ===========================================================================
-
-TEST_CASE("pid_alive treats non-positive pids as dead and self as alive", "[agentactivity]") {
-  REQUIRE_FALSE(aa::pid_alive(0));
-  REQUIRE_FALSE(aa::pid_alive(-1));
-  // This process definitely exists.
-  REQUIRE(aa::pid_alive(static_cast<std::int64_t>(::getpid())));
-}
-
-TEST_CASE("reconcile_runs abandons dead-pid runs and spares live ones", "[agentactivity]") {
-  scratch_db_path scratch;
-  auto            conn = open_migrated(scratch);
-  auto const      fx   = seed(conn, 1);
-
-  exec(conn, std::format("insert into workflow_runs (plan_id, workflow_name, run_identifier, pid, repo_root) "
-                         "values ({}, 'wf', 'dead', -1, '/tmp')",
-                         fx.plan_id));
-  exec(conn, std::format("insert into workflow_runs (plan_id, workflow_name, run_identifier, pid, repo_root) "
-                         "values ({}, 'wf', 'live', {}, '/tmp')",
-                         fx.plan_id, static_cast<std::int64_t>(::getpid())));
-
-  auto const preview = aa::reconcile_runs(conn, true, std::nullopt);
-  REQUIRE(preview.has_value());
-  REQUIRE(preview->candidates.size() == 1);
-  REQUIRE(preview->candidates[0].run_identifier == "dead");
-  REQUIRE(preview->abandoned == 0);
-  REQUIRE(scalar_text(conn, "select status from workflow_runs where run_identifier = 'dead'") == "running");
-
-  auto const swept = aa::reconcile_runs(conn, false, std::nullopt);
-  REQUIRE(swept.has_value());
-  REQUIRE(swept->abandoned == 1);
-  REQUIRE(scalar_text(conn, "select status from workflow_runs where run_identifier = 'dead'") == "abandoned");
-  REQUIRE(scalar_text(conn, "select status from workflow_runs where run_identifier = 'live'") == "running");
-}
-
-TEST_CASE("reconcile_runs abandons an expired-lease pid-less run and spares a live one, never pid-probing either",
-          "[agentactivity][6847]") {
-  scratch_db_path scratch;
-  auto            conn = open_migrated(scratch);
-  auto const      fx   = seed(conn, 1);
-
-  // Expired: a seeded PAST expires_at, deterministic rather than sleeping.
-  exec(conn, std::format("insert into workflow_runs (plan_id, workflow_name, run_identifier, expires_at, repo_root) "
-                         "values ({}, 'wf', 'lapsed', '2000-01-01T00:00:00.000Z', '/tmp')",
-                         fx.plan_id));
-  // Not yet expired.
-  exec(conn, std::format("insert into workflow_runs (plan_id, workflow_name, run_identifier, expires_at, repo_root) "
-                         "values ({}, 'wf', 'live-lease', '2999-01-01T00:00:00.000Z', '/tmp')",
-                         fx.plan_id));
-
-  auto const preview = aa::reconcile_runs(conn, true, std::nullopt);
-  REQUIRE(preview.has_value());
-  REQUIRE(preview->candidates.size() == 1);
-  REQUIRE(preview->candidates[0].run_identifier == "lapsed");
-  REQUIRE(preview->abandoned == 0);
-  REQUIRE(scalar_text(conn, "select status from workflow_runs where run_identifier = 'lapsed'") == "running");
-
-  auto const swept = aa::reconcile_runs(conn, false, std::nullopt);
-  REQUIRE(swept.has_value());
-  REQUIRE(swept->abandoned == 1);
-  REQUIRE(scalar_text(conn, "select status from workflow_runs where run_identifier = 'lapsed'") == "abandoned");
-  REQUIRE(scalar_text(conn, "select status from workflow_runs where run_identifier = 'live-lease'") == "running");
-}
-
-TEST_CASE("a dead-pid run is abandoned by its pid probe alone, even carrying a far-future expires_at", "[agentactivity][6847]") {
-  // A pid-bound run's liveness is decided by the pid probe alone, exactly
-  // as before task 6847 — the new lease branch must not read `expires_at`
-  // for a row that HAS a pid, even if one happens to be present.
-  scratch_db_path scratch;
-  auto            conn = open_migrated(scratch);
-  auto const      fx   = seed(conn, 1);
-
-  exec(conn, std::format("insert into workflow_runs (plan_id, workflow_name, run_identifier, pid, expires_at, repo_root) "
-                         "values ({}, 'wf', 'dead-pid', -1, '2999-01-01T00:00:00.000Z', '/tmp')",
-                         fx.plan_id));
-
-  auto const swept = aa::reconcile_runs(conn, false, std::nullopt);
-  REQUIRE(swept.has_value());
-  REQUIRE(swept->abandoned == 1);
-  REQUIRE(scalar_text(conn, "select status from workflow_runs where run_identifier = 'dead-pid'") == "abandoned");
 }
 
 // ===========================================================================
@@ -1441,7 +1317,7 @@ TEST_CASE("log's source queries are oldest-first and honour their limit", "[agen
 TEST_CASE("next_work excludes a todo task carrying an open depends-on edge, and stops excluding it once the blocker "
           "closes",
           "[agentactivity][deps][6898]") {
-  // `pull_next`/`peek_next` (agentatomic.cpp's `pick_next_eligible`) have
+  // `pull_next`/`peek_next` (agentatomic.cpp's `eligible_task_ids`) have
   // carried this dependency-exclusion clause since task 6841; `plan
   // next`'s OWN bucketer (`next_work`, this function) did not, so `planar
   // plan next` listed a `todo` task as `available` while `pull`/`peek`

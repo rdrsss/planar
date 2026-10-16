@@ -10,7 +10,9 @@
 #   REL       the release base directory; created if missing
 #   TAG       the release tag, written into the bundle's release.json
 #   PLATFORM  macos-arm64 or linux-x86_64: the bundle is planar-PLATFORM/
-#   SCHEMA    the bundle's release.json schema_version (default 41)
+#   SCHEMA    the bundle's release.json schema_version (default: the head
+#             migration under REPO/migrations, since `planar update` refuses a
+#             bundle older than its own)
 #   LATEST    yes (default) to point REL/latest/download/VERSION at TAG
 #
 # Produces REL/download/TAG/{planar-PLATFORM.tar.gz,SHA256SUMS} where
@@ -19,7 +21,14 @@
 # fake bundle (tiny stub binaries, the real install.sh and install-lib).
 set -euo pipefail
 
-repo="$1" rel="$2" tag="$3" platform="$4" schema="${5:-41}" latest="${6:-yes}"
+repo="$1" rel="$2" tag="$3" platform="$4" schema="${5:-}" latest="${6:-yes}"
+if [[ -z "$schema" ]]; then
+  schema=0
+  for f in "$repo"/migrations/*.up.sql; do
+    n="${f##*/}"; n="${n%%_*}"
+    [[ "$n" =~ ^[0-9]+$ ]] && (( 10#$n > schema )) && schema=$((10#$n))
+  done
+fi
 # shellcheck source=../../../../../scripts/fixtures/prebuilt-bundle.sh
 source "$repo/scripts/fixtures/prebuilt-bundle.sh"
 

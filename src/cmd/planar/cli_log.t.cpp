@@ -277,19 +277,19 @@ TEST_CASE("a flag the resolved verb does not declare is recorded as --<unknown>"
 }
 
 TEST_CASE("flags on a three-level verb are checked against the leaf", "[cmd][cli_log][privacy][redaction]") {
-  auto const declared = shape_of({"feedback", "triage", "set", "--severity", "high"});
-  CHECK(declared.verb_path == "feedback triage");
-  CHECK(declared.args_shape == "<pos:1> --severity");
+  auto const declared = shape_of({"task", "touches", "add", "--path", "high"});
+  CHECK(declared.verb_path == "task touches");
+  CHECK(declared.args_shape == "<pos:1> --path");
 
-  auto const undeclared = shape_of({"feedback", "triage", "set", "--SENTINEL_MUST_NOT_LEAK", "high"});
-  CHECK(undeclared.verb_path == "feedback triage");
+  auto const undeclared = shape_of({"task", "touches", "add", "--SENTINEL_MUST_NOT_LEAK", "high"});
+  CHECK(undeclared.verb_path == "task touches");
   CHECK(undeclared.args_shape == "<pos:1> --<unknown>");
 }
 
 TEST_CASE("verb_path_recognized accepts what the writer produces and rejects the rest", "[cmd][cli_log][privacy][redaction]") {
   // Everything the writer can emit for real input is recognized, so the
   // read mask never masks a current row.
-  for (std::string_view const path : {"", "health", "task add", "task show", "feedback triage", "resume 6073", "tree plan:42",
+  for (std::string_view const path : {"", "health", "task add", "task show", "task touches", "resume 6073", "tree plan:42",
                                       "<unknown>", "task <unknown>", "<unknown> 6073"}) {
     CAPTURE(path);
     CHECK(pc::verb_path_recognized(path));
@@ -302,7 +302,7 @@ TEST_CASE("verb_path_recognized accepts what the writer produces and rejects the
   }
   // Whatever parse_args writes, the predicate accepts.
   for (auto const& shape : {shape_of({"task", "SENTINEL", "x"}), shape_of({"SENTINEL"}), shape_of({"search", "SENTINEL"}),
-                            shape_of({"feedback", "triage", "set", "--severity", "high"}), shape_of({"resume", "6073"})}) {
+                            shape_of({"task", "touches", "add", "--path", "high"}), shape_of({"resume", "6073"})}) {
     CAPTURE(shape.verb_path);
     CHECK(pc::verb_path_recognized(shape.verb_path));
   }

@@ -420,7 +420,7 @@ auto write_indent(std::string& out, std::size_t level) -> void {
 /// Delegates to `planar.json_text` (task 6261). This function used to ask
 /// `std::to_chars` for its DEFAULT format, which switches to scientific
 /// notation for small and large magnitudes -- so `0.000001375` came back
-/// out as `1.375e-06` while `engine/execute/manifest.cpp`, which had
+/// out as `1.375e-06` while the since-removed `engine/execute/manifest.cpp`, which had
 /// transcribed the fixed-notation algorithm correctly, wrote the same value
 /// as `0.000001375`. `search.cpp` carried a standing note that this module
 /// "has the same divergence ... NOT reused here, and not fixed here

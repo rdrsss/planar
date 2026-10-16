@@ -21,8 +21,7 @@
 // The allowed code sets below come from each binary's `exit.cppm`
 // (`planar`: 0, 1, 2, 3, 5, 6, 7, 8 and 64; the other three CLI11 binaries
 // the same minus 8, plus `planar-agent queue`'s 124, 125, 126, 127 and
-// observer SIGINT/SIGTERM exits 130/143;
-// `planar-execute`: 0, 1, 2 and 75 from `runflow.cpp`). Each list is a copy
+// observer SIGINT/SIGTERM exits 130/143). Each list is a copy
 // because D18 forbids this test target importing another binary's module.
 
 #include <catch2/catch_test_macros.hpp>
@@ -41,15 +40,14 @@ struct binary_under_test {
   std::string           name;
   std::filesystem::path path;
   std::set<int>         codes;             // The codes this binary's exit table knows.
-  bool                  has_footer = true; // False for planar-execute, whose help is a hand-written banner.
+  bool                  has_footer = true; // False for a binary whose help is a hand-written banner.
 };
 
 auto binaries() -> std::vector<binary_under_test> {
   return {{"planar", PLANAR_CPP_BIN, {0, 1, 2, 3, 5, 6, 7, 8, 10, 64, 130, 143}, true},
           {"planar-agent", PLANAR_AGENT_CPP_BIN, {0, 1, 2, 3, 5, 6, 7, 64, 124, 125, 126, 127, 130, 143}, true},
           {"planar-watch", PLANAR_WATCH_CPP_BIN, {0, 1, 2, 3, 5, 6, 7, 64}, true},
-          {"planar-ext", PLANAR_EXT_CPP_BIN, {0, 1, 2, 3, 5, 6, 7, 64}, true},
-          {"planar-execute", PLANAR_EXECUTE_CPP_BIN, {0, 1, 2, 75}, false}};
+          {"planar-ext", PLANAR_EXT_CPP_BIN, {0, 1, 2, 3, 5, 6, 7, 64}, true}};
 }
 
 // One command of a catalog, reduced to what these tests read.
@@ -128,16 +126,8 @@ auto help_of(binary_under_test const& bin, std::string const& command) -> ::plan
 
 constexpr std::array<std::string_view, 4> k_no_example_required = {"schema", "completion", "version", "help"};
 
-// Removed-verb stubs: declared so the old spelling gets a refusal (exit 2,
-// "was removed") instead of a parse error. An example would advertise an
-// invocation that cannot work, so none is required or written for them.
-constexpr std::array<std::string_view, 3> k_removed_verb_stubs = {"planar scope use", "planar scope pop", "planar scope clear"};
-
 auto example_required(binary_under_test const& bin, command_docs_row const& row) -> bool {
   if (bin.name != "planar" && bin.name != "planar-agent") {
-    return false;
-  }
-  if (std::ranges::find(k_removed_verb_stubs, row.command) != k_removed_verb_stubs.end()) {
     return false;
   }
   auto const leaf_name = row.command.substr(row.command.rfind(' ') + 1);
@@ -207,16 +197,19 @@ TEST_CASE("every leaf of every binary lists exit codes its exit table knows", "[
         CHECK_FALSE(meaning.empty());
         CHECK(seen.insert(code).second);
       }
-      // Every leaf can succeed, except the removed-verb stubs that always refuse.
+      // Every leaf can succeed.
       if (!row.command.starts_with("planar scope ") || row.command == "planar scope show" ||
           row.command == "planar scope suggest") {
         CHECK(seen.contains(0));
       }
     }
   }
-  // 219 + 29 + 14 + 13 + 10 leaves measured 2026-10-04.
+  // 214 leaves measured 2026-10-11 across the four remaining binaries (planar 168, planar-agent 20, planar-watch 13,
+  // planar-ext 13), after plan 1142 removed `models`, the dispatch verbs, `explore`, `skills`, the `scope` stubs, the
+  // four unused verbs, `report`, the closure, groups, bench and run leaves, and `import`, `synthesize`, and the three
+  // feedback triage leaves; the floor keeps a margin of four.
   CAPTURE(leaves);
-  CHECK(leaves >= 280);
+  CHECK(leaves >= 210);
 }
 
 TEST_CASE("every planar and planar-agent leaf has an example under its own command path", "[catalog][docs]") {
@@ -237,10 +230,10 @@ TEST_CASE("every planar and planar-agent leaf has an example under its own comma
     }
   }
   CAPTURE(checked);
-  CHECK(checked >= 235);
+  CHECK(checked >= 178); // 182 measured 2026-10-11 after plan 1142 task 7467 removed seven (margin four)
 }
 
-TEST_CASE("--help repeats the catalog's docs for every leaf of the four CLI11 binaries", "[catalog][docs]") {
+TEST_CASE("the --help page repeats the catalog's docs for every leaf of the four CLI11 binaries", "[catalog][docs]") {
   std::size_t checked = 0;
   for (auto const& bin : binaries()) {
     if (!bin.has_footer) {
@@ -259,5 +252,5 @@ TEST_CASE("--help repeats the catalog's docs for every leaf of the four CLI11 bi
     }
   }
   CAPTURE(checked);
-  CHECK(checked >= 270);
+  CHECK(checked >= 210); // one footer per leaf of the four CLI11 binaries (214 measured 2026-10-11)
 }

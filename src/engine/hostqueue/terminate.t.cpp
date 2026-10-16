@@ -27,7 +27,7 @@
 // no engine operation records it yet (the `queue run` verb does, task
 // hq-queue-run-verb).
 //
-// Include-before-import is deliberate (see core/version.t.cpp / db.t.cpp).
+// Include-before-import is deliberate (see db.t.cpp).
 #include <catch2/catch_test_macros.hpp>
 
 #include <cerrno>

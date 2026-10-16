@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "id": "null-verdict-review-does-not-count",
+  "description": "Rule 6: a review row from another session with no verdict is not a review.",
+  "policy": {
+    "review_required": true
+  },
+  "tasks": [
+    {
+      "title": "unjudged",
+      "final": "done"
+    }
+  ],
+  "claims": [
+    {
+      "task": 1,
+      "status": "completed",
+      "role": "coder",
+      "model": "m",
+      "session": "coder",
+      "parent_action": true,
+      "reviews": [
+        {
+          "session": "reviewer",
+          "verdict": null
+        }
+      ]
+    }
+  ],
+  "expected": {
+    "conforms": false,
+    "violations": [
+      {
+        "rule": 6,
+        "entity": "claim:1"
+      }
+    ]
+  }
+}

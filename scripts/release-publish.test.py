@@ -138,12 +138,12 @@ class GateTests(ReleaseFixture):
             self.assertEqual((record['release']['sha'], record['release']['version'],
                               record['release']['schema_version']), (self.sha, TAG, 41))
             gates = record['gates']
-            self.assertEqual(gates['portable'], dict(result='pass', matched_count=2, staged_binaries=5))
+            self.assertEqual(gates['portable'], dict(result='pass', matched_count=2, staged_binaries=4))
             self.assertEqual((gates['smoke']['result'], gates['smoke']['matched_count'],
-                              gates['smoke']['expected_count']), ('pass', 7, 7))
+                              gates['smoke']['expected_count']), ('pass', 6, 6))
             log = (self.inputs / platform / gates['smoke']['log']).read_text()
             for check in ('version-planar', 'version-planar-agent', 'version-planar-watch', 'version-planar-ext',
-                          'help-planar-execute', 'init', 'health'):
+                          'init', 'health'):
                 self.assertIn(f'smoke_check={check} result=pass', log)
             if platform == 'linux-x86_64':
                 self.assertEqual({k: (v['result'], v['matched_count'], v['expected_count'])
@@ -171,7 +171,7 @@ class GateTests(ReleaseFixture):
                 self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
                 self.assertIn('failed gates: smoke', result.stderr)
                 smoke = json.loads(self.evidence(platform).read_text())['gates']['smoke']
-                self.assertEqual((smoke['result'], smoke['matched_count'], smoke['expected_count']), ('fail', 6, 7))
+                self.assertEqual((smoke['result'], smoke['matched_count'], smoke['expected_count']), ('fail', 5, 6))
                 self.assertIn('smoke_check=health result=fail', result.stdout)
         self.assert_refused('smoke gate result is fail')
 
@@ -180,7 +180,7 @@ class GateTests(ReleaseFixture):
         result = self.gate('macos-arm64')
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         smoke = json.loads(self.evidence('macos-arm64').read_text())['gates']['smoke']
-        self.assertEqual((smoke['result'], smoke['matched_count']), ('fail', 3))
+        self.assertEqual((smoke['result'], smoke['matched_count']), ('fail', 2))
         self.assertIn('smoke_check=version-planar-ext result=fail', result.stdout)
 
     def test_failed_ca_trust_checks_are_recorded_and_refused(self):
@@ -261,9 +261,9 @@ class PublishTests(ReleaseFixture):
         self.assertEqual(shlex.split(command),
                          ['gh', 'release', 'create', TAG, '--verify-tag', '--title', TAG, '--notes-from-tag',
                           *map(str, self.expected_assets(self.stage))])
-        self.assertIn('linux-x86_64 planar-linux-x86_64.tar.gz gates: portable=2 smoke=7/7 ca_debian=2/2 '
+        self.assertIn('linux-x86_64 planar-linux-x86_64.tar.gz gates: portable=2 smoke=6/6 ca_debian=2/2 '
                       'ca_redhat=1/1', result.stdout)
-        self.assertIn('macos-arm64 planar-macos-arm64.tar.gz gates: portable=2 smoke=7/7', result.stdout)
+        self.assertIn('macos-arm64 planar-macos-arm64.tar.gz gates: portable=2 smoke=6/6', result.stdout)
         self.assertFalse(self.gh_log.exists(), 'a dry run runs nothing')
         self.assertFalse((self.repo / 'dist').exists(), 'a dry run stages nothing')
 
@@ -373,8 +373,8 @@ class PublishTests(ReleaseFixture):
     def test_zero_or_partial_matched_counts_are_refused(self):
         changes = (('portable', dict(matched_count=0), 'portable gate matched 0 checks; zero matched is no gate'),
                    ('smoke', dict(matched_count=0, expected_count=0), 'smoke gate matched 0 checks'),
-                   ('smoke', dict(matched_count=6), 'smoke gate matched 6 of 7 expected checks'),
-                   ('portable', dict(staged_binaries=4), 'inspected 4 staged binaries, not 5'))
+                   ('smoke', dict(matched_count=5), 'smoke gate matched 5 of 6 expected checks'),
+                   ('portable', dict(staged_binaries=5), 'inspected 5 staged binaries, not 4'))
         for gate, fields, message in changes:
             with self.subTest(message=message):
                 self.ready()
@@ -399,8 +399,8 @@ class PublishTests(ReleaseFixture):
              'macos-arm64 portable gate runs; missing checks'),
             ('linux-x86_64', 'portable', lambda g: g.update(matched_count=1),
              'linux-x86_64 portable gate matched 1 of no recorded expected checks, below the 2'),
-            ('linux-x86_64', 'smoke', lambda g: g.update(matched_count=6, expected_count=6),
-             'linux-x86_64 smoke gate matched 6 of 6 expected checks, below the 7'),
+            ('linux-x86_64', 'smoke', lambda g: g.update(matched_count=5, expected_count=5),
+             'linux-x86_64 smoke gate matched 5 of 5 expected checks, below the 6'),
             ('linux-x86_64', 'ca_debian', lambda g: g.update(cases=['debian', 'debian']),
              "linux-x86_64 ca_debian gate ran cases ['debian', 'debian'], not ['debian', 'removed'] "
              '(matched 2 of 2 expected checks); missing checks'),
@@ -409,7 +409,7 @@ class PublishTests(ReleaseFixture):
             ('macos-arm64', 'smoke', lambda g: g.update(expected_count='7'),
              "macos-arm64 smoke gate expected_count '7' is not a count"),
             ('macos-arm64', 'smoke', lambda g: g.update(expected_count=8),
-             'planar-macos-arm64.tar.gz: macos-arm64 smoke gate matched 7 of 8 expected checks'),
+             'planar-macos-arm64.tar.gz: macos-arm64 smoke gate matched 6 of 8 expected checks'),
         )
         for platform, gate, change, message in changes:
             with self.subTest(message=message):
@@ -463,7 +463,7 @@ class ReleaseCutTests(ReleaseFixture):
         for platform in PLATFORMS:
             record = json.loads(self.evidence(platform, out / platform).read_text())
             self.assertEqual((record['format_version'], record['release']['sha']), (2, self.sha))
-            self.assertEqual(record['gates']['smoke']['matched_count'], 7)
+            self.assertEqual(record['gates']['smoke']['matched_count'], 6)
 
     def test_cut_publishes_once_with_five_assets(self):
         result = self.cut()

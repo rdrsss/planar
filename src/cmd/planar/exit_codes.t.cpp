@@ -123,6 +123,6 @@ TEST_CASE("planar: report composes a body but writes a rendered payload verbatim
   CHECK(body_out.str() == "error: --anchor-path is required\n");
 
   std::ostringstream rendered_out;
-  report(error_from_rendered(domain_error_kind::generic_failure, "error: workflow 'nope' not found\n"), rendered_out);
-  CHECK(rendered_out.str() == "error: workflow 'nope' not found\n");
+  report(error_from_rendered(domain_error_kind::generic_failure, "error: item 'nope' not found\n"), rendered_out);
+  CHECK(rendered_out.str() == "error: item 'nope' not found\n");
 }

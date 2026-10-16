@@ -7,6 +7,7 @@ module planar.engine.planning.strategy;
 
 import std;
 import planar.db;
+import planar.coordination;
 import planar.json_text;
 
 namespace planar::engine::planning::strategy {
@@ -49,18 +50,13 @@ struct work_task {
   std::int64_t               id = 0;
   std::optional<std::string> slug;
   std::string                title;
-  /// DECLARED touches. Rules 2-empty, 3 and 4 always read THIS set.
+  /// DECLARED touches. Every rule of `recommend` reads THIS set.
   std::vector<touch> touches;
-  /// DERIVED closure touches. Empty under `declared`; rule 2's overlap branch
-  /// reads it under `derived`.
+  /// DERIVED closure touches. Loaded only by `compute_divergence`; the
+  /// recommendation never reads it.
   std::vector<touch>     closure_touches;
   std::vector<exclusion> exclusions;
   bool                   dropped = false;
-
-  /// The set rule 2's OVERLAP pass reads for `source`.
-  [[nodiscard]] auto overlap_touches(closure_source source) const -> const std::vector<touch>& {
-    return source == closure_source::declared ? touches : closure_touches;
-  }
 };
 
 // =========================================================================
@@ -264,12 +260,9 @@ auto load_closure_touches(db::connection& conn, std::int64_t task_id) -> std::ex
   return out;
 }
 
-/// The plan's open (`todo`) candidate tasks, ordered `priority, id`.
-///
-/// `closure_touches` is loaded ONLY under `derived`, so the baseline path does
-/// zero extra DB work — matching the oracle's byte-for-byte pre-D4 claim.
-auto load_open_tasks(db::connection& conn, std::int64_t plan_id, closure_source source)
-    -> std::expected<std::vector<work_task>, strategy_error> {
+/// The plan's open (`todo`) candidate tasks, ordered `priority, id`, with
+/// their DECLARED touches. Closure touches are not loaded here.
+auto load_open_tasks(db::connection& conn, std::int64_t plan_id) -> std::expected<std::vector<work_task>, strategy_error> {
   auto stmt = conn.prepare("with recursive plan_tree(id) as (select id from plans where id = ? union all "
                            "select p.id from plans p join plan_tree pt on p.parent_plan_id = pt.id) "
                            "select id, slug, title from tasks where plan_id in (select id from plan_tree) "
@@ -300,14 +293,6 @@ auto load_open_tasks(db::connection& conn, std::int64_t plan_id, closure_source 
       return std::unexpected(touches.error());
     }
     t.touches = std::move(*touches);
-
-    if (source == closure_source::derived) {
-      auto closures = load_closure_touches(conn, t.id);
-      if (!closures) {
-        return std::unexpected(closures.error());
-      }
-      t.closure_touches = std::move(*closures);
-    }
     out.push_back(std::move(t));
   }
   return out;
@@ -359,38 +344,6 @@ auto blocked_by_not_done(db::connection& conn, std::int64_t task_id, const std::
   return std::optional<std::int64_t>{};
 }
 
-/// Rules 5 & 6: is the task linked, in EITHER direction, to a `kind` entity
-/// whose status is `status_value`?
-auto linked_to_unresolved(db::connection& conn, std::string_view kind, std::string_view status_value, std::int64_t task_id)
-    -> std::expected<bool, strategy_error> {
-  // `kind` is a module-internal literal (`question` / `decision`), never
-  // operator input, so interpolating the table name is safe here.
-  auto const sql  = std::format("select 1 from entity_links el join {0}s e on e.id = "
-                                "(case when el.from_kind = 'task' then el.to_id else el.from_id end) "
-                                "where ((el.from_kind = 'task' and el.from_id = ? and el.to_kind = '{0}') "
-                                "or (el.to_kind = 'task' and el.to_id = ? and el.from_kind = '{0}')) "
-                                "and e.status = ? limit 1",
-                                kind);
-  auto       stmt = conn.prepare(sql);
-  if (!stmt) {
-    return std::unexpected(strategy_error::query_failed);
-  }
-  if (auto b1 = stmt->bind_int64(1, task_id); !b1) {
-    return std::unexpected(strategy_error::query_failed);
-  }
-  if (auto b2 = stmt->bind_int64(2, task_id); !b2) {
-    return std::unexpected(strategy_error::query_failed);
-  }
-  if (auto b3 = stmt->bind_text(3, status_value); !b3) {
-    return std::unexpected(strategy_error::query_failed);
-  }
-  auto stepped = stmt->step();
-  if (!stepped) {
-    return std::unexpected(strategy_error::query_failed);
-  }
-  return *stepped == db::step_result::row;
-}
-
 constexpr std::string_view k_singleton_files[] = {
     "CLAUDE.md",
     "AGENTS.md",
@@ -420,26 +373,11 @@ auto is_migration_path(std::string_view path) -> bool {
   return path.starts_with("migrations/") && path.ends_with(".sql");
 }
 
-auto parse_closure_source(std::string_view text) -> std::optional<closure_source> {
-  if (text == "declared") {
-    return closure_source::declared;
-  }
-  if (text == "derived") {
-    return closure_source::derived;
-  }
-  return std::nullopt;
-}
-
-auto closure_source_name(closure_source source) -> std::string_view {
-  return source == closure_source::declared ? std::string_view{"declared"} : std::string_view{"derived"};
-}
-
 // =========================================================================
 // recommend-strategy
 // =========================================================================
 
-auto recommend_with(db::connection& conn, std::int64_t plan_id, closure_source source)
-    -> std::expected<recommendation, strategy_error> {
+auto recommend(db::connection& conn, std::int64_t plan_id) -> std::expected<recommendation, strategy_error> {
   if (auto exists = ensure_plan_exists(conn, plan_id); !exists) {
     return std::unexpected(exists.error());
   }
@@ -448,7 +386,7 @@ auto recommend_with(db::connection& conn, std::int64_t plan_id, closure_source s
   if (!not_done) {
     return std::unexpected(not_done.error());
   }
-  auto loaded = load_open_tasks(conn, plan_id, source);
+  auto loaded = load_open_tasks(conn, plan_id);
   if (!loaded) {
     return std::unexpected(loaded.error());
   }
@@ -471,22 +409,24 @@ auto recommend_with(db::connection& conn, std::int64_t plan_id, closure_source s
 
   // ---- Rule 5: open question linked -------------------------------------
   for (auto& t : tasks) {
-    auto linked = linked_to_unresolved(conn, "question", "open", t.id);
+    // The packet's `open_question_linked` reason asks the same function.
+    auto linked = coordination::open_questions_linked(conn, t.id);
     if (!linked) {
-      return std::unexpected(linked.error());
+      return std::unexpected(strategy_error::query_failed);
     }
-    if (*linked) {
+    if (!linked->empty()) {
       add_exclusion(t, 5, "excluded by rule 5: linked to an open question");
     }
   }
 
   // ---- Rule 6: proposed decision linked ---------------------------------
   for (auto& t : tasks) {
-    auto linked = linked_to_unresolved(conn, "decision", "proposed", t.id);
+    // The packet's `proposed_decision_linked` reason asks the same function.
+    auto linked = coordination::proposed_decisions_linked(conn, t.id);
     if (!linked) {
-      return std::unexpected(linked.error());
+      return std::unexpected(strategy_error::query_failed);
     }
-    if (*linked) {
+    if (!linked->empty()) {
       add_exclusion(t, 6, "excluded by rule 6: linked to a proposed decision");
     }
   }
@@ -494,7 +434,6 @@ auto recommend_with(db::connection& conn, std::int64_t plan_id, closure_source s
   // ---- Rule 2 (empty-touches branch) ------------------------------------
   // An empty DECLARED set means "touches everything" -> never eligible, so the
   // failure mode of omission is safe (serialize) rather than false-parallel.
-  // NOTE this branch reads `touches` even under `derived`.
   for (auto& t : tasks) {
     if (t.touches.empty()) {
       add_exclusion(t, 2, "excluded by rule 2: no task_touches declared (treated as touches-everything)");
@@ -543,7 +482,7 @@ auto recommend_with(db::connection& conn, std::int64_t plan_id, closure_source s
       if (tasks[j].dropped) {
         continue;
       }
-      auto overlap = shared_touch(tasks[i].overlap_touches(source), tasks[j].overlap_touches(source));
+      auto overlap = shared_touch(tasks[i].touches, tasks[j].touches);
       if (!overlap.has_value()) {
         continue;
       }
@@ -570,10 +509,6 @@ auto recommend_with(db::connection& conn, std::int64_t plan_id, closure_source s
   return rec;
 }
 
-auto recommend(db::connection& conn, std::int64_t plan_id) -> std::expected<recommendation, strategy_error> {
-  return recommend_with(conn, plan_id, closure_source::declared);
-}
-
 // =========================================================================
 // divergence
 // =========================================================================
@@ -583,9 +518,9 @@ auto compute_divergence(db::connection& conn, std::int64_t plan_id) -> std::expe
     return std::unexpected(exists.error());
   }
 
-  // Load with `declared` (so `load_open_tasks` skips its closure query), then
-  // fill the derived set explicitly — one task list carrying BOTH sources.
-  auto loaded = load_open_tasks(conn, plan_id, closure_source::declared);
+  // Load the declared set, then fill the derived set explicitly -- one task
+  // list carrying BOTH sources.
+  auto loaded = load_open_tasks(conn, plan_id);
   if (!loaded) {
     return std::unexpected(loaded.error());
   }
@@ -643,9 +578,10 @@ auto recommended_note(const recommendation& rec) -> std::string {
   return "no fan-out: no eligible tasks; run sequentially";
 }
 
-auto render_recommendation_json(const recommendation& rec, closure_source source) -> std::string {
-  std::string out = std::format(R"({{"plan_id":{},"closure_source":)", rec.plan_id);
-  append_json_string(out, closure_source_name(source));
+auto render_recommendation_json(const recommendation& rec) -> std::string {
+  // `closure_source` is pinned to "declared": the recommendation reads declared
+  // touches only. The key stays so existing consumers keep parsing.
+  std::string out = std::format(R"({{"plan_id":{},"closure_source":"declared")", rec.plan_id);
   out += R"(,"parallel_eligible":[)";
   bool first = true;
   for (auto const& t : rec.parallel_eligible) {
@@ -699,10 +635,10 @@ auto render_recommendation_json(const recommendation& rec, closure_source source
   return out;
 }
 
-auto render_recommendation_text(const recommendation& rec, closure_source source) -> std::string {
-  std::string out = std::format("plan:{}  source:{}  open:{}  eligible:{}  serialized:{}  fan_out_available:{}\n", rec.plan_id,
-                                closure_source_name(source), rec.open_tasks, rec.parallel_eligible.size(), rec.serialized.size(),
-                                rec.fan_out_available ? "yes" : "no");
+auto render_recommendation_text(const recommendation& rec) -> std::string {
+  std::string out =
+      std::format("plan:{}  source:declared  open:{}  eligible:{}  serialized:{}  fan_out_available:{}\n", rec.plan_id,
+                  rec.open_tasks, rec.parallel_eligible.size(), rec.serialized.size(), rec.fan_out_available ? "yes" : "no");
   out += std::format("  {}\n", recommended_note(rec));
 
   out += "parallel-eligible:\n";

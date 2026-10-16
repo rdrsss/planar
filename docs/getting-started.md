@@ -11,10 +11,9 @@ about 30 minutes the first time and 5 minutes the second.
 
 ## 1. Install
 
-Planar is five C++26 binaries — the operator CLI `planar`, the
-agent-callable `planar-agent`, the read-only `planar-watch`, the
-workflow runner `planar-execute`, and the external-system binary
-`planar-ext` — backed by SQLite. Install a release bundle with the
+Planar is four C++26 binaries — the operator CLI `planar`, the
+agent-callable `planar-agent`, the read-only `planar-watch`, and the
+external-system binary `planar-ext` — backed by SQLite. Install a release bundle with the
 bootstrap (Apple silicon macOS 26 or later, or x86_64 Linux with glibc
 2.36 or later):
 
@@ -24,8 +23,7 @@ curl -fsSL https://github.com/rdrsss/planar/releases/latest/download/get-planar.
 
 The bootstrap verifies the bundle against the release's `SHA256SUMS`,
 installs the binaries under `~/.planar/bin/` and installs the one
-`planar` skill and the `planar-<role>` agents into the harnesses it
-finds. Add `~/.planar/bin` to `$PATH` if it is not already there.
+`planar` skill into the harnesses it finds. Add `~/.planar/bin` to `$PATH` if it is not already there.
 `planar update` later moves to a newer release, and `planar-uninstall`
 removes the install. To pin a release, build from source, or see the
 prerequisites, read [INSTALL.md](../INSTALL.md).
@@ -57,15 +55,16 @@ guessing, `planar schema --compact` prints one row per command with its
 summary, and `planar schema --command "task add"` prints the full entry
 for one command. Ask the catalog for one command or the compact tree,
 never the whole catalog. The same works on `planar-agent`, `planar-watch`,
-`planar-ext` and `planar-execute`.
+and `planar-ext`.
 
 Everything in the rest of this tutorial is plain CLI. No skill is needed.
 
 ## 3. Using Planar from a coding agent
 
-The installer already placed the one `planar` skill and the fifteen
-`planar-<role>` agents for whichever of the six supported vendors it
-found on your machine. The skill teaches only the rules that cross verbs;
+The installer already placed the one `planar` skill for whichever of
+the six supported vendors it found on your machine. It places no role
+agents; the `planar-<role>` agents under `examples/agents/` are
+examples you can copy into a harness yourself. The skill teaches only the rules that cross verbs;
 the CLI help stays the source for everything verb-shaped. Confirm the
 install with:
 
@@ -86,8 +85,9 @@ What needs my attention in this project?
 Hand off task 42; I'm stopping for today.
 ```
 
-In Claude Code, `/planar <request>` loads the skill explicitly. Name a
-role agent to dispatch it: "use the planar-planner agent to draft …".
+In Claude Code, `/planar <request>` loads the skill explicitly. If you
+copied an example role agent into the harness, name it to dispatch it:
+"use the planar-planner agent to draft …".
 [Skill reference § Using it day to day](skill-reference.md#using-it-day-to-day)
 lists more requests and maps each retired `pl-*` skill to its
 replacement; the rest of that page covers the layout, the vendor
@@ -385,7 +385,7 @@ time with exit 2. See
 - [CLI reference](cli-reference.md) — every command, every flag,
   every exit code.
 - [Skill reference](skill-reference.md) — the `planar` skill, the
-  `planar-<role>` agents, and where the installer places them.
+  example `planar-<role>` agents, and where the installer places the skill.
 - [Light touch](light-touch.md) — Planar as a capture journal, four
   verbs and no agent workflow.
 

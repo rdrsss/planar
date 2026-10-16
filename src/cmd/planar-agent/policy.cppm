@@ -16,6 +16,11 @@
 /// `task_policy` — which is the property worth having, because two
 /// handlers with two different notions of "is this transition legal?"
 /// would be exactly the kind of divergence nothing would catch.
+///
+/// The same seam binds the claim-time readiness check (plan 1142): the
+/// task packet's reasons (`planar.engine.ingest.packet`, a sibling
+/// engine `agentatomic` may not import) are handed to `claim` and `pull`
+/// as `task_policy::unready_reasons`.
 module;
 
 export module planar.cmd.planar_agent.policy;

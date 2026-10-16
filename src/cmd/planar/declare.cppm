@@ -37,9 +37,8 @@
 /// `assoc`, `workspace`, `handoff`, `templates`, `bench`) added
 /// `add_string_list` for `bench start --task`, the surface's first
 /// repeatable flag; M11.3e (`scope`, `audit`, `config`, `local`, `links`,
-/// `run`, `feedback`) added `set_allow_extras` for `scope use|pop|clear`,
-/// the only three leaves in the tree that take one; M11.3f (the
-/// thirty-three remaining singletons) added `add_positional_described`.
+/// `run`, `feedback`) and M11.3f (the thirty-three remaining singletons)
+/// finished the transcription of the surface's leaves.
 ///
 /// The only shape still UNBUILT is a REQUIRED BOOL flag, and it is
 /// unbuilt because the surface contains none — `apply_surface`'s
@@ -130,7 +129,7 @@ export auto add_string_required(CLI::App& app, std::string_view name, std::strin
 ///
 /// `expected(1, -1)` is CLI11's unbounded form, and it is what makes the
 /// catalog report `"list":true` as well as what lets the flag be supplied
-/// more than once. `bench start --task` is the only site today; the shape
+/// more than once. The shape
 /// carries no default and is never required, so those two parameters are
 /// deliberately absent rather than defaulted.
 /// @param app The node to declare it on.
@@ -176,35 +175,5 @@ export auto add_positional(CLI::App& app, std::string_view name, std::string_vie
 /// @param name The positional's name.
 /// @param desc The help line; pass `k_undocumented` only where no text has been authored yet.
 export auto add_positional_optional(CLI::App& app, std::string_view name, std::string_view desc) -> void;
-
-/// @brief Let a leaf accept ANY unrecognized flag or positional.
-///
-/// The one NODE-level primitive here; everything else declares an option.
-/// It mirrors `apply_surface`'s `spec.allow_extras` arm, and it exists for
-/// exactly three leaves: `scope use`, `scope pop` and `scope clear`, all
-/// removed in plan 153 M5. Their handlers answer with the same fixed
-/// refusal whatever the input, and the oracle tolerated the arbitrary
-/// legacy flags and positionals a pre-M5 caller would still be passing —
-/// so CLI11 must hand those through rather than refuse them at parse time,
-/// which would change both the message and the exit code.
-///
-/// Named `set_` rather than `add_` deliberately: it toggles a property of
-/// the node instead of appending to its option list, and every call site
-/// should read as the exception it is.
-///
-/// THIS PROPERTY IS UNGUARDED, and it is the only thing M11.3e folded that
-/// is. Two break-probes at task 6635 established it: ADDING
-/// `set_allow_extras` to a leaf that has none (`config path`) left
-/// `scripts/surface-snapshot.sh verify` clean at 312 points, and REMOVING
-/// all three of `scope`'s left both that gate clean AND all 861
-/// `cmd_planar` Catch2 cases green. The property appears in neither the
-/// `schema` catalog nor any `--help` page, which is all the gate hashes,
-/// and the difference it makes is a MESSAGE difference at the same exit
-/// code — `error: use: The following arguments were not expected:
-/// --stack-name bar` instead of the plan-153-M5 removal paragraph, both
-/// exit 2. Treat a change to any of the three calls as unverifiable by the
-/// gate and check `planar scope use <slug> --<stale-flag>` by hand.
-/// @param app The leaf to relax.
-export auto set_allow_extras(CLI::App& app) -> void;
 
 } // namespace planar::cmd

@@ -1,15 +1,18 @@
 // @file rule_methodology.t.cpp
 // @brief Keeps `agents/methodology.md` and the embedded queue rule in step
-// (plan 1080, tasks hq-methodology-rule and hq-narrow-quiet-tree). Covers the
-// test-spec scenarios "the printed rule and the methodology section agree" and
-// "the process check is replaced and the rest is kept".
+// (plan 1080, tasks hq-methodology-rule and hq-narrow-quiet-tree; plan 1142,
+// task mo-queue-rule-opt-in). Covers the test-spec scenarios "the printed rule
+// and the methodology section agree" and "the process check is replaced and
+// the rest is kept". The rule is two texts, the always-printed how-to and the
+// mandate printed only under the operator's `use_queue` policy; the
+// methodology carries each in a section of its own, byte for byte.
 //
 // The methodology file is read from the source tree through
 // PLANAR_METHODOLOGY_PATH, set by this directory's CMakeLists.txt. The
 // extraction helper is tested against synthetic documents so that a missing
 // section or a wrong boundary fails the case instead of passing vacuously.
 //
-// Include-before-import is deliberate (see core/version.t.cpp / db.t.cpp).
+// Include-before-import is deliberate (see db.t.cpp).
 #include <catch2/catch_test_macros.hpp>
 
 import std;
@@ -19,7 +22,8 @@ namespace {
 
 namespace hq = planar::engine::hostqueue;
 
-constexpr std::string_view k_heading = "## Builds and tests go through the host queue";
+constexpr std::string_view k_heading         = "## Using the host queue";
+constexpr std::string_view k_mandate_heading = "## Builds and tests go through the host queue";
 
 auto read_file(std::string const& path) -> std::string {
   std::ifstream in(path, std::ios::binary);
@@ -52,11 +56,11 @@ auto drop_trailing_comments(std::string_view s) -> std::string_view {
   }
 }
 
-/// @brief The section headed k_heading: from that line to the next `## `
+/// @brief The section headed `heading`: from that line to the next `## `
 /// heading outside a code fence, or the end of the text. Empty optional when
 /// the heading is absent. Trailing newlines, and trailing HTML comment lines
 /// such as the closing lint marker, are dropped.
-auto extract_section(std::string_view doc) -> std::optional<std::string> {
+auto extract_section(std::string_view doc, std::string_view heading = k_heading) -> std::optional<std::string> {
   std::size_t                pos      = 0;
   bool                       in_fence = false;
   std::optional<std::size_t> start;
@@ -70,7 +74,7 @@ auto extract_section(std::string_view doc) -> std::optional<std::string> {
       if (start) {
         return std::string(drop_trailing_comments(doc.substr(*start, pos - *start)));
       }
-      if (line == k_heading) {
+      if (line == heading) {
         start = pos;
       }
     }
@@ -92,7 +96,7 @@ auto count_of(std::string_view doc, std::string_view needle) -> std::size_t {
 
 } // namespace
 
-TEST_CASE("the methodology section carries the embedded rule text byte for byte", "[hostqueue][methodology]") {
+TEST_CASE("the methodology section carries the embedded how-to text byte for byte", "[hostqueue][methodology]") {
   auto const doc = read_file(PLANAR_METHODOLOGY_PATH);
   REQUIRE(count_of(doc, "\n" + std::string(k_heading) + "\n") == 1);
   auto const section = extract_section(doc);
@@ -100,6 +104,58 @@ TEST_CASE("the methodology section carries the embedded rule text byte for byte"
   auto const rule = rstrip_newlines(hq::queue_rule_text());
   REQUIRE(!rule.empty());
   CHECK(*section == rule);
+}
+
+TEST_CASE("the methodology section carries the embedded mandate text byte for byte", "[hostqueue][methodology]") {
+  auto const doc = read_file(PLANAR_METHODOLOGY_PATH);
+  REQUIRE(count_of(doc, "\n" + std::string(k_mandate_heading) + "\n") == 1);
+  auto const section = extract_section(doc, k_mandate_heading);
+  REQUIRE(section.has_value());
+  auto const mandate = rstrip_newlines(hq::queue_mandate_text());
+  REQUIRE(!mandate.empty());
+  CHECK(*section == mandate);
+  // The methodology says the mandate is the operator's policy, not a default.
+  CHECK(doc.find("`use_queue = true`") != std::string::npos);
+}
+
+namespace {
+
+/// @brief `text` with every run of white space collapsed to one space, so a phrase is found wherever the text wraps.
+auto squash(std::string_view text) -> std::string {
+  std::string out;
+  bool        space = false;
+  for (auto const c : text) {
+    if (std::isspace(static_cast<unsigned char>(c)) != 0) {
+      space = !out.empty();
+      continue;
+    }
+    if (space) {
+      out.push_back(' ');
+      space = false;
+    }
+    out.push_back(c);
+  }
+  return out;
+}
+
+} // namespace
+
+TEST_CASE("the how-to and the mandate are different texts and only the mandate instructs", "[hostqueue][methodology]") {
+  auto const rule    = squash(hq::queue_rule_text());
+  auto const mandate = squash(hq::queue_mandate_text());
+  CHECK(hq::queue_rule_text().starts_with(std::string{k_heading} + "\n"));
+  CHECK(hq::queue_mandate_text().starts_with(std::string{k_mandate_heading} + "\n"));
+  // The how-to describes the queue's use without telling the reader to use it.
+  for (auto const* phrase :
+       {"Do not run it yourself", "Builds and tests go through the host queue", "What counts as a build or test command"}) {
+    INFO("phrase: " << phrase);
+    CHECK(rule.find(phrase) == std::string::npos);
+    CHECK(mandate.find(phrase) != std::string::npos);
+  }
+  // It keeps what an exit 125 refusal means.
+  CHECK(rule.find("exit 125") != std::string::npos);
+  CHECK(rule.find("must not be run directly") == std::string::npos);
+  CHECK(mandate.find("must not be run directly") != std::string::npos);
 }
 
 TEST_CASE("the section extractor fails loudly on a missing section and stops at the next H2", "[hostqueue][methodology]") {
@@ -122,6 +178,12 @@ TEST_CASE("the section extractor fails loudly on a missing section and stops at 
         std::optional<std::string>{head + "\n\n<!-- kept -->\nbody"});
   // H3 subsections stay inside it.
   CHECK(extract_section(head + "\n\n### Sub\n\nt\n") == std::optional<std::string>{head + "\n\n### Sub\n\nt"});
+  // The mandate heading is found on its own and does not match the how-to heading.
+  std::string const mand(k_mandate_heading);
+  CHECK(extract_section(head + "\n\nbody\n\n" + mand + "\n\nrule\n", k_mandate_heading) ==
+        std::optional<std::string>{mand + "\n\nrule"});
+  CHECK(extract_section(head + "\n\nbody\n\n" + mand + "\n\nrule\n") == std::optional<std::string>{head + "\n\nbody"});
+  CHECK(!extract_section(head + "\n\nbody\n", k_mandate_heading).has_value());
 }
 
 TEST_CASE("the methodology no longer carries the one-build-per-directory process check", "[hostqueue][methodology]") {

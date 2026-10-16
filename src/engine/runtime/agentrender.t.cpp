@@ -21,8 +21,7 @@
 //
 //   $ planar-agent reconcile --dry-run --json
 //   {"ok":true,"claims_marked_stale":0,"actions_closed":0,
-//   "runs_abandoned":0,"candidates":[{"kind":"task","id":4,"claim":{…}}],
-//   "run_candidates":[]}
+//   "candidates":[{"kind":"task","id":4,"claim":{…}}]}
 //
 // FIELD ORDER IS THE CONTRACT. The Zig originals are hand-rolled `print`
 // calls with no serializer to normalise anything, so the emitted key order
@@ -154,21 +153,13 @@ TEST_CASE("every renderer payload ends with exactly one newline", "[agentrender]
   atomic::terminal_result ended{.released = claim, .task_id = 2};
 
   std::vector<std::string> payloads{
-      render::no_work_json(),
-      render::no_work_text(),
-      render::pull_json(pulled, task),
-      render::pull_text(pulled),
-      render::peek_json(task),
-      render::peek_text(task),
-      render::claim_json(claim),
-      render::claim_text(claim),
-      render::heartbeat_text(claim),
-      render::terminal_json(ended, task),
-      render::terminal_text(ended, task),
-      render::abort_json(claim, 1),
+      render::no_work_json({}),           render::no_work_text(),
+      render::pull_json(pulled, task),    render::pull_text(pulled),
+      render::peek_json(task, {}),        render::peek_text(task),
+      render::claim_json(claim),          render::claim_text(claim),
+      render::heartbeat_text(claim),      render::terminal_json(ended, task),
+      render::terminal_text(ended, task), render::abort_json(claim, 1),
       render::abort_text(claim, 1),
-      render::associate_json(1),
-      render::associate_text(1, claim.claim_token),
   };
   for (auto const& payload : payloads) {
     REQUIRE_FALSE(payload.empty());
@@ -189,10 +180,9 @@ TEST_CASE("the text one-liners match the oracle captures", "[agentrender]") {
   REQUIRE(render::heartbeat_text(claim) == "ok claim:14dc6e775153923eece9afe572bd8e5f expires:2026-08-23T16:44:47.223Z\n");
   REQUIRE(render::terminal_text(ended, task) == "ok task:2 status:doing claim_status:active\n");
   REQUIRE(render::abort_text(claim, 1) == "aborted claim:14dc6e775153923eece9afe572bd8e5f by session:1\n");
-  REQUIRE(render::associate_text(3, "tok") == "ok updated:3 claim:tok\n");
   REQUIRE(render::action_end_text(5, aa::outcome::error_) == "ok action:5 outcome:error\n");
   REQUIRE(render::no_work_text() == "no_work\n");
-  REQUIRE(render::no_work_json() == "{\"ok\":true,\"no_work\":true}\n");
+  REQUIRE(render::no_work_json({}) == "{\"ok\":true,\"no_work\":true,\"skipped_unready\":0,\"unready\":[]}\n");
 }
 
 TEST_CASE("the taskless terminal envelope names the claim and carries a null task", "[agentrender][7118]") {
@@ -230,47 +220,23 @@ TEST_CASE("the pull and terminal envelopes wrap the shared objects", "[agentrend
 }
 
 TEST_CASE("reconcile's applied and dry-run payloads are different documents", "[agentrender]") {
-  aa::reconcile_result      swept{.claims_marked_stale = 3, .actions_closed = 5};
-  aa::reconcile_runs_result runs{.abandoned = 2};
+  aa::reconcile_result swept{.claims_marked_stale = 3, .actions_closed = 5};
 
-  REQUIRE(render::reconcile_json(swept, runs, false) ==
-          "{\"ok\":true,\"claims_marked_stale\":3,\"actions_closed\":5,\"runs_abandoned\":2}\n");
-  REQUIRE(render::reconcile_text(swept, runs, false) == "reconciled: 3 claim(s) stale, 5 action(s) closed, 2 run(s) abandoned\n");
+  REQUIRE(render::reconcile_json(swept, false) == "{\"ok\":true,\"claims_marked_stale\":3,\"actions_closed\":5}\n");
+  REQUIRE(render::reconcile_text(swept, false) == "reconciled: 3 claim(s) stale, 5 action(s) closed\n");
 
   // Dry-run: the counters are ZERO (nothing was written) while the
-  // candidate arrays are populated. A reader conflating the two would
-  // think the sweep had run.
-  aa::reconcile_result      preview{.claims_marked_stale = 0, .actions_closed = 0, .candidates = {sample_claim()}};
-  aa::reconcile_runs_result run_preview{
-      .abandoned = 0, .candidates = {aa::run_candidate{.id = 9, .run_identifier = "run-1", .pid = 4242, .plan_id = 1}}};
+  // candidate array is populated. A reader conflating the two would think
+  // the sweep had run.
+  aa::reconcile_result preview{.claims_marked_stale = 0, .actions_closed = 0, .candidates = {sample_claim()}};
 
-  auto const json = render::reconcile_json(preview, run_preview, true);
-  REQUIRE(json.starts_with("{\"ok\":true,\"claims_marked_stale\":0,\"actions_closed\":0,\"runs_abandoned\":0,\"candidates\":["));
+  auto const json = render::reconcile_json(preview, true);
+  REQUIRE(json.starts_with("{\"ok\":true,\"claims_marked_stale\":0,\"actions_closed\":0,\"candidates\":["));
   REQUIRE(json.find(R"({"kind":"task","id":2,"claim":{)") != std::string::npos);
-  REQUIRE(json.ends_with(R"("run_candidates":[{"id":9,"run_identifier":"run-1","pid":4242,"plan_id":1}]})"
-                         "\n"));
+  REQUIRE(json.ends_with("]}\n"));
 
-  REQUIRE(render::reconcile_text(preview, run_preview, true) == "dry-run: 1 claim candidate(s), 1 run candidate(s)\n"
-                                                                "  task:2 token:14dc6e775153923eece9afe572bd8e5f\n"
-                                                                "  run:9 pid:4242 identifier:run-1\n");
-}
-
-TEST_CASE("run_identifier is emitted UNESCAPED — a reproduced defect", "[agentrender]") {
-  // The oracle's format string for this ONE field is a bare `"{s}"` while
-  // every other string in the binary goes through the JSON escaper. An
-  // identifier containing a quote therefore produces INVALID JSON.
-  //
-  // Reproduced under D2 rather than fixed, and pinned here so that fixing
-  // it is a deliberate contract change with a failing test to point at
-  // instead of a silent divergence from the reference binary.
-  aa::reconcile_result      preview;
-  aa::reconcile_runs_result runs{
-      .candidates = {aa::run_candidate{.id = 1, .run_identifier = R"(a"b)", .pid = 1, .plan_id = std::nullopt}}};
-
-  auto const json = render::reconcile_json(preview, runs, true);
-  REQUIRE(json.find(R"("run_identifier":"a"b")") != std::string::npos);
-  // Absent `plan_id` renders as 0, not null — also the oracle's `{d}`.
-  REQUIRE(json.find(R"("plan_id":0)") != std::string::npos);
+  REQUIRE(render::reconcile_text(preview, true) == "dry-run: 1 claim candidate(s)\n"
+                                                   "  task:2 token:14dc6e775153923eece9afe572bd8e5f\n");
 }
 
 TEST_CASE("strings that need escaping are escaped everywhere else", "[agentrender]") {
@@ -305,4 +271,45 @@ TEST_CASE("terminal_json inserts a trailing-fields fragment before the closing b
   auto const                    taskless_plain = render::terminal_json(taskless);
   CHECK(render::terminal_json(taskless, R"(,"diagnose":{"state":"clean"})") ==
         taskless_plain.substr(0, taskless_plain.size() - 2) + R"(,"diagnose":{"state":"clean"}})" + "\n");
+}
+
+TEST_CASE("the skipped-unready keys list the first twenty tasks and count them all", "[agentrender][readiness]") {
+  std::vector<atomic::skipped_task> skipped{
+      {.task_id = 7, .reasons = {"blocked_by_open_task", "open_question_linked"}},
+      {.task_id = 9, .reasons = {"proposed_decision_linked"}},
+  };
+  REQUIRE(render::no_work_json(skipped) ==
+          R"({"ok":true,"no_work":true,"skipped_unready":2,"unready":[{"task_id":7,"reasons":["blocked_by_open_task",)"
+          R"("open_question_linked"]},{"task_id":9,"reasons":["proposed_decision_linked"]}]})"
+          "\n");
+  REQUIRE(render::skipped_text(skipped) ==
+          "skipped 2 unready task(s): task:7 (blocked_by_open_task, open_question_linked); task:9 (proposed_decision_linked)\n");
+  REQUIRE(render::skipped_text({}).empty());
+
+  std::vector<atomic::skipped_task> many;
+  for (std::int64_t id = 1; id <= 25; ++id) {
+    many.push_back({.task_id = id, .reasons = {"blocked_by_open_task"}});
+  }
+  auto const json = render::no_work_json(many);
+  REQUIRE(json.find(R"("skipped_unready":25,)") != std::string::npos);
+  REQUIRE(json.find(R"({"task_id":20,)") != std::string::npos);
+  REQUIRE(json.find(R"({"task_id":21,)") == std::string::npos);
+  REQUIRE(render::skipped_text(many).ends_with("; and 5 more\n"));
+}
+
+TEST_CASE("pull and peek success payloads carry the skipped keys only when a task was skipped", "[agentrender][readiness]") {
+  auto const          claim = sample_claim();
+  auto const          task  = sample_task();
+  atomic::pull_result pulled{.no_work   = false,
+                             .acquired  = claim,
+                             .task_id   = 2,
+                             .action_id = 2,
+                             .skipped   = {{.task_id = 1, .reasons = {"open_question_linked"}}}};
+  REQUIRE(render::pull_json(pulled, task)
+              .ends_with(R"(,"action_id":2,"skipped_unready":1,"unready":[{"task_id":1,"reasons":["open_question_linked"]}]})"
+                         "\n"));
+  REQUIRE(render::peek_json(task, pulled.skipped)
+              .ends_with(R"(,"skipped_unready":1,"unready":[{"task_id":1,"reasons":["open_question_linked"]}]})"
+                         "\n"));
+  REQUIRE(render::peek_json(task, {}).find("skipped_unready") == std::string::npos);
 }

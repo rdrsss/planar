@@ -41,27 +41,19 @@ auto classify(std::span<const std::string> path) -> verb_class {
   std::string_view const top = path[0];
 
   // Top-level verbs with no subverbs to inspect, or whose every subverb is
-  // read-only. `explore` is the read-only launcher alias; `bench` is the
-  // measurement rig, which the harness drives from inside worktrees by
-  // design (the protected-instrument invariant) and would be defeated by a
-  // refusal. `update` sits with `version`: it opens no database and writes
+  // read-only. `update` sits with `version`: it opens no database and writes
   // no planning state, only the install under `~/.planar/` through the
   // installer it execs, so a planning refusal would be false.
-  static constexpr std::array<std::string_view, 13> k_top_reads{
-      "resume", "dashboard",  "health", "report", "tree",       "search",  "version",
-      "update", "completion", "schema", "import", "synthesize", "explore",
+  static constexpr std::array<std::string_view, 9> k_top_reads{
+      "resume", "dashboard", "health", "tree", "search", "version", "update", "completion", "schema",
   };
-  if (in(top, k_top_reads) || top == "bench") {
+  if (in(top, k_top_reads)) {
     return verb_class::execution_or_read;
   }
 
-  // Subverb groups whose ENTIRE surface is execution_or_read. `workflow`
-  // is a read-only filesystem scan holding no SQLite handle — discovering
-  // and inspecting workflows is exactly the kind of read a coder's
-  // worktree needs.
-  static constexpr std::array<std::string_view, 14> k_read_groups{
-      "handoff", "capture", "audit", "workspace", "config",    "models", "templates",
-      "scope",   "doc",     "local", "skills",    "test-spec", "sync",   "workflow",
+  // Subverb groups whose ENTIRE surface is execution_or_read.
+  static constexpr std::array<std::string_view, 11> k_read_groups{
+      "handoff", "capture", "audit", "workspace", "config", "templates", "scope", "doc", "local", "test-spec", "sync",
   };
   if (in(top, k_read_groups)) {
     return verb_class::execution_or_read;
@@ -81,13 +73,6 @@ auto classify(std::span<const std::string> path) -> verb_class {
 
   if (top == "task" && path.size() >= 3 && path[1] == "touches" && path[2] == "list") {
     return verb_class::execution_or_read;
-  }
-
-  if (top == "feedback" && path.size() >= 3 && path[1] == "triage") {
-    if (path[2] == "list" || path[2] == "show") {
-      return verb_class::execution_or_read;
-    }
-    return verb_class::planning;
   }
 
   // Per-domain groups: reads allowed, everything else refused.

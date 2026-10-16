@@ -109,6 +109,7 @@ planar.db-wal|file|PLANAR_DB|its write-ahead log, which holds committed data not
 planar.db-shm|file|PLANAR_DB|its shared-memory index
 queue-logs|dir||output of detached queue runs
 retired|dir||databases and logs retired by an upgrade
+backups|dir||copies of planar.db taken before a migration that drops tables
 workbench|dir|PLANAR_WORKBENCH_ROOT|the planning workbench
 config.toml|file|PLANAR_CONFIG_PATH|the operator configuration
 local|dir|PLANAR_LOCAL_HOME|operator-local skills and agents

@@ -36,8 +36,8 @@
 /// walks `plans.parent_plan_id` and `task` reads `tasks.plan_id`, so both
 /// report `not_found` instead:
 ///
-///   `question diff 999`  ->  `question 999 is not linked to a plan; ...`
-///   `plan diff 999`      ->  `no plan with id 999`
+///   `decision review 999` ->  `decision 999 is not linked to a plan; ...`
+///   `task diff 999`      ->  `no task with id 999`
 ///   `task diff 999`      ->  `no task with id 999`
 ///
 /// So `prose_error`'s `not_found` arm — which `editflow.cpp` documents as
@@ -56,7 +56,7 @@
 ///   `diff`                   YES                   YES
 ///   `review`                 YES                   YES
 ///
-/// `question diff 0`   -> exit 2, `question id must be a positive integer, got 0`
+/// `artifact diff 0`   -> exit 2, `artifact id must be a positive integer, got 0`
 /// `question view 0`   -> falls through to the resolver and reports NoPlanLink
 ///
 /// `view` and `edit` have NO `catch` arms in the oracle at all, so a failure
@@ -88,11 +88,6 @@ import planar.cmd.planar.handler;
 
 namespace planar::cmd::handlers {
 
-/// @brief Handle `planar plan edit <plan-id> [--no-pull] [--json]`.
-/// @param ctx The invocation context.
-/// @param args The parsed arguments.
-/// @return Success, or the failure to report.
-export auto plan_edit(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 /// @brief Handle `planar plan view <plan-id>`.
 ///
 /// The ANCHOR plan renders to the feature's `README.md`; every other plan
@@ -101,17 +96,6 @@ export auto plan_edit(context& ctx, const cliapp::parsed_args& args) -> handler_
 /// @param args The parsed arguments.
 /// @return Success, or the failure to report.
 export auto plan_view(context& ctx, const cliapp::parsed_args& args) -> handler_result;
-/// @brief Handle `planar plan diff <plan-id>`.
-/// @param ctx The invocation context.
-/// @param args The parsed arguments.
-/// @return Success, or the failure to report.
-export auto plan_diff(context& ctx, const cliapp::parsed_args& args) -> handler_result;
-/// @brief Handle `planar plan review <plan-id> [--approve]
-/// [--request-changes] [--json]`.
-/// @param ctx The invocation context.
-/// @param args The parsed arguments.
-/// @return Success, or the failure to report.
-export auto plan_review(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 /// @brief Handle `planar task edit <task-id> [--no-pull] [--json]`.
 /// @param ctx The invocation context.
@@ -149,17 +133,6 @@ export auto question_edit(context& ctx, const cliapp::parsed_args& args) -> hand
 /// @param args The parsed arguments.
 /// @return Success, or the failure to report.
 export auto question_view(context& ctx, const cliapp::parsed_args& args) -> handler_result;
-/// @brief Handle `planar question diff <question-id>`.
-/// @param ctx The invocation context.
-/// @param args The parsed arguments.
-/// @return Success, or the failure to report.
-export auto question_diff(context& ctx, const cliapp::parsed_args& args) -> handler_result;
-/// @brief Handle `planar question review <question-id> [--approve]
-/// [--request-changes] [--json]`.
-/// @param ctx The invocation context.
-/// @param args The parsed arguments.
-/// @return Success, or the failure to report.
-export auto question_review(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 /// @brief Handle `planar decision edit <decision-id> [--no-pull] [--json]`.
 /// @param ctx The invocation context.
@@ -171,11 +144,6 @@ export auto decision_edit(context& ctx, const cliapp::parsed_args& args) -> hand
 /// @param args The parsed arguments.
 /// @return Success, or the failure to report.
 export auto decision_view(context& ctx, const cliapp::parsed_args& args) -> handler_result;
-/// @brief Handle `planar decision diff <decision-id>`.
-/// @param ctx The invocation context.
-/// @param args The parsed arguments.
-/// @return Success, or the failure to report.
-export auto decision_diff(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 /// @brief Handle `planar decision review <decision-id> [--approve]
 /// [--request-changes] [--json]`.
 /// @param ctx The invocation context.
@@ -193,11 +161,6 @@ export auto scenario_edit(context& ctx, const cliapp::parsed_args& args) -> hand
 /// @param args The parsed arguments.
 /// @return Success, or the failure to report.
 export auto scenario_view(context& ctx, const cliapp::parsed_args& args) -> handler_result;
-/// @brief Handle `planar scenario diff <scenario-id>`.
-/// @param ctx The invocation context.
-/// @param args The parsed arguments.
-/// @return Success, or the failure to report.
-export auto scenario_diff(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 /// @brief Handle `planar scenario review <scenario-id> [--approve]
 /// [--request-changes] [--json]`.
 /// @param ctx The invocation context.

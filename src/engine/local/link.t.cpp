@@ -216,8 +216,9 @@ TEST_CASE("link codex_toml refuses a source with no description or no closed blo
 
 TEST_CASE("link codex_toml is byte-identical to scripts/render-codex-agents.py") {
   // The engine reimplements the script so it does not depend on a checkout.
-  // This case is what keeps the two honest: the script renders the fifteen
-  // shipped agents plus a hostile fixture, and every output must match.
+  // This case is what keeps the two honest: the script renders the nine
+  // example role agents (examples/agents/) plus a hostile fixture, and every
+  // output must match.
   const scratch_home home;
   const fs::path     src = home.root_ / "parity-src";
   const fs::path     out = home.root_ / "parity-out";
@@ -230,7 +231,7 @@ TEST_CASE("link codex_toml is byte-identical to scripts/render-codex-agents.py")
       ++shipped;
     }
   }
-  REQUIRE(shipped == 15);
+  REQUIRE(shipped == 9);
 
   home.write(
       src / "planar-hostile.md",
@@ -253,7 +254,7 @@ TEST_CASE("link codex_toml is byte-identical to scripts/render-codex-agents.py")
     REQUIRE(*got == expected);
     ++compared;
   }
-  REQUIRE(compared == 16);
+  REQUIRE(compared == 10);
 }
 
 // --- targets ----------------------------------------------------------------

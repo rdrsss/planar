@@ -14,7 +14,6 @@ import planar.cmd.planar_watch.handlers.actions.command;
 import planar.cmd.planar_watch.handlers.plans.command;
 import planar.cmd.planar_watch.handlers.log.command;
 import planar.cmd.planar_watch.handlers.tree.command;
-import planar.cmd.planar_watch.handlers.run.command;
 import planar.cmd.planar_watch.handlers.sync_events.command;
 import planar.cmd.planar_watch.handlers.diagnose.command;
 import planar.cmd.planar_watch.handlers.queue.command;
@@ -81,7 +80,6 @@ export auto root_app() -> std::unique_ptr<CLI::App> {
   handlers::plans_cli::add(*app);
   handlers::log_cli::add(*app);
   handlers::tree_cli::add(*app);
-  handlers::run_cli::add(*app);
   handlers::sync_events_cli::add(*app);
   handlers::queue_cli::add(*app);
   handlers::diagnose_cli::add(*app);
@@ -89,8 +87,7 @@ export auto root_app() -> std::unique_ptr<CLI::App> {
   handlers::completion_cli::add(*app);
   handlers::schema_cli::add(*app);
 
-  // Every node registered above (including `feed`, `run`/`run list`/`run show`
-  // and `sync-events`) remains hand-transcribed — task 6613 (M11.1) folded
+  // Every node registered above (including `feed` and `sync-events`) remains hand-transcribed — task 6613 (M11.1) folded
   // `surface.cpp`'s generated `node_spec` table in, matching the
   // `planar-ext` shape (one declaration site per node, no
   // `cliapp::apply_surface` precedence rule). `planar.cmd.planar_watch.surface`

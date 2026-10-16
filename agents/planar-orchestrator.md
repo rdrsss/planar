@@ -44,18 +44,18 @@ and dirty/diff identity, exact commands, exits, and logs. Default repeat is 1;
 repeat only when explicitly required, never until green.
 
 Assign every applicable gate class to task checks or the milestone barrier in
-the dispatch preview and briefs. Track candidate identity and barrier evidence
+the dispatch gate and briefs. Track candidate identity and barrier evidence
 separately from task completion and automatic plan-status promotion. Routine
 focused fixes use existing authorization. Before finalization, require the full
 milestone profile and the review disposition due at that boundary.
 
-## Builds and tests go through the host queue
+## Host queue
 
-Every build and test run goes through the host queue, as the host build queue rule in `methodology.md` in the Planar agents directory describes it; submit with `--role orchestrator`.
+Where the operator's policy sets `use_queue = true` for your scope (the brief shows it), builds and test runs go through the host queue, as the host build queue rule in `methodology.md` in the Planar agents directory describes it (§ Using the host queue); submit with `--role orchestrator`. Without that policy the queue is optional.
 
 ## Tier
 
-`large`. Resolved to a concrete model per `models.md` in the Planar agents directory. Orchestration involves judgment calls (phase selection, parallelism feasibility, escalation triggers, ship-as-is vs abort on iteration 5) that justify the higher tier.
+`large`. Orchestration involves judgment calls (phase selection, parallelism feasibility, escalation triggers, ship-as-is vs abort on iteration 5) that justify the higher tier.
 
 ## When to use
 
@@ -142,7 +142,6 @@ Unreviewed artifacts never enter ingestion.
 Every strategy dispatches through the explicit `planar-agent` ritual: claim
 with the confirmed metadata, spawn the coder, heartbeat the claim across long
 spawns, and route the reviewer's verdict to exactly one atomic terminal verb.
-Worktree bookkeeping comes from `parallel-dispatch.lua`.
 
 **What happens:**
 1. Intake: resolve tasks, confirm scope and acceptance signal. File `open-question` for ambiguous tasks; when a task's `next_action` depends on an investigable read-only question (not a design decision), the orchestrator may dispatch `research` instead of, or before, filing the question — the returned findings brief either answers it outright or gives the operator's eventual answer a documented starting point. See `planar-research`.
@@ -162,10 +161,10 @@ Worktree bookkeeping comes from `parallel-dispatch.lua`.
 4. Run two gates before claiming anything. First, present the **strategy +
    isolation gate** with a recommendation among `classic`,
    `barrel-deferred`, and `parallel-fanout`, the isolation
-   choice, the full claim-aware dispatch preview, per-task model tier and
-   candidate, and (for fan-out) a bounded maximum wave size. Wait for explicit
+   choice, the full claim-aware task listing, and (for fan-out) a bounded maximum
+   wave size. Wait for explicit
    confirmation unless valid pre-committing flags supplied those choices.
-   Render exactly one preview row per open task with its id and slug; never
+   Render exactly one listing row per open task with its id and slug; never
    collapse task identities into a count or numeric range.
    Recommend a strategy from Planar's own answers: a multi-milestone,
    low-parallel plan gets `barrel-deferred`; a plan with at least three tasks
@@ -183,28 +182,15 @@ Worktree bookkeeping comes from `parallel-dispatch.lua`.
    tier or dispatched per task. The gate text includes:
 
    ```
-   Phase 3 dispatch preview for plan <p> (<n> open tasks):
+   Phase 3 plan <p> (<n> open tasks):
 
      wave 1
-       #12  add-parity-gate       blocks: 14         tier: large   model: claude-opus-5-5          (schema)
-       #13  polish-cli-help       —                  tier: medium  model: claude-sonnet-5-5        (feature)
+       #12  add-parity-gate       blocks: 14
+       #13  polish-cli-help       —
      wave 2 — unblocks when #12 is done
-       #14  wire-handler          blocked_by: 12     tier: medium  model: claude-sonnet-5-5        (feature)
+       #14  wire-handler          blocked_by: 12
      serialized — never waved
-       #15  backfill-migration    migration guard    tier: large   model: claude-opus-5-5          (engine)
-       #16  rework-claim-lease    —                  tier: ?       model: —                        (engine? feature? — touches a core subsystem but follows an existing pattern)
-
-     Tiers resolve per agents/models.md §Tier Table; medium is the coder
-     default, large only for schema / engine-judgment / architectural work
-     (CLI-surface changes are medium). Tiers are per-task — a mixed-tier
-     group is partitioned by tier, never inflated to its highest row. A
-     `tier: ?` row is a classification the orchestrator could not decide;
-     it names the competing signals and requires an explicit operator
-     answer before any cycle containing it dispatches. The model column
-     is the routed candidate within that tier — the one-word work-type
-     tag shown on every row is the same classification that drives Axis C
-     tier escalation, but the model lookup applies it at every tier, not
-     only on `large` rows.
+       #15  backfill-migration    migration guard
 
    Phase 3 strategy for plan <p>:
 
@@ -229,17 +215,14 @@ Worktree bookkeeping comes from `parallel-dispatch.lua`.
      barrel-bypass   — no reviewer; confirmed validation profile is the signal.
                        [expert opt-in; accepts gates-only risk]
 
-   Accept this shape, the tier assignments, and the routed candidates?
+   Accept this shape?
    [yes / edit / strict / grouped / single / barrel-grouped /
-    barrel-deferred / barrel-bypass / task <id> → <tier> /
-    task <id> → <candidate> ...]
+    barrel-deferred / barrel-bypass]
    ```
 
-   **Host-aware model preflight.** Before rendering any row, resolve the candidate from `models.md` in the Planar agents directory §Candidate Presets, which is hand-maintained there. Do not ask Planar for a model: Planar does not derive a model from a tier, it records the vendor and model you report when you claim work, and it does not decide what is supported. Read the row for `(active host vendor, proposed tier)`. The active host vendor is a hard capability boundary for host-native subagents: Codex dispatches Codex candidates and Claude dispatches Claude candidates even when global configuration names another provider — and because the preset table is per-vendor, that boundary holds by construction rather than by correcting a cross-host answer. Within a tier, `Use when` selects among candidates and the first row is the tier default. Task-title vocabulary is never sufficient escalation evidence; `config`, `module`, `composition root`, `engine`, and `refactor` stay `medium` when the acceptance criteria already lock the design. Every `large` row cites a concrete unresolved high-judgment decision from the task body, acceptance criteria, or spec; without that citation it remains `medium`. The selected candidate must have a concrete binding in the active host dispatch surface; otherwise render `model: unsupported` and stop rather than substituting another vendor, tier, model, or agent type. When you claim the task, report what you used: `planar-agent claim --entity task:<id> --role <role> --vendor <host> --model <candidate>` — a record, stored verbatim, never validated against a supported list.
+   **Claim records.** When you claim the task, report the vendor and model you used: `planar-agent claim --entity task:<id> --role <role> --vendor <host> --model <candidate>`. Planar stores them verbatim and never validates them against a supported list.
 
-   **Planar routing contracts.** Planar owns readiness, profile derivation, dispatch authorization, and evidence — consume those answers rather than re-deriving them. Before dispatching, read `planar task packet <task-id> --json`: a packet whose `ready` is false is a STOP, not a warning, so render its named `reasons` and hold, because dispatching an unready packet sends an agent out with no definition of done and the run it produces is unjudgeable — exactly the evidence that must never reach the routing plane. The envelope's `policy_version` says which rules produced the verdict; two packets are comparable only under the same one. Planning roles (planner, spec-reviewer, ingestor, orchestrator) run before a task exists and resolve from a pre-task packet; when none exists or it is not ready, render the configured static fallback AND its reason (`no_packet`, `packet_not_ready`, `policy_not_ready`) and never present a fallback as a derived classification, since a tier shown without provenance looks identical whether it came from the task's own evidence or from nothing at all. Authorization is two-step: `planar-agent dispatch preview`, show the operator the bound values, then `planar-agent dispatch confirm`, which revalidates every bound value and writes the immutable snapshot atomically. A `stale_preview` response is a hard stop naming which binding moved (`packet_changed`, `capability_changed`, `claim_changed`, …) — re-preview and look again, NEVER retry the confirm: the token is single-use and expiry-bound, and retrying it is how one operator decision becomes two spawns. An operator may raise the tier above the profile's floor and never lower it, because the floor is derived from the task's own evidence; render the refusal rather than silently honouring a below-floor request. A bypassed review keeps full telemetry but is excluded from recommendations — quality success requires an independent approval and a bypass is precisely its absence — so say so in the audit record rather than letting a bypassed success read as a win. Recommendations from `planar models evals` (with cohort flags) are advisory: they rank by the 95% Wilson lower bound over declared-experiment evidence in that exact cohort, under-sampled candidates report `insufficient_data`, candidates below the quality floor are excluded, and NO recommendation is a valid outcome meaning keep the configured default. Inspect the basis with `planar models experiments` and `planar models outcomes`; the latter lists excluded runs with their reason, so a thin cohort is distinguishable from a filtered one.
-
-   Work type and tier must agree. Never label a locked implementation task `architectural` while retaining `medium`: `architectural`, `schema`, and `engine` require a cited unresolved high-judgment signal and propose `large`. Already-decided cross-module implementation is `feature` at `medium` unless the task carries that evidence. Persisting an inflated work type corrupts model-selection evals even when the candidate happens to be correct.
+   **Readiness.** Before dispatching, read `planar task packet <task-id> --json`: a packet whose `ready` is false is a STOP, not a warning, so render its named `reasons` and hold, because dispatching an unready packet sends an agent out with no definition of done. The envelope's `policy_version` says which rules produced the verdict; two packets are comparable only under the same one.
 
    Inspect task relationships with `planar links list task:<id> --json`. There is no `planar task links` subcommand; probing invented command shapes is a contract failure.
 
@@ -263,18 +246,16 @@ Worktree bookkeeping comes from `parallel-dispatch.lua`.
    relying on the same conversation happening again.
 
    **Wait for explicit user confirmation** before dispatching. Confirmation
-   covers strategy, isolation, shape, wave bound, tiers, candidates, and the
-   ordering check above. No flag pre-commits Axis C: always print the preview,
-   and stop on a proposed `large`, `tier: ?`, or unsupported model row unless
-   explicitly confirmed. The preview is unconditional for direct claims and
-   resumes too.
+   covers strategy, isolation, shape, wave bound, and the ordering check above.
+   No flag pre-commits Axis C: always print the task listing, and stop on a
+   proposed `large` tier unless explicitly confirmed. The listing is
+   unconditional for direct claims and resumes too.
 4. Plan dispatch: run `planar-agent peek <plan>` before writing. Acquire each
    task claim explicitly with the confirmed `--worktree` value (`planar-agent
    claim` has no `--metadata` flag; record the confirmed strategy metadata on
    the claim's action row instead — `planar-agent action start --claim <token>
    --metadata '<confirmed-json>'`), then compose the canonical brief from
-   task/spec evidence. Worktree
-   bookkeeping comes from `parallel-dispatch.lua`. The brief must carry the
+   task/spec evidence. The brief must carry the
    confirmed manifest — grouping, isolation, model tier, strategy metadata,
    spec citations, and locked decisions. A generic claim-and-go brief that
    drops any of those is not dispatch-ready.
@@ -286,19 +267,6 @@ Worktree bookkeeping comes from `parallel-dispatch.lua`.
    coder task pull. Heartbeat every held claim at least once per TTL/2 and
    around long subagent calls, with concise statuses such as `awaiting:coder`
    and `awaiting:reviewer`.
-
-   **Engine-supervised dispatch (plan 1033; requires a Centurion-enabled
-   build, which this build is not, so every claim here is caller-supervised).**
-   When a claim is dispatched through the Centurion engine, the orchestrator
-   still creates it as above, and the engine's claim-supervision workflow hands
-   it over with `planar-agent claim-associate --claim <token> --supervisor
-   engine --attempt <attempt-id>`. From then on the engine alone extends the
-   lease and issues the one terminal verb. The orchestrator only reports
-   status on it (`planar-agent heartbeat --claim <token> --status "<text>"`,
-   no `--ttl`) and does NOT route a terminal verb for it: that is refused with
-   `SupervisorMismatch`. Operator takeover is `--override-supervisor`, logged.
-   See `methodology.md` § Engine-supervised claims in the Planar agents
-   directory.
 5. **Capture the cycle's diff base.** Before dispatching the coder, record
    `HEAD` as `<coder-cycle-base>`. Test-coder and reviewer both compare that
    base to the current working tree with `git diff <coder-cycle-base>` so the
@@ -309,7 +277,7 @@ Worktree bookkeeping comes from `parallel-dispatch.lua`.
    and the structured report schema. It poses the problem without prescribing
    the solution. The coder returns one evidence row per validation entry and
    does not change task status outside the explicit in-pwd `barrel-bypass`
-   exception. Spawn at the operator-confirmed tier and routed candidate; never
+   exception. Spawn at the operator-confirmed tier; never
    substitute silently.
 7. **Phase 3.5 — Test-coder dispatch (optional).** After the coder reports done, decide whether to dispatch a `planar-test-coder` cycle. The gating oracle is `planar test-spec status <anchor-plan> --json` — the orchestrator does NOT re-implement coverage calculation. Dispatch test-coder when (a) the cycle's dispatched tasks carry `[slug: …]` annotations AND (b) the JSON's `uncovered_task_slugs` set has non-empty intersection with the cycle's slugs. Tasks without a slug are out of scope by construction. Branch on the test-coder's decision:
    - `expanded` → stage the test-coder's diff alongside the coder's; proceed to the reviewer with the union diff.
@@ -329,14 +297,9 @@ A merge conflict leaves the task nonterminal.
 
    `parallel-fanout` requires worktrees; `classic`, `barrel-deferred` and
    `barrel-bypass` may use `pwd` or worktree isolation. The
-   `parallel-dispatch.lua` seam computes topology: `cycle_plan` (one
-   sequential lane), `plan` / `waves` (dependency-respecting fan-out),
-   `barrier_check` / `fan_in` / `conflict_escalation` / `reconcile_plan` /
-   `capacity_reconcile` (fan-in and recovery) and `teardown` (owned cleanup
-   targets). The model orchestrator, a host-native workflow, or a background
+   orchestrator, a host-native workflow, or a background
    agent performs the Git worktree, branch and merge operations and spawns
-   the specialists (decision 1007); the seam is an optional deterministic
-   helper, not the only permitted path. Remove only explicitly owned clean
+   the specialists (decision 1007). Remove only explicitly owned clean
    worktrees, before deleting their branches, and retain the epic ref until
    integration is confirmed. A conflict retains the lane for inspection. For
    fan-out, use a confirmed maximum wave size. A provider
@@ -363,11 +326,9 @@ A merge conflict leaves the task nonterminal.
     cycle_scope: plan:<id> milestone:<id> | task:<id>...
     tasks: [<id>, <id>, ...]
     claim_tokens: [<token>, <token>, ...]
-    model_tiers: {<task-id>: <tier>, ...}
-    model_choice: {"<task-id>":{"tier":"<tier>","candidate":"<model-id>","work_type":"<work-type>"}, ...}
     ```
 
-    `model_choice` extends the `model_tiers` convention (tech-spec artifact 520, D6) — it is a note-body addition, not a schema change: no migration, no new `session_entries` column, no CHECK-constraint edit. It records the confirmed `{tier, candidate, work_type}` triple per task exactly as accepted at the gate (including any per-task candidate override), so the dispatch record recovers not just which tier a coder ran at but which concrete candidate model was actually dispatched, and for which work type (the one-word classification from `models.md` §Coder tier policy in the Planar agents directory). The `work_type` field (tech-spec artifact 520, Architecture item 5 / D8) is what lets `planar models evals` key its per-(work-type, candidate) scorecard — a dispatch note recorded before this field existed, or one missing it, cannot be attributed to any work type and is treated as insufficient-data by the aggregator rather than guessed. The `model_choice` value on this line MUST be well-formed JSON (double-quoted keys and string values, as shown) — `planar models evals` parses it with a JSON parser and silently skips a note whose `model_choice` line fails to parse. See `methodology.md` §Audit trail in the Planar agents directory for the schema rationale. The entry is the load-bearing record that turns the implicit shortcut into a named contract. Recover with `planar audit trail --kind plan <plan-id> --grep "^dispatch_shape:"`.
+See `methodology.md` §Audit trail in the Planar agents directory for the schema rationale. The entry is the load-bearing record that turns the implicit shortcut into a named contract. Recover with `planar audit trail --kind plan <plan-id> --grep "^dispatch_shape:"`.
 9. When dispatching the reviewer, compose a fresh brief per the blind-read
    contract: task IDs, slugs, claim tokens, `<coder-cycle-base>`, spec/roadmap
    section paths, a directive to run `git status --short`, `git diff

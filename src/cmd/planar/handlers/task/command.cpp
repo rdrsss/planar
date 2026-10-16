@@ -14,7 +14,6 @@ import planar.db;
 import planar.json_text;
 import planar.engine.entitylink;
 import planar.engine.identity;
-import planar.engine.ingest.materialize;
 import planar.engine.ingest.packet;
 import planar.engine.planning;
 import planar.engine.runtime;
@@ -45,8 +44,6 @@ import planar.cmd.planar.handlers.task.block;
 import planar.cmd.planar.handlers.task.link;
 import planar.cmd.planar.handlers.task.reopen;
 import planar.cmd.planar.handlers.task.touches;
-import planar.cmd.planar.handlers.task.facts;
-import planar.cmd.planar.handlers.task.facts_stage;
 
 namespace planar::cmd::handlers {
 
@@ -124,23 +121,22 @@ auto map_task_error_for(pl::task_error err, std::string_view verb) -> domain_err
   return error_from_body(kind, std::format("{}: {}", verb, zig_error_name(err)));
 }
 
-/// @brief The oracle's TWO-LINE active-claim refusal, verbatim.
+/// @brief The active-claim refusal, naming the command that would succeed.
 ///
-/// Four of the five status-flip verbs print this; `task cancel` does NOT —
-/// its handler has no `error.TaskClaimed` arm, so its refusal falls through
-/// to the generic `task cancel: TaskClaimed`. Both captured against a live
-/// claim rather than reasoned about.
-///
-/// `rendered` stays false: this is a message BODY, so the reporting site
-/// composes the `error: ` prefix and the terminator around it. The embedded
-/// newline is inside the body, which is why the second line has no prefix.
+/// One line: the claimed task, the live claim's token, the `planar-agent`
+/// terminal verb that closes that claim, and (where the verb has one) the
+/// `--force` override. `rendered` stays false: this is a message BODY, so the
+/// reporting site composes the `error: ` prefix and the terminator around it.
 /// @param id The claimed task's row id.
-/// @return The refusal (exit 1 — `error.TaskClaimed` has no arm in `codeFor`).
-auto task_claimed_error(std::int64_t id) -> domain_error {
+/// @param token The live claim's token.
+/// @param offer_force Whether the verb has a `--force` override to mention
+/// (`task cancel` has none).
+/// @return The refusal (exit 1).
+auto task_claimed_error(std::int64_t id, std::string_view token, bool offer_force) -> domain_error {
   return error_from_body(domain_error_kind::generic_failure,
-                         std::format("task {} has an active work claim — operator status flip refused.\n"
-                                     "Release or complete the claim via the agent path, or re-run with --force to override.",
-                                     id));
+                         std::format("task {} is claimed (token {}); finish it with: planar-agent complete --claim {} "
+                                     "(or fail|release|block){}",
+                                     id, token, token, offer_force ? ", or pass --force to override" : ""));
 }
 
 /// @brief Run the active-work-claim guard, composed at layer 3.
@@ -153,26 +149,20 @@ auto task_claimed_error(std::int64_t id) -> domain_error {
 /// @param id The task's row id.
 /// @param force When true, the guard is skipped entirely (the `--force`
 /// override the refusal text advertises).
-/// @param generic_verb When set, render the refusal as
-/// `"<verb>: TaskClaimed"` instead of the two-line advisory — `task
-/// cancel`'s shape.
+/// @param offer_force Whether the refusal mentions `--force`; false for `task cancel`, which has no override.
 /// @return Success when the flip may proceed, else the refusal.
-auto check_task_claim(db::connection& conn, std::int64_t id, bool force, std::optional<std::string_view> generic_verb)
-    -> std::expected<void, domain_error> {
+auto check_task_claim(db::connection& conn, std::int64_t id, bool force, bool offer_force) -> std::expected<void, domain_error> {
   if (force) {
     return {};
   }
-  auto held = engine::runtime::agentactivity::has_active_claim_on_task(conn, id);
+  auto held = engine::runtime::agentactivity::active_claim_token_on_task(conn, id);
   if (!held) {
     return std::unexpected(error_from_body(domain_error_kind::generic_failure, "checking active work claims: QueryFailed"));
   }
-  if (!*held) {
+  if (!held->has_value()) {
     return {};
   }
-  if (generic_verb.has_value()) {
-    return std::unexpected(error_from_body(domain_error_kind::generic_failure, std::format("{}: TaskClaimed", *generic_verb)));
-  }
-  return std::unexpected(task_claimed_error(id));
+  return std::unexpected(task_claimed_error(id, **held, offer_force));
 }
 
 /// @brief Run the cross-scope write guard for `task update`.
@@ -457,6 +447,29 @@ auto task_packet(context& ctx, const cliapp::parsed_args& args) -> handler_resul
     return std::unexpected(id.error());
   }
 
+  if (auto const ref = cliapp::flag_string(args, "--expand"); ref.has_value()) {
+    auto expanded = pk::expand_reference(**conn, *id, *ref);
+    if (!expanded) {
+      switch (expanded.error()) {
+      case pk::expand_error::task_not_found:
+        return std::unexpected(error_from_body(domain_error_kind::not_found, std::format("no task with id {}", *id)));
+      case pk::expand_error::unknown_reference:
+        return std::unexpected(error_from_body(domain_error_kind::not_found,
+                                               std::format("task packet: unknown reference {} for task {}", *ref, *id)));
+      case pk::expand_error::section_not_found:
+        return std::unexpected(
+            error_from_body(domain_error_kind::not_found,
+                            std::format("task packet: reference {} names a section its artifact does not have", *ref)));
+      case pk::expand_error::query_failed:
+        break;
+      }
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "task packet: QueryFailed"));
+    }
+    ctx.out() << (cliapp::flag_bool(args, "--json") ? pk::render_expansion_json(*expanded)
+                                                    : pk::render_expansion_text(*expanded));
+    return {};
+  }
+
   auto packet = pk::assemble_task(**conn, *id);
   if (!packet) {
     if (packet.error() == pk::packet_error::task_not_found) {
@@ -468,62 +481,6 @@ auto task_packet(context& ctx, const cliapp::parsed_args& args) -> handler_resul
   // An unready packet is a SUCCESSFUL answer — see task.cppm. Both renderers
   // return complete stdout payloads including their trailing newline.
   ctx.out() << (cliapp::flag_bool(args, "--json") ? pk::render_json(*packet) : pk::render_text(*packet));
-  return {};
-}
-
-auto task_facts_stage(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  namespace mz = engine::ingest::materialize;
-  namespace pk = engine::ingest::packet;
-
-  auto conn = ctx.db().ensure_db();
-  if (!conn) {
-    return std::unexpected(conn.error());
-  }
-  auto const id = entity_id_arg(args, "task-id", "task");
-  if (!id) {
-    return std::unexpected(id.error());
-  }
-
-  if (auto staged = mz::stage_one_task(**conn, *id); !staged.has_value()) {
-    if (staged.error().kind_ == mz::materialize_error_kind::task_not_found) {
-      return std::unexpected(error_from_body(domain_error_kind::not_found, std::format("no task with id {}", *id)));
-    }
-    // An unresolvable citation is an operator-fixable authoring error, and the
-    // diagnostic naming the task, artifact, locator and available sections is
-    // the whole value — surface it rather than a bare failure name.
-    if (staged.error().kind_ == mz::materialize_error_kind::invalid_citation) {
-      for (auto const& diagnostic : staged.error().citations_) {
-        ctx.err() << "  " << diagnostic.describe() << "\n";
-      }
-      ctx.err() << "  no facts were staged for this task\n";
-      // Exit 1, matching `spec ingest --apply` for the identical condition.
-      // Exit 2 is reserved for a malformed INVOCATION; an unresolvable
-      // citation is well-formed input naming a section that is not there.
-      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "task facts stage: InvalidCitation"));
-    }
-    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "task facts stage: QueryFailed"));
-  }
-
-  // Report the POST-STATE, not the fact that a write returned success: the
-  // operator's question is "is this task dispatchable now", and the packet is
-  // the only authority on that.
-  auto packet = pk::assemble_task(**conn, *id);
-  if (!packet) {
-    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "task facts stage: QueryFailed"));
-  }
-  if (cliapp::flag_bool(args, "--json")) {
-    ctx.out() << pk::render_json(*packet);
-    return {};
-  }
-  ctx.out() << std::format("staged routing facts for task {} ({})\n", *id, mz::operator_materializer_version);
-  ctx.out() << std::format("  packet ready: {}\n", packet->ready() ? "yes" : "no");
-  if (!packet->ready()) {
-    ctx.out() << "  remaining:";
-    for (auto const& reason : packet->reasons) {
-      ctx.out() << " " << pk::reason_name(reason);
-    }
-    ctx.out() << "\n";
-  }
   return {};
 }
 
@@ -693,7 +650,7 @@ auto task_update(context& ctx, const cliapp::parsed_args& args) -> handler_resul
   // confirmed by running `task update <claimed> --title X`, which exits 0.
   // Gating unconditionally here would refuse a write the oracle permits.
   if (patch.status.has_value()) {
-    if (auto guarded = check_task_claim(**conn, *id, patch.force, std::nullopt); !guarded) {
+    if (auto guarded = check_task_claim(**conn, *id, patch.force, true); !guarded) {
       return std::unexpected(guarded.error());
     }
   }
@@ -725,7 +682,7 @@ auto task_done(context& ctx, const cliapp::parsed_args& args) -> handler_result 
   }
   auto const force = cliapp::flag_bool(args, "--force");
 
-  if (auto guarded = check_task_claim(**conn, *id, force, std::nullopt); !guarded) {
+  if (auto guarded = check_task_claim(**conn, *id, force, true); !guarded) {
     return std::unexpected(guarded.error());
   }
 
@@ -750,9 +707,8 @@ auto task_cancel(context& ctx, const cliapp::parsed_args& args) -> handler_resul
     return std::unexpected(id.error());
   }
 
-  // No `--force` on this verb at all, and the refusal renders in the
-  // GENERIC shape. Both are the oracle's; see this verb's declaration.
-  if (auto guarded = check_task_claim(**conn, *id, false, std::string_view{"task cancel"}); !guarded) {
+  // No `--force` on this verb at all, so the refusal does not offer one.
+  if (auto guarded = check_task_claim(**conn, *id, false, false); !guarded) {
     return std::unexpected(guarded.error());
   }
 
@@ -785,7 +741,7 @@ auto task_block(context& ctx, const cliapp::parsed_args& args) -> handler_result
   auto const force  = cliapp::flag_bool(args, "--force");
   auto const reason = cliapp::flag_string(args, "--reason");
 
-  if (auto guarded = check_task_claim(**conn, *id, force, std::nullopt); !guarded) {
+  if (auto guarded = check_task_claim(**conn, *id, force, true); !guarded) {
     return std::unexpected(guarded.error());
   }
 
@@ -832,7 +788,7 @@ auto task_reopen(context& ctx, const cliapp::parsed_args& args) -> handler_resul
   }
 
   auto const force = cliapp::flag_bool(args, "--force");
-  if (auto guarded = check_task_claim(**conn, *id, force, std::nullopt); !guarded) {
+  if (auto guarded = check_task_claim(**conn, *id, force, true); !guarded) {
     return std::unexpected(guarded.error());
   }
 
@@ -1607,10 +1563,6 @@ auto declare_task_children(CLI::App& task) -> void {
 
   CLI::App* touches = task_cli::attach_touches(task);
   declare_task_touches(*touches);
-
-  CLI::App* facts = task_cli::attach_facts(task);
-
-  task_cli::attach_facts_stage(facts);
 }
 
 } // namespace

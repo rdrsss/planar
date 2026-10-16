@@ -13,8 +13,7 @@
 /// the operator's real `~/.planar/workbench/`. `workbench archive` deletes
 /// a whole tree; `workbench gc` unlinks files.
 ///
-/// So the protection is structural, the same mechanism `engine_workflows`
-/// and `engine_local` use: `resolve_root` takes an explicit `env_lookup`
+/// So the protection is structural, the same mechanism `engine_local` uses: `resolve_root` takes an explicit `env_lookup`
 /// callable and this module calls `std::getenv` NOWHERE. A test cannot
 /// reach a real HOME through it, because the code has no way to find one.
 /// The CLI layer supplies the real environment.
@@ -46,8 +45,7 @@
 /// document, not a TOML front end, and dragging Glaze plus the whole
 /// flattening pass down a layer to serve a single lookup would be the
 /// layering inverted. So `read_config_workbench_root` below is a narrow,
-/// single-key scan, following the precedent `engine_grouping` set when it
-/// duplicated its `closures` read rather than depend on `engine_closure`.
+/// single-key scan rather than a sideways engine edge.
 /// It is deliberately NOT a TOML parser and does not pretend to be one.
 module;
 

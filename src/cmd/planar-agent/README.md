@@ -9,13 +9,13 @@ Its claim terminal verbs update the claim and task in one transaction.
 | --- | --- |
 | `version/`, `schema/` | Version metadata and flat command catalog. |
 | `pull/`, `peek/` | Claim the next task in one plan, or preview the same selection without a write. |
-| `claim/`, `heartbeat/`, `claim_associate/` | Direct claim, lease renewal and association of an active claim with a workflow run. |
+| `claim/`, `heartbeat/` | Direct claim and lease renewal. |
 | `complete/`, `fail/`, `release/`, `block/` | Atomic claim terminals paired with task status changes. |
 | `action/` | Start and end nested agent actions. |
-| `run/`, `context/` | Workflow run lifecycle and context records/capsules. |
-| `dispatch/` | Preview and confirm routing authorization. |
 | `ingest/` | Translate vendor hook events into coordination records. |
-| `queue/` | The host-wide build and test queue (plan 1080): `queue run -- <command>` waits for its turn in the agent database, runs the command, and exits with its status. |
+| `queue/` | The host-wide build and test queue (plan 1080): `queue run -- <command>` waits for its turn in the host queue in `planar.db`, runs the command, and exits with its status. |
+| `brief/` | The read-only single entry point: one plan's state, claims, wave, readiness, policy and claim templates, as text or pinned JSON. |
+| `review/` | Record a reviewer's verdict on a claim; refused from the claim's own session. |
 | `reconcile/`, `abort/` | Recover expired claims, orphaned activity or a stuck claim. |
 | `shared/` | CLI and handler helpers; no root CLI app. |
 

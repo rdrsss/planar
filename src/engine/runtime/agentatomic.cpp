@@ -7,11 +7,14 @@ module planar.engine.runtime.agentatomic;
 
 import std;
 import planar.db;
+import planar.json_text;
 import planar.engine.runtime.agentactivity;
+import planar.engine.runtime.session;
 
 namespace planar::engine::runtime::agentatomic {
 
-namespace aa = agentactivity;
+namespace aa  = agentactivity;
+namespace ses = ::planar::engine::runtime::session;
 
 namespace {
 
@@ -55,9 +58,8 @@ auto classify_begin_failure(const db::db_error& err) -> aa::agent_error {
 /// pinned by `agentatomic.t.cpp`'s selector unit tests.
 /// @param conn The connection.
 /// @param plan_id The plan to select within.
-/// @return The next eligible task id, unset when none, or `query_failed`.
-auto pick_next_eligible(db::connection& conn, std::int64_t plan_id)
-    -> std::expected<std::optional<std::int64_t>, aa::agent_error> {
+/// @return Every eligible task id in selection order, or `query_failed`.
+auto eligible_task_ids(db::connection& conn, std::int64_t plan_id) -> std::expected<std::vector<std::int64_t>, aa::agent_error> {
   auto stmt = conn.prepare(std::format("select t.id from tasks t\n"
                                        "where t.plan_id = ?\n"
                                        "  and t.status = 'todo'\n"
@@ -75,20 +77,99 @@ auto pick_next_eligible(db::connection& conn, std::int64_t plan_id)
                                        "      and el.to_kind = 'task' and el.relationship = 'depends-on'\n"
                                        "      and blocker.status not in ('done', 'cancelled')\n"
                                        "  )\n"
-                                       "order by t.priority asc, t.id asc\n"
-                                       "limit 1",
+                                       "order by t.priority asc, t.id asc",
                                        k_now));
   if (!stmt || !stmt->bind_int64(1, plan_id)) {
     return std::unexpected(aa::agent_error::query_failed);
   }
-  auto stepped = stmt->step();
-  if (!stepped) {
+  std::vector<std::int64_t> ids;
+  while (true) {
+    auto stepped = stmt->step();
+    if (!stepped) {
+      return std::unexpected(aa::agent_error::query_failed);
+    }
+    if (*stepped != db::step_result::row) {
+      return ids;
+    }
+    ids.push_back(stmt->column_int64(0));
+  }
+}
+
+/// @brief What the selector chose once readiness was applied.
+struct selection {
+  std::optional<std::int64_t> task_id; ///< The first ready eligible task, unset when none.
+  std::vector<skipped_task>   skipped; ///< The eligible tasks passed over before it, with their reasons.
+};
+
+/// @brief The first eligible task that is also ready, plus the ones it passed over (plan 1142).
+///
+/// The one definition behind `pull_next` and `peek_next`. The readiness callable runs on `conn`,
+/// so under `pull_next` it runs inside the claim transaction.
+/// @param conn The connection.
+/// @param plan_id The plan to select within.
+/// @param policy The injected policy; `unready_reasons` must be bound.
+/// @return The selection, or `query_failed` (also when no readiness callable is bound) or the
+/// callable's own failure.
+auto select_next_ready(db::connection& conn, std::int64_t plan_id, const task_policy& policy)
+    -> std::expected<selection, aa::agent_error> {
+  if (!policy.unready_reasons) {
     return std::unexpected(aa::agent_error::query_failed);
   }
-  if (*stepped != db::step_result::row) {
-    return std::optional<std::int64_t>{};
+  auto const ids = eligible_task_ids(conn, plan_id);
+  if (!ids) {
+    return std::unexpected(ids.error());
   }
-  return std::optional<std::int64_t>{stmt->column_int64(0)};
+  selection chosen;
+  for (auto const id : *ids) {
+    auto reasons = policy.unready_reasons(conn, id);
+    if (!reasons) {
+      return std::unexpected(reasons.error());
+    }
+    if (reasons->empty()) {
+      chosen.task_id = id;
+      return chosen;
+    }
+    chosen.skipped.push_back(skipped_task{.task_id = id, .reasons = std::move(*reasons)});
+  }
+  return chosen;
+}
+
+/// @brief `["a","b"]`, with `"` and `\` escaped.
+/// @param reasons The reason names.
+/// @return The JSON array text.
+auto reasons_json(const std::vector<std::string>& reasons) -> std::string {
+  std::string out   = "[";
+  bool        first = true;
+  for (auto const& reason : reasons) {
+    if (!first) {
+      out += ',';
+    }
+    first = false;
+    out += '"';
+    for (auto const c : reason) {
+      if (c == '"' || c == '\\') {
+        out += '\\';
+      }
+      out += c;
+    }
+    out += '"';
+  }
+  out += ']';
+  return out;
+}
+
+/// @brief `a, b, c`.
+/// @param reasons The reason names.
+/// @return The reasons joined for a summary line.
+auto reasons_text(const std::vector<std::string>& reasons) -> std::string {
+  std::string out;
+  for (auto const& reason : reasons) {
+    if (!out.empty()) {
+      out += ", ";
+    }
+    out += reason;
+  }
+  return out;
 }
 
 /// @brief The number of rows the most recent statement on `conn` changed.
@@ -136,87 +217,6 @@ auto commit(db::transaction& tx) -> std::expected<void, aa::agent_error> {
   return {};
 }
 
-/// @brief What the supervisor gate decided for one terminal verb.
-struct gate_decision {
-  bool                       replay   = false; ///< Engine repeat under the terminating attempt: write nothing.
-  bool                       override = false; ///< Caller terminating an engine claim by operator override.
-  std::optional<std::string> attempt;          ///< The claim's attempt, for the audit row.
-};
-
-/// @brief Check a supervised verb against the claim's supervisor (plan 1033
-/// D3/D4). Runs BEFORE the liveness check, so a replay of a terminal verb
-/// that already landed can be recognised instead of failing ClaimNotActive.
-/// @param conn The connection, inside the verb's transaction.
-/// @param held The claim as read at the start of the transaction.
-/// @param gate Who is issuing the verb.
-/// @return The decision, or `supervisor_mismatch` / `attempt_mismatch`.
-auto check_gate(db::connection& conn, const aa::claim& held, const supervisor_gate& gate)
-    -> std::expected<gate_decision, aa::agent_error> {
-  auto const sup = aa::get_supervision(conn, held.claim_token);
-  if (!sup) {
-    return std::unexpected(sup.error());
-  }
-  if (gate.as == actor::engine) {
-    if (!sup->engine) {
-      return std::unexpected(aa::agent_error::supervisor_mismatch);
-    }
-    if (!gate.attempt.has_value() || !sup->attempt_id.has_value() || *gate.attempt != *sup->attempt_id) {
-      return std::unexpected(aa::agent_error::attempt_mismatch);
-    }
-    return gate_decision{.replay = held.status != aa::claim_status::active, .attempt = sup->attempt_id};
-  }
-  if (sup->engine) {
-    if (!gate.override_supervisor) {
-      return std::unexpected(aa::agent_error::supervisor_mismatch);
-    }
-    return gate_decision{.override = true, .attempt = sup->attempt_id};
-  }
-  return gate_decision{};
-}
-
-/// @brief Write one closed supervision action on `on` (the audit row a
-/// supervised verb leaves: `claim_associate`, `claim_terminal`, or
-/// `supervisor_override`).
-/// @param conn The connection, inside the verb's transaction.
-/// @param on The claim the action belongs to.
-/// @param kind One of the supervision kinds.
-/// @param summary What happened, e.g. `complete by engine under attempt A1`.
-/// @return Success, or `query_failed`.
-auto record_supervision(db::connection& conn, const aa::claim& on, aa::action_kind kind, std::string const& summary)
-    -> std::expected<void, aa::agent_error> {
-  auto const id = aa::start_action(conn, aa::start_action_args{
-                                             .session_id = on.session_id,
-                                             .claim_id   = on.id,
-                                             .kind       = kind,
-                                             .vendor     = on.vendor,
-                                         });
-  if (!id) {
-    return std::unexpected(id.error());
-  }
-  return aa::end_action(conn, *id, aa::outcome::ok, std::string_view{summary});
-}
-
-/// @brief After a supervised terminal verb landed, write its audit row.
-/// @param conn The connection, inside the verb's transaction.
-/// @param released The claim in its terminal state.
-/// @param verb The verb name, for the summary.
-/// @param gate Who issued it.
-/// @param decision What the gate decided.
-/// @return Success, or `query_failed`.
-auto record_terminal(db::connection& conn, const aa::claim& released, std::string_view verb, const supervisor_gate& gate,
-                     const gate_decision& decision) -> std::expected<void, aa::agent_error> {
-  if (gate.as == actor::engine) {
-    return record_supervision(conn, released, aa::action_kind::claim_terminal,
-                              std::format("{} by engine under attempt {}", verb, decision.attempt.value_or("")));
-  }
-  if (decision.override) {
-    return record_supervision(
-        conn, released, aa::action_kind::supervisor_override,
-        std::format("{} by caller overriding the engine supervisor (attempt {})", verb, decision.attempt.value_or("none")));
-  }
-  return {};
-}
-
 /// @brief The parameterisation the three non-`block` terminal verbs share.
 struct terminal_args {
   std::string_view                    verb; ///< `complete` / `fail` / `release`, for the audit row.
@@ -252,7 +252,7 @@ auto held_task_id(const aa::claim& held) -> std::optional<std::int64_t> {
 /// @param targs The verb's parameterisation.
 /// @param policy The injected planning policy.
 /// @return The outcome, or the first refusal.
-auto terminal_transition(db::connection& conn, const terminal_args& targs, const task_policy& policy, const supervisor_gate& gate)
+auto terminal_transition(db::connection& conn, const terminal_args& targs, const task_policy& policy)
     -> std::expected<terminal_result, aa::agent_error> {
   auto tx = conn.begin_transaction(db::lock_mode::immediate);
   if (!tx) {
@@ -262,16 +262,6 @@ auto terminal_transition(db::connection& conn, const terminal_args& targs, const
   auto held = aa::get_claim_by_token(conn, targs.claim_token);
   if (!held) {
     return std::unexpected(held.error());
-  }
-
-  auto const decision = check_gate(conn, *held, gate);
-  if (!decision) {
-    return std::unexpected(decision.error());
-  }
-  if (decision->replay) {
-    // Already terminated under this attempt: success, nothing written.
-    auto const task_id = held_task_id(*held);
-    return terminal_result{.released = std::move(*held), .task_id = task_id, .replayed = true};
   }
 
   // BOTH halves of "is this claim honored?" — the status column alone is
@@ -312,6 +302,14 @@ auto terminal_transition(db::connection& conn, const terminal_args& targs, const
       return std::unexpected(allowed.error());
     }
 
+    // Plan 1142: `complete` alone is held to the configured review and gate requirements. The check
+    // runs before any write, so a refusal rolls back nothing and leaves the claim active.
+    if (targs.verb == "complete" && policy.check_completion) {
+      if (auto const admitted = policy.check_completion(conn, *held); !admitted) {
+        return std::unexpected(admitted.error());
+      }
+    }
+
     // Captured BEFORE the flip, because the recompute below needs it and
     // the claim row is about to be replaced by its released form.
     plan_id = aa::task_plan_id(conn, held->entity_id);
@@ -344,9 +342,6 @@ auto terminal_transition(db::connection& conn, const terminal_args& targs, const
   if (!released) {
     return std::unexpected(released.error());
   }
-  if (auto const audited = record_terminal(conn, *released, targs.verb, gate, *decision); !audited) {
-    return std::unexpected(audited.error());
-  }
 
   // INSIDE the transaction, so the roll-up sees the task flip above.
   if (plan_id.has_value()) {
@@ -369,37 +364,86 @@ auto terminal_transition(db::connection& conn, const terminal_args& targs, const
 // Claim acquisition
 // =========================================================================
 
-auto claim_entity(db::connection& conn, const agentactivity::acquire_args& args, bool transition_task, const task_policy& policy)
-    -> std::expected<claim, agent_error> {
+auto claim_entity(db::connection& conn, const agentactivity::acquire_args& args, bool transition_task, const task_policy& policy,
+                  claim_readiness* readiness) -> std::expected<claim, agent_error> {
   auto tx = conn.begin_transaction(db::lock_mode::immediate);
   if (!tx) {
     return std::unexpected(classify_begin_failure(tx.error()));
   }
 
-  auto acquired = aa::acquire_claim(conn, args);
+  // Admission runs between the exclusivity check and the INSERT, on this connection and inside this
+  // transaction (plan 1142): the status guard, then readiness. The status guard moved here from
+  // after the insert so that `illegal_transition` still outranks readiness (an `invalid_task_status`
+  // reason must not mask it); with the refusal returned before the insert, nothing is written
+  // either way.
+  std::optional<std::string> digest;
+  if (policy.claim_policy) {
+    auto decided = policy.claim_policy(
+        conn, claim_request{.kind = args.kind, .entity_id = args.entity_id, .role = args.role, .model = args.model});
+    if (!decided) {
+      return std::unexpected(decided.error());
+    }
+    digest = std::move(*decided);
+  }
+  std::vector<std::string> overridden;
+  auto                     gated = args;
+  if (digest.has_value()) {
+    gated.policy_digest = *digest;
+  }
+  gated.admit = [&](db::connection& c) -> std::expected<void, aa::agent_error> {
+    if (args.admit) {
+      if (auto const prior = args.admit(c); !prior) {
+        return std::unexpected(prior.error());
+      }
+    }
+    if (args.kind != aa::entity_kind::task) {
+      return {};
+    }
+    if (transition_task) {
+      auto const current = aa::current_task_status(c, args.entity_id);
+      if (!current) {
+        return std::unexpected(current.error());
+      }
+      // Direct dispatch is an ENTRY into work: only `todo` is eligible, and
+      // this is stricter than the transition matrix (which also allows
+      // `blocked -> doing`). `--no-transition` is the escape hatch for a
+      // caller that wants the bare claim primitive.
+      if (*current != "todo") {
+        return std::unexpected(aa::agent_error::illegal_transition);
+      }
+      auto const allowed = policy.check_transition(*current, "doing");
+      if (!allowed) {
+        return std::unexpected(allowed.error());
+      }
+    }
+    if (!policy.unready_reasons) {
+      return std::unexpected(aa::agent_error::query_failed);
+    }
+    auto reasons = policy.unready_reasons(c, args.entity_id);
+    if (!reasons) {
+      return std::unexpected(reasons.error());
+    }
+    if (reasons->empty()) {
+      return {};
+    }
+    if (readiness != nullptr) {
+      readiness->unready_reasons = *reasons;
+    }
+    if (readiness == nullptr || !readiness->allow_unready) {
+      return std::unexpected(aa::agent_error::task_not_ready);
+    }
+    overridden = std::move(*reasons);
+    return {};
+  };
+
+  auto acquired = aa::acquire_claim(conn, gated);
   if (!acquired) {
     return std::unexpected(acquired.error());
   }
 
   if (args.kind == aa::entity_kind::task && transition_task) {
-    auto const current = aa::current_task_status(conn, args.entity_id);
-    if (!current) {
-      return std::unexpected(current.error());
-    }
-    // Direct dispatch is an ENTRY into work: only `todo` is eligible, and
-    // this is stricter than the transition matrix (which also allows
-    // `blocked -> doing`). `--no-transition` is the escape hatch for a
-    // caller that wants the bare claim primitive.
-    if (*current != "todo") {
-      return std::unexpected(aa::agent_error::illegal_transition);
-    }
-    auto const allowed = policy.check_transition(*current, "doing");
-    if (!allowed) {
-      return std::unexpected(allowed.error());
-    }
-
     // The `and status = 'todo'` predicate is a SECOND read of the same
-    // fact the guard above checked, and the row-count check below is what
+    // fact the admission guard checked, and the row-count check below is what
     // makes it useful: if anything changed the task between the two reads,
     // the UPDATE matches nothing and this refuses instead of reporting a
     // successful claim over a transition that never happened. The Zig
@@ -420,18 +464,68 @@ auto claim_entity(db::connection& conn, const agentactivity::acquire_args& args,
     // returning the task to `todo`. Left OPEN deliberately — the terminal
     // transaction closes it.
     auto const marker = aa::start_action(conn, aa::start_action_args{
-                                                   .session_id  = args.session_id,
-                                                   .claim_id    = acquired->id,
-                                                   .kind        = aa::action_kind::claim_check,
-                                                   .entity      = aa::action_entity_kind::task,
-                                                   .entity_id   = args.entity_id,
-                                                   .vendor      = args.vendor,
-                                                   .vendor_role = args.role,
-                                                   .model       = args.model,
-                                                   .loc         = args.loc,
+                                                   .session_id       = args.session_id,
+                                                   .parent_action_id = args.parent_action_id,
+                                                   .claim_id         = acquired->id,
+                                                   .kind             = aa::action_kind::claim_check,
+                                                   .entity           = aa::action_entity_kind::task,
+                                                   .entity_id        = args.entity_id,
+                                                   .vendor           = args.vendor,
+                                                   .vendor_role      = args.role,
+                                                   .model            = args.model,
+                                                   .loc              = args.loc,
                                                });
     if (!marker) {
       return std::unexpected(marker.error());
+    }
+  } else if (args.parent_action_id.has_value()) {
+    // No `claim_check` marker exists for a bare (`--no-transition`) or non-task claim, and it must not:
+    // `abort` and `reconcile` read that kind as proof the claim moved the task. A parent was asked for,
+    // so the claim gets its own open `other` action to hang under it; the terminal verb closes it.
+    auto const entity = args.kind == aa::entity_kind::task        ? aa::action_entity_kind::task
+                        : args.kind == aa::entity_kind::plan_step ? aa::action_entity_kind::plan_step
+                                                                  : aa::action_entity_kind::plan;
+    auto const nested = aa::start_action(conn, aa::start_action_args{
+                                                   .session_id       = args.session_id,
+                                                   .parent_action_id = args.parent_action_id,
+                                                   .claim_id         = acquired->id,
+                                                   .kind             = aa::action_kind::other,
+                                                   .entity           = entity,
+                                                   .entity_id        = args.entity_id,
+                                                   .vendor           = args.vendor,
+                                                   .vendor_role      = args.role,
+                                                   .model            = args.model,
+                                                   .loc              = args.loc,
+                                                   .metadata         = aa::claim_nest_metadata,
+                                               });
+    if (!nested) {
+      return std::unexpected(nested.error());
+    }
+  }
+
+  // The audit row for an override: one closed `other` action on the claim. `agent_actions.kind` has
+  // no kind of its own for it and a migration is out of scope, so the machine-readable marker is the
+  // `unready_override` key in `metadata`, repeated in the summary for a reader of `planar-watch`.
+  if (!overridden.empty()) {
+    auto const metadata = std::format("{{\"unready_override\":true,\"reasons\":{}}}", reasons_json(overridden));
+    auto const audit    = aa::start_action(conn, aa::start_action_args{
+                                                     .session_id  = args.session_id,
+                                                     .claim_id    = acquired->id,
+                                                     .kind        = aa::action_kind::other,
+                                                     .entity      = aa::action_entity_kind::task,
+                                                     .entity_id   = args.entity_id,
+                                                     .vendor      = args.vendor,
+                                                     .vendor_role = args.role,
+                                                     .model       = args.model,
+                                                     .loc         = args.loc,
+                                                     .metadata    = metadata,
+                                                 });
+    if (!audit) {
+      return std::unexpected(audit.error());
+    }
+    auto const summary = std::format("unready_override: {}", reasons_text(overridden));
+    if (auto const closed = aa::end_action(conn, *audit, aa::outcome::ok, summary); !closed) {
+      return std::unexpected(closed.error());
     }
   }
 
@@ -449,11 +543,26 @@ auto pull_next(db::connection& conn, const pull_args& args, const task_policy& p
     return std::unexpected(classify_begin_failure(tx.error()));
   }
 
-  auto const picked = pick_next_eligible(conn, args.plan_id);
+  // The policy of the pulled plan's scope decides before any task is chosen, so a refused pull reads
+  // nothing and writes nothing, and the digest recorded is that of the scope every candidate shares.
+  // The dispatch row's action kind, not the raw `--role` text, is the role the policy sees: a pull with no
+  // role, or one `pull` degrades to `coder`, records a coder action and is bound as a coder claim.
+  std::optional<std::string> digest;
+  if (policy.claim_policy) {
+    auto decided = policy.claim_policy(
+        conn, claim_request{
+                  .kind = aa::entity_kind::plan, .entity_id = args.plan_id, .role = aa::to_text(args.kind), .model = args.model});
+    if (!decided) {
+      return std::unexpected(decided.error());
+    }
+    digest = std::move(*decided);
+  }
+
+  auto picked = select_next_ready(conn, args.plan_id, policy);
   if (!picked) {
     return std::unexpected(picked.error());
   }
-  if (!picked->has_value()) {
+  if (!picked->task_id.has_value()) {
     // Commits an EMPTY transaction and writes nothing. Not a shortcut —
     // committing keeps the (immediate) write lock held for the shortest
     // possible time when the answer is "no work".
@@ -461,9 +570,9 @@ auto pull_next(db::connection& conn, const pull_args& args, const task_policy& p
     if (!committed) {
       return std::unexpected(committed.error());
     }
-    return pull_result{.no_work = true};
+    return pull_result{.no_work = true, .skipped = std::move(picked->skipped)};
   }
-  auto const task_id = **picked;
+  auto const task_id = *picked->task_id;
 
   // The selector already constrained the task to `todo`, so this guard is
   // constant-folded in practice — it is here because the Zig original runs
@@ -473,22 +582,23 @@ auto pull_next(db::connection& conn, const pull_args& args, const task_policy& p
     return std::unexpected(allowed.error());
   }
 
-  auto acquired = aa::acquire_claim(conn, aa::acquire_args{
-                                              .session_id        = args.session_id,
-                                              .kind              = aa::entity_kind::task,
-                                              .entity_id         = task_id,
-                                              .vendor            = args.vendor,
-                                              .vendor_session_id = args.vendor_session_id,
-                                              .role              = args.role,
-                                              .worktree_id       = args.worktree_id,
-                                              .worktree_path     = args.worktree_path,
-                                              .purpose           = args.purpose,
-                                              .base_ref          = args.base_ref,
-                                              .ttl_secs          = args.ttl_secs,
-                                              .loc               = args.loc,
-                                              .run_id            = args.run_id,
-                                              .stage             = args.stage,
-                                          });
+  auto acquired =
+      aa::acquire_claim(conn, aa::acquire_args{
+                                  .session_id        = args.session_id,
+                                  .kind              = aa::entity_kind::task,
+                                  .entity_id         = task_id,
+                                  .vendor            = args.vendor,
+                                  .vendor_session_id = args.vendor_session_id,
+                                  .role              = args.role,
+                                  .model             = args.model,
+                                  .worktree_id       = args.worktree_id,
+                                  .worktree_path     = args.worktree_path,
+                                  .purpose           = args.purpose,
+                                  .base_ref          = args.base_ref,
+                                  .policy_digest = digest.has_value() ? std::optional<std::string_view>{*digest} : std::nullopt,
+                                  .ttl_secs      = args.ttl_secs,
+                                  .loc           = args.loc,
+                              });
   if (!acquired) {
     return std::unexpected(acquired.error());
   }
@@ -507,6 +617,7 @@ auto pull_next(db::connection& conn, const pull_args& args, const task_policy& p
                                                     .entity_id        = task_id,
                                                     .vendor           = args.vendor,
                                                     .vendor_role      = args.role,
+                                                    .model            = args.model,
                                                     .loc              = args.loc,
                                                     .metadata         = args.metadata,
                                                 });
@@ -518,18 +629,22 @@ auto pull_next(db::connection& conn, const pull_args& args, const task_policy& p
   if (!committed) {
     return std::unexpected(committed.error());
   }
-  return pull_result{.no_work = false, .acquired = std::move(*acquired), .task_id = task_id, .action_id = *action_id};
+  return pull_result{.no_work   = false,
+                     .acquired  = std::move(*acquired),
+                     .task_id   = task_id,
+                     .action_id = *action_id,
+                     .skipped   = std::move(picked->skipped)};
 }
 
-auto peek_next(db::connection& conn, std::int64_t plan_id) -> std::expected<peek_result, agent_error> {
-  auto const picked = pick_next_eligible(conn, plan_id);
+auto peek_next(db::connection& conn, std::int64_t plan_id, const task_policy& policy) -> std::expected<peek_result, agent_error> {
+  auto picked = select_next_ready(conn, plan_id, policy);
   if (!picked) {
     return std::unexpected(picked.error());
   }
-  if (!picked->has_value()) {
-    return peek_result{.no_work = true};
+  if (!picked->task_id.has_value()) {
+    return peek_result{.no_work = true, .skipped = std::move(picked->skipped)};
   }
-  return peek_result{.no_work = false, .task_id = **picked};
+  return peek_result{.no_work = false, .task_id = *picked->task_id, .skipped = std::move(picked->skipped)};
 }
 
 // =========================================================================
@@ -537,7 +652,7 @@ auto peek_next(db::connection& conn, std::int64_t plan_id) -> std::expected<peek
 // =========================================================================
 
 auto complete_work(db::connection& conn, std::string_view claim_token, std::optional<std::string_view> summary,
-                   const task_policy& policy, const supervisor_gate& gate) -> std::expected<terminal_result, agent_error> {
+                   const task_policy& policy) -> std::expected<terminal_result, agent_error> {
   return terminal_transition(conn,
                              terminal_args{
                                  .verb        = "complete",
@@ -549,11 +664,11 @@ auto complete_work(db::connection& conn, std::string_view claim_token, std::opti
                                  .reason      = std::nullopt,
                                  .category    = std::nullopt,
                              },
-                             policy, gate);
+                             policy);
 }
 
 auto fail_work(db::connection& conn, std::string_view claim_token, std::string_view reason, failure_category category,
-               const task_policy& policy, const supervisor_gate& gate) -> std::expected<terminal_result, agent_error> {
+               const task_policy& policy) -> std::expected<terminal_result, agent_error> {
   // `summary` stays unset while `reason` carries the text: the action's
   // summary is `coalesce(?, summary)`, so passing null PRESERVES whatever
   // the worker already recorded, and the reason lands on the claim
@@ -569,11 +684,11 @@ auto fail_work(db::connection& conn, std::string_view claim_token, std::string_v
                                  .reason      = reason,
                                  .category    = category,
                              },
-                             policy, gate);
+                             policy);
 }
 
 auto release_work(db::connection& conn, std::string_view claim_token, std::optional<std::string_view> reason,
-                  const task_policy& policy, const supervisor_gate& gate) -> std::expected<terminal_result, agent_error> {
+                  const task_policy& policy) -> std::expected<terminal_result, agent_error> {
   return terminal_transition(conn,
                              terminal_args{
                                  .verb        = "release",
@@ -585,11 +700,11 @@ auto release_work(db::connection& conn, std::string_view claim_token, std::optio
                                  .reason      = reason,
                                  .category    = std::nullopt,
                              },
-                             policy, gate);
+                             policy);
 }
 
 auto block_work(db::connection& conn, std::string_view claim_token, std::int64_t blocker_task_id,
-                std::optional<std::string_view> reason, const task_policy& policy, const supervisor_gate& gate)
+                std::optional<std::string_view> reason, const task_policy& policy)
     -> std::expected<terminal_result, agent_error> {
   auto tx = conn.begin_transaction(db::lock_mode::immediate);
   if (!tx) {
@@ -599,15 +714,6 @@ auto block_work(db::connection& conn, std::string_view claim_token, std::int64_t
   auto held = aa::get_claim_by_token(conn, claim_token);
   if (!held) {
     return std::unexpected(held.error());
-  }
-
-  auto const decision = check_gate(conn, *held, gate);
-  if (!decision) {
-    return std::unexpected(decision.error());
-  }
-  if (decision->replay) {
-    auto const task_id = held_task_id(*held);
-    return terminal_result{.released = std::move(*held), .task_id = task_id, .replayed = true};
   }
 
   // NOTE the asymmetry with `terminal_transition`: that one tests
@@ -665,10 +771,6 @@ auto block_work(db::connection& conn, std::string_view claim_token, std::int64_t
   if (!released) {
     return std::unexpected(released.error());
   }
-  if (auto const audited = record_terminal(conn, *released, "block", gate, *decision); !audited) {
-    return std::unexpected(audited.error());
-  }
-
   if (plan_id.has_value()) {
     auto const recomputed = policy.recompute_plan(conn, *plan_id);
     if (!recomputed) {
@@ -686,64 +788,6 @@ auto block_work(db::connection& conn, std::string_view claim_token, std::int64_t
 // =========================================================================
 // Engine supervision
 // =========================================================================
-
-auto associate_supervisor(db::connection& conn, std::string_view claim_token, bool engine,
-                          std::optional<std::string_view> attempt) -> std::expected<associate_result, agent_error> {
-  auto tx = conn.begin_transaction(db::lock_mode::immediate);
-  if (!tx) {
-    return std::unexpected(classify_begin_failure(tx.error()));
-  }
-  auto held = aa::get_claim_by_token(conn, claim_token);
-  if (!held) {
-    return std::unexpected(held.error());
-  }
-  auto const live = aa::is_claim_active_unexpired(conn, claim_token);
-  if (!live) {
-    return std::unexpected(live.error());
-  }
-  if (held->status != aa::claim_status::active || !*live) {
-    return std::unexpected(aa::agent_error::claim_not_active);
-  }
-  auto const sup = aa::get_supervision(conn, claim_token);
-  if (!sup) {
-    return std::unexpected(sup.error());
-  }
-
-  if (!engine) {
-    // One-way: an engine claim is never handed back.
-    if (sup->engine) {
-      return std::unexpected(aa::agent_error::supervisor_mismatch);
-    }
-    if (auto const committed = commit(*tx); !committed) {
-      return std::unexpected(committed.error());
-    }
-    return associate_result{.held = std::move(*held), .engine = false, .attempt_id = std::nullopt, .changed = false};
-  }
-
-  if (!attempt.has_value() || attempt->empty()) {
-    return std::unexpected(aa::agent_error::attempt_mismatch);
-  }
-  std::string const next{*attempt};
-  if (sup->engine && sup->attempt_id == next) {
-    if (auto const committed = commit(*tx); !committed) {
-      return std::unexpected(committed.error());
-    }
-    return associate_result{.held = std::move(*held), .engine = true, .attempt_id = next, .changed = false};
-  }
-
-  if (auto const set = aa::set_engine_supervision(conn, held->id, next); !set) {
-    return std::unexpected(set.error());
-  }
-  auto const summary = sup->engine ? std::format("engine attempt {} -> {}", sup->attempt_id.value_or(""), next)
-                                   : std::format("associated with the engine under attempt {}", next);
-  if (auto const audited = record_supervision(conn, *held, aa::action_kind::claim_associate, summary); !audited) {
-    return std::unexpected(audited.error());
-  }
-  if (auto const committed = commit(*tx); !committed) {
-    return std::unexpected(committed.error());
-  }
-  return associate_result{.held = std::move(*held), .engine = true, .attempt_id = next, .changed = true};
-}
 
 auto supervised_heartbeat(db::connection& conn, std::string_view claim_token, std::optional<std::int64_t> ttl_secs,
                           std::optional<std::string_view> status, const supervisor_gate& gate)
@@ -766,22 +810,10 @@ auto supervised_heartbeat(db::connection& conn, std::string_view claim_token, st
       return std::unexpected(aa::agent_error::attempt_mismatch);
     }
     current = aa::heartbeat_claim(conn, claim_token, ttl_secs);
-  } else if (sup->engine) {
-    // The caller of an engine claim may report status, and nothing else:
-    // the lease is the engine's (D3). A TTL, or a heartbeat with no status
-    // to report, is an attempt to extend it.
-    if (!status.has_value() || ttl_secs.has_value()) {
-      return std::unexpected(aa::agent_error::supervisor_mismatch);
-    }
-    auto const live = aa::is_claim_active_unexpired(conn, claim_token);
-    if (!live) {
-      return std::unexpected(live.error());
-    }
-    if (!*live) {
-      return std::unexpected(aa::agent_error::claim_not_active);
-    }
-    current = aa::get_claim_by_token(conn, claim_token);
   } else {
+    // A legacy claim whose supervisor is `engine` is an ordinary claim to its
+    // caller: the caller heartbeats it, extends its lease and reports status
+    // like any other claim, matching the terminal verbs.
     current = aa::heartbeat_claim(conn, claim_token, ttl_secs);
   }
   if (!current) {
@@ -807,6 +839,133 @@ auto supervised_heartbeat(db::connection& conn, std::string_view claim_token, st
     return std::unexpected(committed.error());
   }
   return current;
+}
+
+auto record_review(db::connection& conn, const review_args& args) -> std::expected<review_result, agent_error> {
+  auto tx = conn.begin_transaction(db::lock_mode::immediate);
+  if (!tx) {
+    return std::unexpected(classify_begin_failure(tx.error()));
+  }
+
+  auto reviewed = aa::get_claim_by_token(conn, args.reviewed_claim_token);
+  if (!reviewed) {
+    return std::unexpected(reviewed.error());
+  }
+
+  std::optional<aa::claim> reviewer;
+  if (args.reviewer_claim_token.has_value()) {
+    auto found = aa::get_claim_by_token(conn, *args.reviewer_claim_token);
+    if (!found) {
+      return std::unexpected(found.error() == aa::agent_error::claim_not_found ? aa::agent_error::reviewer_claim_not_found
+                                                                               : found.error());
+    }
+    reviewer = std::move(*found);
+  }
+
+  // Who is calling: the reviewer claim's vendor session when it has one, else the one the caller
+  // passed. A reviewer claim without a vendor session still identifies the caller, by its token.
+  std::optional<std::string> caller_session;
+  if (reviewer.has_value() && reviewer->vendor_session_id.has_value()) {
+    caller_session = reviewer->vendor_session_id;
+  } else if (args.reviewer_vendor_session.has_value()) {
+    caller_session = std::string{*args.reviewer_vendor_session};
+  }
+  if (!reviewer.has_value() && !caller_session.has_value()) {
+    return std::unexpected(aa::agent_error::reviewer_unidentified);
+  }
+
+  // The refusals. A claim cannot review itself, nor can its sessions row.
+  if (reviewer.has_value() && (reviewer->id == reviewed->id || reviewer->session_id == reviewed->session_id)) {
+    return std::unexpected(aa::agent_error::reviewer_not_independent);
+  }
+  if (reviewed->vendor_session_id.has_value()) {
+    if (caller_session.has_value() && *caller_session == *reviewed->vendor_session_id) {
+      return std::unexpected(aa::agent_error::reviewer_not_independent);
+    }
+  } else if (!reviewer.has_value() || !reviewer->vendor_session_id.has_value()) {
+    // Nothing to compare the caller against: the reviewed claim has no vendor session, so only a
+    // reviewer claim that carries one proves the caller is somebody else.
+    return std::unexpected(aa::agent_error::reviewer_not_independent);
+  }
+
+  std::int64_t reviewer_session_row = 0;
+  if (reviewer.has_value()) {
+    reviewer_session_row = reviewer->session_id;
+  } else {
+    std::string_view const vendor  = args.vendor.empty() ? std::string_view{"planar-agent"} : args.vendor;
+    auto const             ensured = ses::ensure_active(conn, vendor, std::string_view{*caller_session});
+    if (!ensured) {
+      return std::unexpected(aa::agent_error::query_failed);
+    }
+    reviewer_session_row = *ensured;
+  }
+
+  // The reviewed claim's earliest action that is not itself a review: the work the verdict is about.
+  std::optional<std::int64_t> parent;
+  {
+    auto stmt = conn.prepare("select id from agent_actions where claim_id = ? and action_kind <> 'review'\n"
+                             "order by id asc limit 1");
+    if (!stmt || !stmt->bind_int64(1, reviewed->id)) {
+      return std::unexpected(aa::agent_error::query_failed);
+    }
+    auto stepped = stmt->step();
+    if (!stepped) {
+      return std::unexpected(aa::agent_error::query_failed);
+    }
+    if (*stepped == db::step_result::row) {
+      parent = stmt->column_int64(0);
+    }
+  }
+
+  std::string metadata = "{";
+  if (caller_session.has_value()) {
+    metadata += "\"reviewer_session\":";
+    json_text::append_json_string(metadata, *caller_session);
+  }
+  if (reviewer.has_value()) {
+    metadata += metadata.size() > 1 ? ",\"reviewer_claim\":" : "\"reviewer_claim\":";
+    json_text::append_json_string(metadata, reviewer->claim_token);
+  }
+  metadata += '}';
+
+  auto const                      entity = reviewed->kind == aa::entity_kind::task        ? aa::action_entity_kind::task
+                                           : reviewed->kind == aa::entity_kind::plan_step ? aa::action_entity_kind::plan_step
+                                                                                          : aa::action_entity_kind::plan;
+  std::string_view const          vendor = reviewer.has_value()   ? std::string_view{reviewer->vendor}
+                                           : !args.vendor.empty() ? args.vendor
+                                                                  : std::string_view{"planar-agent"};
+  std::optional<std::string_view> model;
+  if (reviewer.has_value() && reviewer->model.has_value()) {
+    model = std::string_view{*reviewer->model};
+  }
+  auto const action_id = aa::start_action(conn, aa::start_action_args{
+                                                    .session_id       = reviewer_session_row,
+                                                    .parent_action_id = parent,
+                                                    .claim_id         = reviewed->id,
+                                                    .kind             = aa::action_kind::review,
+                                                    .entity           = entity,
+                                                    .entity_id        = reviewed->entity_id,
+                                                    .vendor           = vendor,
+                                                    .vendor_role      = std::string_view{"reviewer"},
+                                                    .model            = model,
+                                                    .metadata         = metadata,
+                                                });
+  if (!action_id) {
+    return std::unexpected(action_id.error());
+  }
+  if (auto const closed = aa::end_action(conn, *action_id, aa::outcome::ok, args.summary); !closed) {
+    return std::unexpected(closed.error());
+  }
+  auto stamp = conn.prepare("update agent_actions set verdict = ? where id = ?");
+  if (!stamp || !stamp->bind_text(1, aa::to_text(args.verdict)) || !stamp->bind_int64(2, *action_id) || !stamp->step()) {
+    return std::unexpected(aa::agent_error::query_failed);
+  }
+
+  if (auto const committed = commit(*tx); !committed) {
+    return std::unexpected(committed.error());
+  }
+  return review_result{
+      .action_id = *action_id, .parent_action_id = parent, .verdict = args.verdict, .reviewed = std::move(*reviewed)};
 }
 
 } // namespace planar::engine::runtime::agentatomic

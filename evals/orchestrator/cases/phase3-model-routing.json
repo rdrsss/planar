@@ -38,32 +38,12 @@
     },
     {
       "id": "preview-preserves-task-identity",
-      "description": "Every task appears as its own id-and-slug preview row.",
+      "description": "Every task appears as its own id-and-slug listing row, never collapsed into a count.",
       "mode": "all",
       "paths": [
         "agents/planar-orchestrator.md"
       ],
-      "pattern": "one preview row per open task|one row per claim-aware open task"
-    },
-    {
-      "id": "no-non-medium-default-for-decided-work",
-      "description": "No surface's default-tier text ever states a non-medium default for already-decided work (task 6925: restores free-tier coverage for the medium-default pin task 6861 deleted, as a low-edit-distance forbid on the one-word tier swap a copy-edit mistake would actually produce -- 'every task defaults to `medium`' becoming 'every task defaults to `large`' -- rather than a pin on the required sentence).",
-      "mode": "none",
-      "paths": [
-        "agents/planar-orchestrator.md",
-        "agents/models.md"
-      ],
-      "pattern": "every task defaults to `large`|every task defaults to `small`"
-    },
-    {
-      "id": "no-title-vocabulary-escalation",
-      "description": "No surface ever licenses task-title vocabulary alone as sufficient escalation evidence (task 6925: restores free-tier coverage for the titles-do-not-escalate pin task 6861 deleted, as a low-edit-distance forbid on the single-word deletion a copy-edit mistake would actually produce -- 'Task-title vocabulary is never sufficient escalation evidence' dropping 'never' -- rather than a pin on the required sentence).",
-      "mode": "none",
-      "paths": [
-        "agents/planar-orchestrator.md",
-        "agents/models.md"
-      ],
-      "pattern": "Task-title vocabulary is sufficient escalation evidence"
+      "pattern": "one listing row per open task|one preview row per open task"
     },
     {
       "id": "no-cross-host-vendor-substitution",

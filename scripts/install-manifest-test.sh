@@ -48,6 +48,26 @@ grep -q '"extras": \[\]' "$MANIFEST"
 ! grep -q 'build-fixture\|"vendor":' "$MANIFEST"
 [[ ! -e "$MANIFEST.tmp.$$" ]]
 
+# The upgrade sweep's manifest lookup (ownership.sh, sweep_manifest_records)
+# finds a path the writer escaped: a backslash, a quote, a tab and a newline in
+# the path, as install_manifest_json_quote writes them. A path the manifest does
+# not hold is not found.
+odd_path="$HOME/odd \\dir \"q\"$(printf '\t')x$(printf '\nn')/planar-coder.md"
+install_manifest_begin "build-odd" copy
+install_manifest_add claude agent planar-coder "$PREFIX/agents/planar-coder.md" "$odd_path" copy
+install_manifest_write "$MANIFEST"
+(
+  PLANAR_HOME="$PREFIX"
+  # shellcheck source=install-lib/ownership.sh
+  source "$ROOT/scripts/install-lib/ownership.sh"
+  sweep_manifest_records "$odd_path" || { echo "sweep_manifest_records missed an escaped path" >&2; exit 1; }
+  ! sweep_manifest_records "$HOME/other/planar-coder.md" || { echo "sweep_manifest_records found an unrecorded path" >&2; exit 1; }
+  # Same text up to the newline, different after it: only the whole escaped
+  # path may match, never one line of it.
+  ! sweep_manifest_records "$HOME/odd \\dir \"q\"$(printf '\t')x$(printf '\nother')/planar-coder.md" \
+    || { echo "sweep_manifest_records matched part of a path" >&2; exit 1; }
+)
+
 # install_manifest_agent_name strips every agent suffix the nine targets use.
 [[ "$(install_manifest_agent_name /x/planar-coder.agent.md)" == planar-coder ]]
 [[ "$(install_manifest_agent_name /x/planar-coder.toml)" == planar-coder ]]
@@ -558,6 +578,99 @@ done
 ! grep -q 'queue_probe_migrate' "$ROOT/install.sh" "$QR_LIB" || fail "the retired queue_probe_migrate is still referenced"
 
 # ---------------------------------------------------------------------------
+# The backup before a migration that drops tables (tech spec 693, component 12;
+# test spec 695, "the installer backs up before dropping tables").
+# planar_migrations_dropping_tables (scripts/install-lib/db-backup.sh) names the
+# pending up migrations that drop a table for good. A table rebuild, a temp
+# table and a comment are not drops; the range is (FROM, TO]. install.sh takes
+# the copy after the probe and the queue warning and before the mutating
+# record. scripts/install-order-test.sh drives the copy with the real binaries.
+grep -Fqx 'source "$REPO_ROOT/scripts/install-lib/db-backup.sh"' "$ROOT/install.sh" || fail "install.sh does not source db-backup.sh"
+source "$ROOT/scripts/install-lib/db-backup.sh"
+MIGS="$TMP/drops/migrations"
+mkdir -p "$MIGS"
+cat > "$MIGS/00001_rebuild.up.sql" <<'SQL'
+-- The twelve-step rebuild: the table comes back under its own name.
+create table artifacts_new (id integer primary key);
+insert into artifacts_new select id from artifacts;
+drop table artifacts;
+alter table artifacts_new rename to artifacts;
+alter table things rename to things_old;
+create table things (id integer);
+drop table things_old;
+SQL
+cat > "$MIGS/00002_temp.up.sql" <<'SQL'
+create temp table m00002_guard (x integer);
+drop table temp.m00002_guard;
+-- drop table commented_out;
+insert into schema_migrations (version, description) values (2, 'temp');
+SQL
+cat > "$MIGS/00003_gone.up.sql" <<'SQL'
+DROP TABLE IF EXISTS
+  "Routing_Gone";
+drop table main.also_gone;
+create table if not exists kept (x integer);
+drop table kept;
+SQL
+cat > "$MIGS/00004_plain.up.sql" <<'SQL'
+create table fresh (x integer);
+SQL
+printf 'drop table not_an_up;\n' > "$MIGS/00003_gone.down.sql"
+[[ -z "$(planar_migrations_dropping_tables "$MIGS" 0 2)" ]] \
+  || fail "a rebuild, a temp table or a comment counted as a drop: $(planar_migrations_dropping_tables "$MIGS" 0 2)"
+[[ "$(planar_migrations_dropping_tables "$MIGS" 0 4)" == "00003_gone.up.sql: also_gone routing_gone" ]] \
+  || fail "the dropping migration was not named with its tables: '$(planar_migrations_dropping_tables "$MIGS" 0 4)'"
+[[ "$(planar_migrations_dropping_tables "$MIGS" 2 3)" == "00003_gone.up.sql: also_gone routing_gone" ]] \
+  || fail "the upper bound is not inclusive"
+[[ -z "$(planar_migrations_dropping_tables "$MIGS" 3 4)" ]] || fail "the lower bound is not exclusive"
+if planar_migrations_dropping_tables "$TMP/drops/absent" 0 4 >/dev/null; then fail "an absent migrations directory was not refused"; fi
+# A table renamed aside and then dropped, with nothing created under its old name, is lost:
+# it is named by its old name. Renamed back from another table instead, it is not.
+cat > "$MIGS/00005_rename_aside.up.sql" <<'SQL'
+alter table "Ledger" rename to ledger_old;
+drop table ledger_old;
+alter table kept_shape rename to kept_shape_old;
+alter table kept_shape_new rename to kept_shape;
+drop table kept_shape_old;
+SQL
+[[ "$(planar_migrations_dropping_tables "$MIGS" 4 5)" == "00005_rename_aside.up.sql: ledger" ]] \
+  || fail "a table renamed aside and dropped was not named: '$(planar_migrations_dropping_tables "$MIGS" 4 5)'"
+# The repository's own stream: every migration that drops a table for good.
+_routing="routing_candidate_bindings routing_candidates routing_dispatch_events routing_dispatch_previews routing_dispatch_snapshots"
+_routing="$_routing routing_experiments routing_host_observations routing_legacy_outcomes routing_task_facts routing_terminal_samples"
+[[ "$(planar_migrations_dropping_tables "$ROOT/migrations" 0 999999 | tr '\n' '|')" == "00009_drop_active_scope.up.sql: active_scope|00043_drop_routing_tables.up.sql: $_routing|" ]] \
+  || fail "the repository's table-dropping migrations changed: $(planar_migrations_dropping_tables "$ROOT/migrations" 0 999999 | tr '\n' '|')"
+# planar_db_backup compares the database and -wal with their copies, not -shm: a live reader
+# rewrites -shm's read marks without committing, so a -shm that differs on every attempt still
+# backs up, while a -wal that differs on every attempt is refused. A subshell keeps the stubs
+# (the copy's probe answers behind at 42; cp touches the named sidecar after each copy of it).
+backup_case() { # backup_case SIDECAR -- status of planar_db_backup while SIDECAR changes on every copy
+  (
+    bk="$TMP/backup-$1"; mkdir -p "$bk/root"
+    PLANAR_INSTALL_DB="$bk/planar.db"
+    printf 'db\n' > "$PLANAR_INSTALL_DB"; printf 'wal\n' > "$PLANAR_INSTALL_DB-wal"; printf 'shm\n' > "$PLANAR_INSTALL_DB-shm"
+    planar_db_probe() { INSTALL_DB_STATE=behind; INSTALL_DB_VERSION=42; INSTALL_DB_TARGET=43; INSTALL_DB_DETAIL=stub; }
+    cp() {
+      local last
+      for last; do :; done
+      command cp "$@" || return
+      case "$last" in *-"$SIDECAR") printf 'x' >> "$PLANAR_INSTALL_DB-$SIDECAR" ;; esac
+    }
+    SIDECAR="$1"
+    planar_db_backup "$bk/bin" "$bk/root" 42 || { printf '%s\n' "$INSTALL_DB_DETAIL" > "$bk/detail"; exit 1; }
+    [[ "$INSTALL_DB_BACKUP" == "$bk/root/backups/"*-schema-42/planar.db && -f "$INSTALL_DB_BACKUP-shm" && -f "$INSTALL_DB_BACKUP-wal" ]] \
+      || { printf 'backup path %s\n' "$INSTALL_DB_BACKUP" > "$bk/detail"; exit 1; }
+  )
+}
+backup_case shm || fail "a -shm that changes on every copy stopped the backup: $(cat "$TMP/backup-shm/detail" 2>/dev/null)"
+if backup_case wal; then fail "a -wal that changes on every copy was backed up"; fi
+grep -Fq "kept changing while it was copied" "$TMP/backup-wal/detail" || fail "the -wal refusal is not named: $(cat "$TMP/backup-wal/detail" 2>/dev/null)"
+_backup_line="$(qr_line '^    planar_db_backup "\$STAGE/bin" "\$ROOT_C" "\$INSTALL_DB_VERSION"')"
+[[ "$(printf '%s\n' "$_backup_line" | grep -c .)" == 1 ]] || fail "install.sh: the backup call is not exactly one line ('$_backup_line')"
+[[ "$_warn_line" -lt "$_backup_line" && "$_backup_line" -lt "$_mutating_line" ]] \
+  || fail "install.sh does not back up after the queue warning and before the mutating record: $_warn_line $_backup_line $_mutating_line"
+
+# ---------------------------------------------------------------------------
 # The live-queue guard and agent.db retirement (plan 1089, task
 # qp-install-retire; tech spec 656 steps 1, 4 and 5, "Override", "Uninstall";
 # test spec 658). The guard and the retire step are queue_live_guard and
@@ -980,5 +1093,5 @@ install_manifest_write "$unchanged_dest"
 [[ ! -e "$unchanged_dest.tmp.$$" ]] || fail "a no-change write left its temp file"
 
 qr_kill_sleepers
-printf 'install-manifest tests: 14 passed\n'
+printf 'install-manifest tests: 15 passed\n'
 

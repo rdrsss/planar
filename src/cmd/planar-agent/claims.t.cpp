@@ -17,7 +17,6 @@
 //        `error: invalid --ttl 'zzz': expected bare seconds (e.g. 600) or
 //         suffixed duration (e.g. 10m, 1h, 500ms)`
 //   $Z pull 1 --metadata '{'    -> exit 2
-//   $Z pull 1 --stage code      -> exit 2
 //   $Z pull 1 --parent-action 0 -> exit 2
 //   $Z pull 1 --parent-action 999 -> exit 1   (NotFound is unmapped)
 //
@@ -43,8 +42,8 @@ import cli11;
 import planar.cliapp.args;
 import planar.db;
 import planar.db.migrate;
+import planar.engine.ingest.packet;
 import planar.engine.runtime.agentactivity;
-import planar.engine.routing;
 import planar.cmd.planar_agent.args;
 import planar.cmd.planar_agent.context;
 import planar.cmd.planar_agent.dispatch;
@@ -53,9 +52,9 @@ import planar.cmd.planar_agent.main;
 
 namespace {
 
-namespace agent   = planar::cmd::agent;
-namespace aa      = planar::engine::runtime::agentactivity;
-namespace routing = planar::engine::routing;
+namespace agent  = planar::cmd::agent;
+namespace aa     = planar::engine::runtime::agentactivity;
+namespace packet = planar::engine::ingest::packet;
 
 struct scratch_dir {
   std::filesystem::path path_;
@@ -196,8 +195,8 @@ TEST_CASE("parse_ttl_seconds reads a bare integer as SECONDS", "[cmd][agent][arg
   // The parser itself stays neutral on a literal zero (task 6906): it is
   // shared with `--stale-after`, whose own "0" default is legitimate
   // ("no additional grace"). The refusal lives at the `--ttl`
-  // lease-minting call sites instead -- see the `claim`/`run start`
-  // end-to-end cases below.
+  // lease-minting call site instead -- see the `claim` end-to-end cases
+  // below.
   CHECK(agent::parse_ttl_seconds("0") == 0);
   CHECK(agent::parse_ttl_seconds("1") == 1);
 }
@@ -348,7 +347,6 @@ TEST_CASE("the handler-level refusals carry the oracle's exact messages and code
       {{"reconcile", "--stale-after", "zzz"},
        1,
        "error: invalid --stale-after 'zzz': expected bare seconds (e.g. 0) or suffixed duration (e.g. 10m, 1h, 500ms)\n"},
-      {{"pull", "1", "--stage", "code"}, 2, "error: --stage requires --run: provide a workflow_runs.id via --run <id>\n"},
       {{"pull", "1", "--metadata", "{"}, 2, "error: --metadata is not valid JSON: {\n"},
       {{"pull", "1", "--parent-action", "0"}, 2, "error: --parent-action must be a positive integer (got 0)\n"},
       {{"pull", "1", "--parent-action", "999"}, 1, "error: --parent-action 999: action not found\n"},
@@ -459,130 +457,29 @@ TEST_CASE("peek opens the database but writes nothing", "[cmd][agent][handlers]"
   CHECK(scalar_text(scratch, "select status from tasks where id = 1") == "todo");
 }
 
-TEST_CASE("run start reports duplicate workflow identifiers with the oracle tag", "[cmd][agent][runs]") {
+TEST_CASE("the removed run and context verbs are unknown subcommands and write nothing", "[cmd][agent][removed][7458]") {
+  // Task 7458 removed `run start|end|heartbeat` and `context add|capsule|
+  // list|resolve`. An operator or a script still calling them must get the
+  // parser's unknown-subcommand refusal (exit 1), not a silent success.
+  // The tables they wrote stay in the schema, so the zero counts show the
+  // refused calls reached no handler.
   scratch_dir scratch;
   seed(scratch, 1);
-  auto const first = run_verb(
-      scratch, {"run", "start", "--plan", "1", "--workflow", "wf", "--run-id", "same", "--pid", "1", "--repo-root", "/tmp"});
-  REQUIRE(first.code == 0);
-  auto const duplicate = run_verb(
-      scratch, {"run", "start", "--plan", "1", "--workflow", "wf", "--run-id", "same", "--pid", "2", "--repo-root", "/tmp"});
-  CHECK(duplicate.code == 1);
-  CHECK(duplicate.err == "error: insert workflow_runs: StepFailed\n");
-  CHECK(scalar_text(scratch, "select count(*) from workflow_runs where run_identifier = 'same'") == "1");
-}
-
-TEST_CASE("run start accepts a pid-less run with --ttl and sets expires_at", "[cmd][agent][runs][6847]") {
-  scratch_dir scratch;
-  seed(scratch, 1);
-  auto const started = run_verb(
-      scratch, {"run", "start", "--plan", "1", "--workflow", "wf", "--run-id", "lease-a", "--ttl", "8h", "--repo-root", "/tmp"});
-  REQUIRE(started.code == 0);
-  CHECK(scalar_text(scratch, "select pid is null from workflow_runs where run_identifier = 'lease-a'") == "1");
-  CHECK(scalar_text(scratch, "select expires_at is not null from workflow_runs where run_identifier = 'lease-a'") == "1");
-  CHECK(scalar_text(scratch, "select status from workflow_runs where run_identifier = 'lease-a'") == "running");
-
-  // Roughly 8h out from `started_at` — a bounds check, not exact-string.
-  CHECK(scalar_text(scratch, "select (julianday(expires_at) - julianday(started_at)) * 24 > 7.9 "
-                             "from workflow_runs where run_identifier = 'lease-a'") == "1");
-  CHECK(scalar_text(scratch, "select (julianday(expires_at) - julianday(started_at)) * 24 < 8.1 "
-                             "from workflow_runs where run_identifier = 'lease-a'") == "1");
-}
-
-TEST_CASE("run start refuses when neither --pid nor --ttl is given, writing no row", "[cmd][agent][runs][6847]") {
-  scratch_dir scratch;
-  seed(scratch, 1);
-  auto const refused =
-      run_verb(scratch, {"run", "start", "--plan", "1", "--workflow", "wf", "--run-id", "neither", "--repo-root", "/tmp"});
-  CHECK(refused.code != 0);
-  CHECK(refused.err.contains("--pid"));
-  CHECK(refused.err.contains("--ttl"));
-  CHECK(scalar_text(scratch, "select count(*) from workflow_runs") == "0");
-}
-
-TEST_CASE("run start refuses --pid and --ttl together, writing no row", "[cmd][agent][runs][6847]") {
-  scratch_dir scratch;
-  seed(scratch, 1);
-  // Both given is a contradiction. Before task 6847's reviewer caught it,
-  // --pid silently won and --ttl was discarded, so a caller asking for a
-  // lease got a pid-supervised run whose every later `run heartbeat`
-  // refused with `pid-supervised`.
-  auto const refused = run_verb(scratch, {"run", "start", "--plan", "1", "--workflow", "wf", "--run-id", "both", "--pid", "4242",
-                                          "--ttl", "600", "--repo-root", "/tmp"});
-  CHECK(refused.code != 0);
-  CHECK(refused.err.contains("--pid"));
-  CHECK(refused.err.contains("--ttl"));
-  CHECK(refused.err.contains("not both"));
-  CHECK(scalar_text(scratch, "select count(*) from workflow_runs") == "0");
-}
-
-TEST_CASE("run start refuses --ttl 0, writing no row (task 6906)", "[cmd][agent][runs][6906]") {
-  // A zero-second lease would set `expires_at` in the past the instant the
-  // run is minted -- the same bug the `claim --ttl 0` case above closes,
-  // applied to the second verb the decision names.
-  scratch_dir scratch;
-  seed(scratch, 1);
-  auto const refused = run_verb(
-      scratch, {"run", "start", "--plan", "1", "--workflow", "wf", "--run-id", "ttl-zero", "--ttl", "0", "--repo-root", "/tmp"});
-  CHECK(refused.code != 0);
-  CHECK(refused.err == "error: invalid --ttl '0': expected bare seconds (e.g. 600) or suffixed duration (e.g. 10m, 1h, 500ms)\n");
-  CHECK(scalar_text(scratch, "select count(*) from workflow_runs") == "0");
-}
-
-TEST_CASE("run heartbeat extends a pid-less run's lease forward", "[cmd][agent][runs][6847]") {
-  scratch_dir scratch;
-  seed(scratch, 1);
-  REQUIRE(run_verb(scratch, {"run", "start", "--plan", "1", "--workflow", "wf", "--run-id", "lease-b", "--ttl", "600",
-                             "--repo-root", "/tmp"})
-              .code == 0);
-  auto const before = scalar_text(scratch, "select expires_at from workflow_runs where run_identifier = 'lease-b'");
-
-  auto const beat = run_verb(scratch, {"run", "heartbeat", "--run-id", "lease-b", "--ttl", "3600"});
-  CHECK(beat.code == 0);
-  auto const after = scalar_text(scratch, "select expires_at from workflow_runs where run_identifier = 'lease-b'");
-  CHECK(after > before);
-}
-
-TEST_CASE("run heartbeat refuses a pid-bound run and a non-running run, each with its own named error",
-          "[cmd][agent][runs][6847]") {
-  scratch_dir scratch;
-  seed(scratch, 1);
-  REQUIRE(run_verb(scratch, {"run", "start", "--plan", "1", "--workflow", "wf", "--run-id", "pid-run", "--pid", "4242",
-                             "--repo-root", "/tmp"})
-              .code == 0);
-  auto const on_pid_bound = run_verb(scratch, {"run", "heartbeat", "--run-id", "pid-run", "--ttl", "600"});
-  CHECK(on_pid_bound.code != 0);
-  CHECK(on_pid_bound.err.contains("pid-supervised"));
-  CHECK(scalar_text(scratch, "select expires_at is null from workflow_runs where run_identifier = 'pid-run'") == "1");
-
-  REQUIRE(run_verb(scratch, {"run", "start", "--plan", "1", "--workflow", "wf", "--run-id", "lease-c", "--ttl", "600",
-                             "--repo-root", "/tmp"})
-              .code == 0);
-  REQUIRE(run_verb(scratch, {"run", "end", "--run-id", "lease-c", "--status", "completed"}).code == 0);
-  auto const on_terminal = run_verb(scratch, {"run", "heartbeat", "--run-id", "lease-c", "--ttl", "600"});
-  CHECK(on_terminal.code != 0);
-  CHECK(on_terminal.err.contains("terminal status"));
-}
-
-TEST_CASE("reconcile abandons a pid-less run only after its lease has lapsed", "[cmd][agent][runs][6847]") {
-  scratch_dir scratch;
-  seed(scratch, 1);
-  {
-    // Seeded PAST expires_at, deterministic rather than sleeping.
-    auto conn = planar::db::connection::open(scratch.db_path().string());
-    REQUIRE(conn.has_value());
-    REQUIRE(conn->execute("insert into workflow_runs (plan_id, workflow_name, run_identifier, expires_at, repo_root) "
-                          "values (1, 'wf', 'lapsed', '2000-01-01T00:00:00.000Z', '/tmp')")
-                .has_value());
+  for (auto const& argv : std::vector<std::vector<std::string>>{
+           {"run", "start", "--plan", "1", "--workflow", "wf", "--run-id", "gone", "--pid", "1", "--repo-root", "/tmp"},
+           {"run", "end", "--run-id", "gone", "--status", "completed"},
+           {"run", "heartbeat", "--run-id", "gone", "--ttl", "600"},
+           {"context", "list", "--run", "1", "--json"},
+           {"context", "add", "--claim", "token", "--kind", "note", "--body", "x"},
+       }) {
+    INFO("argv " << argv.front() << " " << argv[1]);
+    auto const refused = run_verb(scratch, argv);
+    CHECK(refused.code == 1);
+    CHECK(refused.out.empty());
+    CHECK_FALSE(refused.err.empty());
   }
-  REQUIRE(run_verb(scratch, {"run", "start", "--plan", "1", "--workflow", "wf", "--run-id", "still-leased", "--ttl", "8h",
-                             "--repo-root", "/tmp"})
-              .code == 0);
-
-  auto const swept = run_verb(scratch, {"reconcile"});
-  CHECK(swept.code == 0);
-  CHECK(scalar_text(scratch, "select status from workflow_runs where run_identifier = 'lapsed'") == "abandoned");
-  CHECK(scalar_text(scratch, "select status from workflow_runs where run_identifier = 'still-leased'") == "running");
+  CHECK(scalar_text(scratch, "select count(*) from workflow_runs") == "0");
+  CHECK(scalar_text(scratch, "select count(*) from context_records") == "0");
 }
 
 TEST_CASE("reconcile --dry-run opens the database and writes nothing", "[cmd][agent][handlers]") {
@@ -598,7 +495,7 @@ TEST_CASE("reconcile --dry-run opens the database and writes nothing", "[cmd][ag
 
   auto const preview = run_verb(scratch, {"reconcile", "--dry-run"});
   CHECK(preview.code == 0);
-  CHECK(preview.out.starts_with("dry-run: 1 claim candidate(s), 0 run candidate(s)\n"));
+  CHECK(preview.out.starts_with("dry-run: 1 claim candidate(s)\n"));
   CHECK(scalar_text(scratch, "select status from agent_work_claims where id = 1") == "active");
   CHECK(scalar_text(scratch, "select status from tasks where id = 1") == "doing");
 
@@ -609,7 +506,7 @@ TEST_CASE("reconcile --dry-run opens the database and writes nothing", "[cmd][ag
   // PULLED claim's action is a `coder` row instead. The orphan sweep does
   // not fire either, because the owning session is still live. Written as
   // 1 first and corrected by the failure.
-  CHECK(applied.out == "reconciled: 1 claim(s) stale, 0 action(s) closed, 0 run(s) abandoned\n");
+  CHECK(applied.out == "reconciled: 1 claim(s) stale, 0 action(s) closed\n");
   CHECK(scalar_text(scratch, "select status from agent_work_claims where id = 1") == "stale");
   CHECK(scalar_text(scratch, "select status from tasks where id = 1") == "todo");
 }
@@ -640,245 +537,6 @@ TEST_CASE("completing a CHILD plan's last task rolls the plan up to done", "[cmd
   // The anchor above it is untouched — `recompute_status` is documented as
   // single-plan and never walks `parent_plan_id`.
   CHECK(scalar_text(scratch, "select status from plans where id = 1") == "active");
-}
-
-TEST_CASE("dispatch preview freezes state and confirm spends it once", "[cmd][agent][routing]") {
-  scratch_dir scratch;
-  seed(scratch, 1);
-  {
-    auto conn = planar::db::connection::open(scratch.db_path().string());
-    REQUIRE(conn.has_value());
-    REQUIRE(conn->execute("insert into projects (slug,name) values ('routing-project','Routing Project')").has_value());
-    REQUIRE(conn->execute("insert into routing_candidates (vendor,candidate_id,fallback_order) values ('codex','candidate',0)")
-                .has_value());
-  }
-  auto const preview = run_verb(scratch, {"dispatch",
-                                          "preview",
-                                          "--task",
-                                          "1",
-                                          "--work-item",
-                                          "w-1",
-                                          "--project",
-                                          "1",
-                                          "--validation-policy",
-                                          "v1",
-                                          "--routing-policy",
-                                          "r1",
-                                          "--profile-rule",
-                                          "p1",
-                                          "--vendor",
-                                          "codex",
-                                          "--role",
-                                          "coder",
-                                          "--tier",
-                                          "medium",
-                                          "--work-type",
-                                          "feature",
-                                          "--complexity",
-                                          "high-risk",
-                                          "--packet-digest",
-                                          "packet",
-                                          "--profile-digest",
-                                          "profile",
-                                          "--policy-digest",
-                                          "policy",
-                                          "--capability-digest",
-                                          "capability",
-                                          "--candidate",
-                                          "1",
-                                          "--host",
-                                          "host",
-                                          "--class",
-                                          "default",
-                                          "--evidence-state",
-                                          "evidential",
-                                          "--expires-at",
-                                          "2099-01-01T00:00:00Z",
-                                          "--json"});
-  REQUIRE(preview.code == 0);
-  auto const token   = scalar_text(scratch, "select preview_token from routing_dispatch_previews where id = 1");
-  auto const confirm = run_verb(scratch, {"dispatch",
-                                          "confirm",
-                                          "--token",
-                                          token,
-                                          "--dispatch-key",
-                                          "dispatch-1",
-                                          "--now",
-                                          "2026-01-01T00:00:00Z",
-                                          "--packet-digest",
-                                          "packet",
-                                          "--profile-digest",
-                                          "profile",
-                                          "--policy-digest",
-                                          "policy",
-                                          "--capability-digest",
-                                          "capability",
-                                          "--candidate",
-                                          "1",
-                                          "--vendor",
-                                          "codex",
-                                          "--role",
-                                          "coder",
-                                          "--tier",
-                                          "medium",
-                                          "--work-type",
-                                          "feature",
-                                          "--complexity",
-                                          "high-risk",
-                                          "--validation-policy",
-                                          "v1",
-                                          "--routing-policy",
-                                          "r1",
-                                          "--json"});
-  INFO(confirm.err);
-  REQUIRE(confirm.code == 0);
-  CHECK(scalar_text(scratch, "select count(*) from routing_dispatch_snapshots") == "1");
-  CHECK(scalar_text(scratch, "select consumed_dispatch_id from routing_dispatch_previews where id = 1") == "1");
-  auto const replay = run_verb(scratch, {"dispatch",
-                                         "confirm",
-                                         "--token",
-                                         token,
-                                         "--dispatch-key",
-                                         "dispatch-2",
-                                         "--now",
-                                         "2026-01-01T00:00:00Z",
-                                         "--packet-digest",
-                                         "packet",
-                                         "--profile-digest",
-                                         "profile",
-                                         "--policy-digest",
-                                         "policy",
-                                         "--capability-digest",
-                                         "capability",
-                                         "--candidate",
-                                         "1",
-                                         "--vendor",
-                                         "codex",
-                                         "--role",
-                                         "coder",
-                                         "--tier",
-                                         "medium",
-                                         "--work-type",
-                                         "feature",
-                                         "--complexity",
-                                         "standard",
-                                         "--validation-policy",
-                                         "v1",
-                                         "--routing-policy",
-                                         "r1"});
-  CHECK(replay.code == 1);
-  CHECK(replay.err == "error: stale_preview: already_consumed\n");
-  CHECK(scalar_text(scratch, "select count(*) from routing_dispatch_snapshots") == "1");
-  // Wire spelling is hyphenated; accepting the internal enum spelling would
-  // leak an implementation detail into the public CLI contract.
-  auto const internal_spelling = run_verb(scratch, {"dispatch",
-                                                    "confirm",
-                                                    "--token",
-                                                    token,
-                                                    "--dispatch-key",
-                                                    "bad",
-                                                    "--now",
-                                                    "2026-01-01T00:00:00Z",
-                                                    "--packet-digest",
-                                                    "packet",
-                                                    "--profile-digest",
-                                                    "profile",
-                                                    "--policy-digest",
-                                                    "policy",
-                                                    "--capability-digest",
-                                                    "capability",
-                                                    "--candidate",
-                                                    "1",
-                                                    "--vendor",
-                                                    "codex",
-                                                    "--role",
-                                                    "coder",
-                                                    "--tier",
-                                                    "medium",
-                                                    "--work-type",
-                                                    "feature",
-                                                    "--complexity",
-                                                    "high_risk",
-                                                    "--validation-policy",
-                                                    "v1",
-                                                    "--routing-policy",
-                                                    "r1"});
-  CHECK(internal_spelling.code == 2);
-  routing::binding replay_binding{};
-  CHECK(routing::classify_stale(replay_binding, replay_binding, "2099-01-01T00:00:00Z", true, "2026-01-01T00:00:00Z") ==
-        routing::stale_reason::already_consumed);
-}
-
-TEST_CASE("dispatch confirm names every frozen binding drift and writes nothing", "[cmd][agent][routing]") {
-  struct mutation {
-    std::string_view                                     name;
-    routing::stale_reason                                reason;
-    std::function<void(routing::binding&, std::string&)> apply;
-  };
-  std::vector<mutation> cases{
-      {"expired", routing::stale_reason::expired, [](auto&, auto& now) { now = "2100-01-01T00:00:00Z"; }},
-      {"packet", routing::stale_reason::packet_changed, [](auto& b, auto&) { b.packet_digest = "other"; }},
-      {"profile", routing::stale_reason::profile_changed, [](auto& b, auto&) { b.profile_digest = "other"; }},
-      {"policy", routing::stale_reason::policy_changed, [](auto& b, auto&) { b.policy_digest = "other"; }},
-      {"capability", routing::stale_reason::capability_changed, [](auto& b, auto&) { b.capability_digest = "other"; }},
-      {"vendor", routing::stale_reason::cohort_changed, [](auto& b, auto&) { b.vendor = "other"; }},
-      {"role", routing::stale_reason::cohort_changed, [](auto& b, auto&) { b.role = "reviewer"; }},
-      {"tier", routing::stale_reason::cohort_changed, [](auto& b, auto&) { b.tier = "large"; }},
-      {"work type", routing::stale_reason::cohort_changed, [](auto& b, auto&) { b.work_type = "engine"; }},
-      {"complexity", routing::stale_reason::cohort_changed, [](auto& b, auto&) { b.complexity = "bounded"; }},
-      {"candidate", routing::stale_reason::candidate_changed, [](auto& b, auto&) { b.candidate_id = 2; }},
-      {"claim token", routing::stale_reason::claim_changed, [](auto& b, auto&) { b.claim = "other"; }},
-      {"claim status", routing::stale_reason::claim_changed, [](auto& b, auto&) { b.claim_status = "released"; }},
-  };
-  for (auto const& item : cases) {
-    scratch_dir scratch;
-    auto        conn = planar::db::connection::open(scratch.db_path().string());
-    REQUIRE(conn);
-    REQUIRE(planar::db::apply_all(*conn));
-    REQUIRE(conn->execute("insert into projects (slug,name) values ('p','p')"));
-    REQUIRE(conn->execute(
-        "insert into routing_candidates (vendor,candidate_id,fallback_order) values ('codex','one',0),('codex','two',1)"));
-    routing::binding bound{.work_item         = "w",
-                           .validation_policy = "v",
-                           .routing_policy    = "r",
-                           .profile_rule      = "p",
-                           .vendor            = "codex",
-                           .role              = "coder",
-                           .tier              = "medium",
-                           .work_type         = "feature",
-                           .complexity        = "standard",
-                           .project_id        = 1,
-                           .candidate_id      = 1,
-                           .packet_digest     = "packet",
-                           .profile_digest    = "profile",
-                           .policy_digest     = "policy",
-                           .capability_digest = "capability",
-                           .host              = "host",
-                           .assignment_class  = "default",
-                           .evidence_state    = "evidential",
-                           .claim             = "claim",
-                           .claim_status      = "active"};
-    auto             preview = routing::preview(*conn, bound, "2099-01-01T00:00:00Z");
-    REQUIRE(preview);
-    if (item.name == "expired")
-      CHECK(routing::classify_stale(bound, bound, "2099-01-01T00:00:00Z", true, "2026-01-01T00:00:00Z") ==
-            routing::stale_reason::already_consumed);
-    auto        current = bound;
-    std::string now{"2026-01-01T00:00:00Z"};
-    item.apply(current, now);
-    routing::stale_reason why{};
-    auto confirmed = routing::confirm(*conn, preview->token, "dispatch", current, now, "required", "confirmed", &why);
-    INFO(item.name);
-    REQUIRE_FALSE(confirmed);
-    CHECK(confirmed.error() == routing::error::stale_preview);
-    CHECK(why == item.reason);
-    auto stmt = conn->prepare(
-        "select consumed_at is null, (select count(*) from routing_dispatch_snapshots) from routing_dispatch_previews");
-    REQUIRE(stmt);
-    REQUIRE(stmt->step());
-    CHECK(stmt->column_int64(0) == 1);
-    CHECK(stmt->column_int64(1) == 0);
-  }
 }
 
 // ===========================================================================
@@ -920,173 +578,6 @@ TEST_CASE("a caller-supervised claim takes the ritual exactly as before", "[cmd]
                              "'supervisor_override')") == "0");
 }
 
-TEST_CASE("claim-associate hands a claim to the engine one way, idempotently by attempt", "[cmd][agent][supervision][6488]") {
-  scratch_dir scratch;
-  auto const  token = pulled(scratch, 1);
-
-  auto const first =
-      run_verb(scratch, {"claim-associate", "--claim", token, "--supervisor", "engine", "--attempt", "A1", "--json"});
-  REQUIRE(first.code == 0);
-  CHECK(first.out == std::format(R"({{"ok":true,"claim_token":"{}","supervisor":"engine","attempt_id":"A1","changed":true}})"
-                                 "\n",
-                                 token));
-  CHECK(scalar_text(scratch, "select supervisor || ':' || attempt_id from agent_work_claims where id = 1") == "engine:A1");
-  CHECK(actions_of(scratch, "claim_associate") == "1");
-
-  // Same attempt again: success, nothing written.
-  auto const repeat =
-      run_verb(scratch, {"claim-associate", "--claim", token, "--supervisor", "engine", "--attempt", "A1", "--json"});
-  REQUIRE(repeat.code == 0);
-  CHECK(repeat.out.contains(R"("changed":false)"));
-  CHECK(actions_of(scratch, "claim_associate") == "1");
-
-  // A new attempt moves the claim and logs exactly one more row.
-  REQUIRE(run_verb(scratch, {"claim-associate", "--claim", token, "--supervisor", "engine", "--attempt", "A2"}).code == 0);
-  CHECK(scalar_text(scratch, "select attempt_id from agent_work_claims where id = 1") == "A2");
-  CHECK(actions_of(scratch, "claim_associate") == "2");
-
-  // One way: never back to the caller.
-  auto const back = run_verb(scratch, {"claim-associate", "--claim", token, "--supervisor", "caller"});
-  CHECK(back.code == 1);
-  CHECK(back.err == "error: claim-associate: SupervisorMismatch\n");
-  CHECK(scalar_text(scratch, "select supervisor from agent_work_claims where id = 1") == "engine");
-
-  // The first attempt is now a stranger to this claim.
-  auto const stale =
-      run_verb(scratch, {"complete", "--claim", token, "--as", "engine", "--attempt", "A1", "--no-locality-probe"});
-  CHECK(stale.code == 1);
-  CHECK(stale.err == "error: complete: AttemptMismatch\n");
-  CHECK(scalar_text(scratch, "select status from agent_work_claims where id = 1") == "active");
-}
-
-TEST_CASE("on an engine claim the caller may report status but not extend the lease or terminate",
-          "[cmd][agent][supervision][6488]") {
-  scratch_dir scratch;
-  auto const  token = pulled(scratch, 1);
-  REQUIRE(run_verb(scratch, {"claim-associate", "--claim", token, "--supervisor", "engine", "--attempt", "A1"}).code == 0);
-  auto const lease = scalar_text(scratch, "select lease_expires_at from agent_work_claims where id = 1");
-
-  for (auto const& verb : std::vector<std::vector<std::string>>{
-           {"complete", "--claim", token, "--no-locality-probe"},
-           {"fail", "--claim", token, "--reason", "r", "--no-locality-probe"},
-           {"release", "--claim", token, "--no-locality-probe"},
-           {"block", "--claim", token, "--blocker", "1", "--no-locality-probe"},
-           {"heartbeat", "--claim", token},
-           {"heartbeat", "--claim", token, "--status", "s", "--ttl", "1h"},
-       }) {
-    INFO(verb.front());
-    auto const refused = run_verb(scratch, verb);
-    CHECK(refused.code == 1);
-    CHECK(refused.err == std::format("error: {}: SupervisorMismatch\n", verb.front()));
-  }
-  // Nothing moved: claim live, task doing, lease untouched.
-  CHECK(scalar_text(scratch, "select status from agent_work_claims where id = 1") == "active");
-  CHECK(scalar_text(scratch, "select status from tasks where id = 1") == "doing");
-  CHECK(scalar_text(scratch, "select lease_expires_at from agent_work_claims where id = 1") == lease);
-
-  // A status report lands, and still leaves the lease alone.
-  REQUIRE(run_verb(scratch, {"heartbeat", "--claim", token, "--status", "editing foo"}).code == 0);
-  CHECK(scalar_text(scratch, "select summary from agent_actions where claim_id = 1 and action_kind = 'heartbeat'") ==
-        "editing foo");
-  CHECK(scalar_text(scratch, "select lease_expires_at from agent_work_claims where id = 1") == lease);
-
-  // The engine, under its attempt, does extend it.
-  CHECK(run_verb(scratch, {"heartbeat", "--claim", token, "--as", "engine", "--attempt", "A9"}).err ==
-        "error: heartbeat: AttemptMismatch\n");
-  REQUIRE(run_verb(scratch, {"heartbeat", "--claim", token, "--as", "engine", "--attempt", "A1", "--ttl", "2h"}).code == 0);
-  CHECK(scalar_text(scratch, "select lease_expires_at > '" + lease + "' from agent_work_claims where id = 1") == "1");
-}
-
-TEST_CASE("the engine's terminal verb lands once and replays as a no-op under the same attempt",
-          "[cmd][agent][supervision][6488]") {
-  scratch_dir scratch;
-  auto const  token = pulled(scratch, 1);
-  REQUIRE(run_verb(scratch, {"claim-associate", "--claim", token, "--supervisor", "engine", "--attempt", "A1"}).code == 0);
-
-  auto const done = run_verb(scratch, {"complete", "--claim", token, "--as", "engine", "--attempt", "A1", "--no-locality-probe"});
-  REQUIRE(done.code == 0);
-  CHECK(scalar_text(scratch, "select status from agent_work_claims where id = 1") == "completed");
-  CHECK(scalar_text(scratch, "select status from tasks where id = 1") == "done");
-  CHECK(actions_of(scratch, "claim_terminal") == "1");
-  auto const rows = scalar_text(scratch, "select count(*) from agent_actions");
-
-  // Replay (post-crash reconciliation re-issuing the verb): exit 0, the same
-  // envelope, and not one row written.
-  auto const replay =
-      run_verb(scratch, {"complete", "--claim", token, "--as", "engine", "--attempt", "A1", "--no-locality-probe"});
-  CHECK(replay.code == 0);
-  CHECK(replay.out == done.out);
-  CHECK(scalar_text(scratch, "select count(*) from agent_actions") == rows);
-  CHECK(actions_of(scratch, "claim_terminal") == "1");
-
-  // Another attempt is refused, terminal claim or not.
-  auto const other =
-      run_verb(scratch, {"complete", "--claim", token, "--as", "engine", "--attempt", "A2", "--no-locality-probe"});
-  CHECK(other.code == 1);
-  CHECK(other.err == "error: complete: AttemptMismatch\n");
-}
-
-TEST_CASE("an engine verb on a caller claim is refused, and an operator override is logged", "[cmd][agent][supervision][6488]") {
-  scratch_dir scratch;
-  auto const  token = pulled(scratch, 2);
-
-  // The engine cannot act on a claim it was never handed.
-  auto const foreign =
-      run_verb(scratch, {"release", "--claim", token, "--as", "engine", "--attempt", "A1", "--no-locality-probe"});
-  CHECK(foreign.code == 1);
-  CHECK(foreign.err == "error: release: SupervisorMismatch\n");
-  CHECK(run_verb(scratch, {"heartbeat", "--claim", token, "--as", "engine", "--attempt", "A1"}).err ==
-        "error: heartbeat: SupervisorMismatch\n");
-
-  REQUIRE(run_verb(scratch, {"claim-associate", "--claim", token, "--supervisor", "engine", "--attempt", "A1"}).code == 0);
-  REQUIRE(run_verb(scratch, {"release", "--claim", token, "--override-supervisor", "--no-locality-probe"}).code == 0);
-  CHECK(scalar_text(scratch, "select status from agent_work_claims where id = 1") == "released");
-  CHECK(scalar_text(scratch, "select status from tasks where id = 1") == "todo");
-  CHECK(actions_of(scratch, "supervisor_override") == "1");
-  CHECK(scalar_text(scratch, "select summary from agent_actions where action_kind = 'supervisor_override'") ==
-        "release by caller overriding the engine supervisor (attempt A1)");
-  CHECK(actions_of(scratch, "claim_terminal") == "0");
-}
-
-TEST_CASE("supervision flags are cross-checked before anything is written", "[cmd][agent][supervision][6488]") {
-  scratch_dir scratch;
-  auto const  token = pulled(scratch, 1);
-  struct refusal {
-    std::vector<std::string> argv;
-    std::string              err;
-  };
-  for (auto const& r : std::vector<refusal>{
-           {{"complete", "--claim", token, "--as", "engine"}, "error: --as engine requires --attempt <id>\n"},
-           {{"complete", "--claim", token, "--attempt", "A1"}, "error: --attempt applies only with --as engine\n"},
-           {{"complete", "--claim", token, "--as", "engine", "--attempt", "A1", "--override-supervisor"},
-            "error: --override-supervisor is for the caller; it cannot be combined with --as engine\n"},
-           {{"claim-associate", "--claim", token},
-            "error: claim-associate needs --run <id>, --supervisor <caller|engine>, or both\n"},
-           {{"claim-associate", "--claim", token, "--supervisor", "engine"},
-            "error: --supervisor engine requires --attempt <id>\n"},
-           {{"claim-associate", "--claim", token, "--supervisor", "caller", "--attempt", "A1"},
-            "error: --attempt applies only with --supervisor engine\n"},
-           {{"action", "start", "--claim", token, "--kind", "claim_terminal"},
-            "error: action kind 'claim_terminal' is written only by the supervised claim verbs, not by action start\n"},
-       }) {
-    INFO(r.argv.front());
-    auto const got = run_verb(scratch, r.argv);
-    CHECK(got.code == 2);
-    CHECK(got.err == r.err);
-  }
-  CHECK(scalar_text(scratch, "select supervisor || ':' || status from agent_work_claims where id = 1") == "caller:active");
-  // `pull --role` never mints a supervision row either: an unrecognised or
-  // supervision role degrades to `coder`.
-  scratch_dir other;
-  seed(other, 1);
-  REQUIRE(run_verb(other, {"pull", "1", "--role", "claim_terminal", "--no-locality-probe"}).code == 0);
-  CHECK(scalar_text(other, "select action_kind from agent_actions where id = 1") == "coder");
-}
-
-// ===========================================================================
-// Reconcile and abort leave engine-supervised work alone (task 6489)
-// ===========================================================================
-
 namespace {
 
 /// @brief Run one write against the scratch database.
@@ -1096,89 +587,117 @@ auto write_sql(scratch_dir const& scratch, std::string_view sql) -> void {
   REQUIRE(conn->execute(sql).has_value());
 }
 
-/// @brief Two pulled tasks, claim 1 handed to the engine under A1, both
-/// leases expired; two running workflow runs with dead pids, one per
-/// engine. No CLI verb can yet expire a lease on demand or mint a
-/// `centurion` run (the host lands in M2), so those two facts are set in SQL.
-auto lapsed_pair(scratch_dir const& scratch) -> void {
-  seed(scratch, 2);
-  REQUIRE(run_verb(scratch, {"pull", "1", "--no-locality-probe"}).code == 0);
-  REQUIRE(run_verb(scratch, {"pull", "1", "--no-locality-probe"}).code == 0);
-  auto const engine_token = scalar_text(scratch, "select claim_token from agent_work_claims where id = 1");
-  REQUIRE(run_verb(scratch, {"claim-associate", "--claim", engine_token, "--supervisor", "engine", "--attempt", "A1"}).code == 0);
-  write_sql(scratch, "update agent_work_claims set lease_expires_at = '2000-01-01T00:00:00.000Z'");
-  write_sql(scratch, "insert into workflow_runs (plan_id, workflow_name, run_identifier, pid, repo_root, engine) "
-                     "values (1, 'w', 'emb', -1, '/r', 'embedded'), (1, 'w', 'cent', -1, '/r', 'centurion')");
-}
-
 } // namespace
 
-TEST_CASE("reconcile skips engine claims and centurion runs, and still reconciles the caller's",
-          "[cmd][agent][supervision][6489]") {
+TEST_CASE("the removed engine, run and override spellings are refused as unknown flags and verbs",
+          "[cmd][agent][supervision][7454]") {
   scratch_dir scratch;
-  lapsed_pair(scratch);
+  auto const  token = pulled(scratch, 1);
 
-  auto const swept = run_verb(scratch, {"reconcile", "--json"});
-  REQUIRE(swept.code == 0);
-  auto const engine_token = scalar_text(scratch, "select claim_token from agent_work_claims where id = 1");
-  CHECK(swept.out == std::format(R"({{"ok":true,"claims_marked_stale":1,"actions_closed":0,"runs_abandoned":1,)"
-                                 R"("skipped_engine_claims":[{{"kind":"task","id":1,"claim_token":"{}"}}],)"
-                                 R"("skipped_engine_runs":[{{"id":2,"run_identifier":"cent","pid":-1}}]}})"
-                                 "\n",
-                                 engine_token));
-  // The engine's claim, task and run are untouched...
+  auto const engine_complete =
+      run_verb(scratch, {"complete", "--claim", token, "--as", "engine", "--attempt", "A1", "--no-locality-probe"});
+  CHECK(engine_complete.code == 1);
+  CHECK(engine_complete.err.find("--as") != std::string::npos);
+
+  auto const staged = run_verb(scratch, {"claim", "--entity", "task:1", "--run", "1", "--stage", "code"});
+  CHECK(staged.code == 1);
+  CHECK(staged.err.find("--run") != std::string::npos);
+
+  auto const pulled_stage = run_verb(scratch, {"pull", "1", "--stage", "code"});
+  CHECK(pulled_stage.code == 1);
+  CHECK(pulled_stage.err.find("--stage") != std::string::npos);
+
+  auto const associate = run_verb(scratch, {"claim-associate", "--claim", token, "--supervisor", "engine", "--attempt", "A1"});
+  CHECK(associate.code == 1);
+  CHECK(associate.err.find("claim-associate") != std::string::npos);
+
+  auto const overridden = run_verb(scratch, {"release", "--claim", token, "--override-supervisor", "--no-locality-probe"});
+  CHECK(overridden.code == 1);
+
+  // Nothing was written by any of the refused calls.
   CHECK(scalar_text(scratch, "select status from agent_work_claims where id = 1") == "active");
-  CHECK(scalar_text(scratch, "select status from tasks where id = 1") == "doing");
-  CHECK(scalar_text(scratch, "select status from workflow_runs where run_identifier = 'cent'") == "running");
-  // ...while the caller's claim and the embedded run are reconciled as before.
-  CHECK(scalar_text(scratch, "select status from agent_work_claims where id = 2") == "stale");
-  CHECK(scalar_text(scratch, "select status from tasks where id = 2") == "todo");
-  CHECK(scalar_text(scratch, "select status from workflow_runs where run_identifier = 'emb'") == "abandoned");
-
-  // --override-supervisor takes them over, and says so.
-  auto const taken = run_verb(scratch, {"reconcile", "--override-supervisor"});
-  REQUIRE(taken.code == 0);
-  CHECK(taken.out == "reconciled: 1 claim(s) stale, 0 action(s) closed, 1 run(s) abandoned\n");
-  CHECK(scalar_text(scratch, "select status from agent_work_claims where id = 1") == "stale");
-  CHECK(scalar_text(scratch, "select status from tasks where id = 1") == "todo");
-  CHECK(scalar_text(scratch, "select status from workflow_runs where run_identifier = 'cent'") == "abandoned");
-  CHECK(scalar_text(scratch, "select summary from agent_actions where action_kind = 'supervisor_override'") ==
-        "reconcile by operator overriding the engine supervisor (attempt A1)");
+  CHECK(scalar_text(scratch, "select count(*) from agent_actions where action_kind in ('claim_associate', 'claim_terminal', "
+                             "'supervisor_override')") == "0");
 }
 
-TEST_CASE("a caller-only reconcile prints exactly what it always did", "[cmd][agent][supervision][6489]") {
+TEST_CASE("heartbeat refuses --as and --attempt as unknown flags, writing nothing", "[cmd][agent][supervision][7458]") {
+  // Task 7458 removed the engine-supervision flags from heartbeat. Both
+  // spellings are unknown flags to the parser (exit 1), not the old
+  // cross-check refusals (exit 2), and no heartbeat row or lease change
+  // follows from either.
+  scratch_dir scratch;
+  auto const  token        = pulled(scratch, 1);
+  auto const  lease_before = scalar_text(scratch, "select lease_expires_at from agent_work_claims where id = 1");
+  auto const  beats_before = scalar_text(scratch, "select count(*) from agent_actions where action_kind = 'heartbeat'");
+
+  auto const as_engine = run_verb(scratch, {"heartbeat", "--claim", token, "--as", "engine", "--attempt", "A1"});
+  CHECK(as_engine.code == 1);
+  CHECK(as_engine.err.find("--as") != std::string::npos);
+  CHECK(as_engine.out.empty());
+
+  auto const attempt_only = run_verb(scratch, {"heartbeat", "--claim", token, "--attempt", "A1"});
+  CHECK(attempt_only.code == 1);
+  CHECK(attempt_only.err.find("--attempt") != std::string::npos);
+  CHECK(attempt_only.out.empty());
+
+  CHECK(scalar_text(scratch, "select status from agent_work_claims where id = 1") == "active");
+  CHECK(scalar_text(scratch, "select lease_expires_at from agent_work_claims where id = 1") == lease_before);
+  CHECK(scalar_text(scratch, "select count(*) from agent_actions where action_kind = 'heartbeat'") == beats_before);
+}
+
+TEST_CASE("a legacy engine-supervised claim heartbeats and completes like an ordinary claim",
+          "[cmd][agent][supervision][7454][7458]") {
+  scratch_dir scratch;
+  auto const  token = pulled(scratch, 1);
+  // A row written before the removal: handed to the engine under attempt A1.
+  write_sql(scratch, "update agent_work_claims set supervisor = 'engine', attempt_id = 'A1' where id = 1");
+
+  // The caller of a legacy engine claim heartbeats it like any ordinary claim:
+  // a status report is recorded, and a TTL extends the lease.
+  auto const lease_before = scalar_text(scratch, "select lease_expires_at from agent_work_claims where id = 1");
+  CHECK(run_verb(scratch, {"heartbeat", "--claim", token, "--status", "still here"}).code == 0);
+  CHECK(actions_of(scratch, "heartbeat") == "1");
+  // Four hours: longer than the two-hour default lease the pull above took.
+  CHECK(run_verb(scratch, {"heartbeat", "--claim", token, "--ttl", "4h"}).code == 0);
+  auto const lease_after = scalar_text(scratch, "select lease_expires_at from agent_work_claims where id = 1");
+  CHECK(lease_after > lease_before);
+  CHECK(scalar_text(scratch, "select status from agent_work_claims where id = 1") == "active");
+  // The terminal verbs no longer consult the supervisor column at all.
+  auto const done = run_verb(scratch, {"complete", "--claim", token, "--no-locality-probe"});
+  CHECK(done.code == 0);
+  CHECK(scalar_text(scratch, "select status from agent_work_claims where id = 1") == "completed");
+  CHECK(scalar_text(scratch, "select status from tasks where id = 1") == "done");
+  CHECK(actions_of(scratch, "claim_terminal") == "0");
+}
+
+TEST_CASE("abort takes a legacy engine-supervised claim with no override", "[cmd][agent][supervision][7454]") {
+  scratch_dir scratch;
+  auto const  token = pulled(scratch, 1);
+  write_sql(scratch, "update agent_work_claims set supervisor = 'engine', attempt_id = 'A1' where id = 1");
+
+  auto const aborted = run_verb(scratch, {"abort", "--claim", token, "--reason", "operator recovery"});
+  CHECK(aborted.code == 0);
+  CHECK(scalar_text(scratch, "select status from agent_work_claims where id = 1") == "aborted");
+  CHECK(actions_of(scratch, "supervisor_override") == "0");
+}
+
+TEST_CASE("reconcile sweeps an expired legacy engine-supervised claim like any other", "[cmd][agent][supervision][7454]") {
   scratch_dir scratch;
   seed(scratch, 1);
   REQUIRE(run_verb(scratch, {"pull", "1", "--no-locality-probe"}).code == 0);
-  write_sql(scratch, "update agent_work_claims set lease_expires_at = '2000-01-01T00:00:00.000Z'");
+  write_sql(scratch, "update agent_work_claims set supervisor = 'engine', attempt_id = 'A1', "
+                     "lease_expires_at = '2000-01-01T00:00:00.000Z' where id = 1");
+
+  auto const preview = run_verb(scratch, {"reconcile", "--dry-run"});
+  CHECK(preview.out == "dry-run: 1 claim candidate(s)\n  task:1 token:" +
+                           scalar_text(scratch, "select claim_token from agent_work_claims where id = 1") + "\n");
+
   auto const swept = run_verb(scratch, {"reconcile", "--json"});
-  REQUIRE(swept.code == 0);
-  CHECK(swept.out == R"({"ok":true,"claims_marked_stale":1,"actions_closed":0,"runs_abandoned":0})"
+  CHECK(swept.code == 0);
+  CHECK(swept.out == R"({"ok":true,"claims_marked_stale":1,"actions_closed":0})"
                      "\n");
-  CHECK(run_verb(scratch, {"reconcile", "--dry-run"}).out == "dry-run: 0 claim candidate(s), 0 run candidate(s)\n");
+  CHECK(scalar_text(scratch, "select status from agent_work_claims where id = 1") == "stale");
 }
-
-TEST_CASE("abort refuses an engine claim unless overridden, and logs the override", "[cmd][agent][supervision][6489]") {
-  scratch_dir scratch;
-  auto const  token = pulled(scratch, 1);
-  REQUIRE(run_verb(scratch, {"claim-associate", "--claim", token, "--supervisor", "engine", "--attempt", "A1"}).code == 0);
-
-  auto const refused = run_verb(scratch, {"abort", "--claim", token});
-  CHECK(refused.code == 1);
-  CHECK(refused.err == "error: abort: SupervisorMismatch\n");
-  CHECK(scalar_text(scratch, "select status from agent_work_claims where id = 1") == "active");
-  CHECK(scalar_text(scratch, "select status from tasks where id = 1") == "doing");
-
-  REQUIRE(run_verb(scratch, {"abort", "--claim", token, "--override-supervisor"}).code == 0);
-  CHECK(scalar_text(scratch, "select status from agent_work_claims where id = 1") == "aborted");
-  CHECK(actions_of(scratch, "supervisor_override") == "1");
-  CHECK(scalar_text(scratch, "select summary from agent_actions where action_kind = 'supervisor_override'") ==
-        "abort by operator overriding the engine supervisor (attempt A1)");
-}
-
-// ===========================================================================
-// release of a plan / plan_step claim names no task (task 7118)
-// ===========================================================================
 
 TEST_CASE("release of a plan claim carries no task even when a task shares the plan's id", "[cmd][agent][terminal][7118]") {
   // `seed` makes plan 1 AND task 1 (title `t0`, an unrelated row that merely
@@ -1265,4 +784,670 @@ TEST_CASE("a heartbeat against a database it cannot write names the access probl
     CHECK(result.err.contains("read and write access"));
   }
   CHECK(with_status.out.contains(R"("tag":"QueryFailed")"));
+}
+
+// ===========================================================================
+// Readiness at claim time (plan 1142)
+// ===========================================================================
+
+namespace {
+
+/// Make task `from` depend on task `to`, so `from` is `blocked_by_open_task` while `to` is open.
+auto depends_on(const scratch_dir& scratch, int from, int to) -> void {
+  auto conn = planar::db::connection::open(scratch.db_path().string());
+  REQUIRE(conn.has_value());
+  REQUIRE(conn->execute(std::format("insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) "
+                                    "values ('task', {}, 'task', {}, 'depends-on')",
+                                    from, to))
+              .has_value());
+}
+
+/// Link a fresh open question to `task`, so it is `open_question_linked`.
+auto link_open_question(const scratch_dir& scratch, int task) -> void {
+  auto conn = planar::db::connection::open(scratch.db_path().string());
+  REQUIRE(conn.has_value());
+  REQUIRE(conn->execute(std::format("insert into questions (scope_kind, title, status) values ('global', 'q{}', 'open')", task))
+              .has_value());
+  REQUIRE(conn->execute(std::format("insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) "
+                                    "values ('task', {}, 'question', last_insert_rowid(), 'addresses')",
+                                    task))
+              .has_value());
+}
+
+} // namespace
+
+TEST_CASE("pull skips an unready first-by-priority task and claims the next ready one", "[cmd][agent][readiness][7482]") {
+  scratch_dir scratch;
+  seed(scratch, 3); // priorities 100, 101, 102
+  link_open_question(scratch, 1);
+
+  auto const pulled = run_verb(scratch, {"pull", "1", "--no-locality-probe", "--json"});
+  REQUIRE(pulled.code == 0);
+  CHECK(pulled.out.contains(R"("no_work":false)"));
+  CHECK(pulled.out.contains(R"("skipped_unready":1)"));
+  CHECK(pulled.out.contains(R"("unready":[{"task_id":1,"reasons":["open_question_linked"]}])"));
+  CHECK(scalar_text(scratch, "select status from tasks where id = 1") == "todo");
+  CHECK(scalar_text(scratch, "select status from tasks where id = 2") == "doing");
+  CHECK(scalar_text(scratch, "select count(*) from agent_work_claims where entity_id = 1") == "0");
+
+  // Text mode keeps stdout stable and names the skipped task on stderr.
+  auto const text = run_verb(scratch, {"pull", "1", "--no-locality-probe"});
+  REQUIRE(text.code == 0);
+  CHECK(text.out.starts_with("pulled task:3 "));
+  CHECK(text.err == "skipped 1 unready task(s): task:1 (open_question_linked)\n");
+}
+
+TEST_CASE("pull with only unready tasks returns no_work with the skipped count and writes nothing",
+          "[cmd][agent][readiness][7482]") {
+  scratch_dir scratch;
+  seed(scratch, 2);
+  link_open_question(scratch, 1);
+  link_open_question(scratch, 2);
+
+  auto const json = run_verb(scratch, {"pull", "1", "--no-locality-probe", "--json"});
+  CHECK(json.code == 0);
+  CHECK(json.out ==
+        "{\"ok\":true,\"no_work\":true,\"skipped_unready\":2,\"unready\":[{\"task_id\":1,\"reasons\":[\"open_question_linked\"]},"
+        "{\"task_id\":2,\"reasons\":[\"open_question_linked\"]}]}\n");
+
+  auto const text = run_verb(scratch, {"pull", "1", "--no-locality-probe"});
+  CHECK(text.code == 0);
+  CHECK(text.out == "no_work\n");
+  CHECK(text.err == "skipped 2 unready task(s): task:1 (open_question_linked); task:2 (open_question_linked)\n");
+
+  CHECK(scalar_text(scratch, "select count(*) from agent_work_claims") == "0");
+  CHECK(scalar_text(scratch, "select count(*) from agent_actions") == "0");
+  CHECK(scalar_text(scratch, "select count(*) from tasks where status = 'todo'") == "2");
+}
+
+TEST_CASE("claim refuses a blocked task, names the reason and --allow-unready, and writes nothing",
+          "[cmd][agent][readiness][7482]") {
+  scratch_dir scratch;
+  seed(scratch, 2);
+  depends_on(scratch, 1, 2);
+
+  auto const refused = run_verb(scratch, {"claim", "--entity", "task:1", "--no-locality-probe"});
+  CHECK(refused.code == 1);
+  CHECK(refused.out.empty());
+  CHECK(refused.err.starts_with("error: claim: task 1 is not ready: blocked_by_open_task\n"));
+  CHECK(refused.err.contains("blocked_by_open_task: finish the dependency"));
+  CHECK(refused.err.contains("planar-agent claim --entity task:1 --allow-unready"));
+  CHECK(scalar_text(scratch, "select status from tasks where id = 1") == "todo");
+  CHECK(scalar_text(scratch, "select count(*) from agent_work_claims") == "0");
+  CHECK(scalar_text(scratch, "select count(*) from agent_actions") == "0");
+
+  // `--json` carries the same refusal as an error envelope with a non-zero exit.
+  auto const json = run_verb(scratch, {"claim", "--entity", "task:1", "--no-locality-probe", "--json"});
+  CHECK(json.code == 1);
+  CHECK(json.out == "{\"error\":{\"verb\":\"claim\",\"tag\":\"TaskNotReady\"}}\n");
+
+  // A ready task is unaffected.
+  auto const ready = run_verb(scratch, {"claim", "--entity", "task:2", "--no-locality-probe"});
+  CHECK(ready.code == 0);
+}
+
+TEST_CASE("claim --allow-unready claims the task and writes exactly one audit action naming the reasons",
+          "[cmd][agent][readiness][7482]") {
+  scratch_dir scratch;
+  seed(scratch, 2);
+  depends_on(scratch, 1, 2);
+
+  auto const claimed = run_verb(scratch, {"claim", "--entity", "task:1", "--no-locality-probe", "--allow-unready"});
+  CHECK(claimed.code == 0);
+  CHECK(claimed.err.empty());
+  CHECK(scalar_text(scratch, "select status from tasks where id = 1") == "doing");
+  CHECK(scalar_text(scratch, "select count(*) from agent_work_claims where entity_id = 1 and status = 'active'") == "1");
+  CHECK(scalar_text(scratch, "select count(*) from agent_actions where metadata like '%unready_override%'") == "1");
+  CHECK(scalar_text(scratch, "select summary from agent_actions where metadata like '%unready_override%'") ==
+        "unready_override: blocked_by_open_task");
+  CHECK(scalar_text(scratch, "select metadata from agent_actions where metadata like '%unready_override%'") ==
+        R"({"unready_override":true,"reasons":["blocked_by_open_task"]})");
+
+  // A ready task claimed with the flag writes no audit action.
+  auto const ready = run_verb(scratch, {"claim", "--entity", "task:2", "--no-locality-probe", "--allow-unready"});
+  CHECK(ready.code == 0);
+  CHECK(scalar_text(scratch, "select count(*) from agent_actions where metadata like '%unready_override%'") == "1");
+}
+
+TEST_CASE("a live claim stays ClaimContention ahead of readiness", "[cmd][agent][readiness][7482]") {
+  scratch_dir scratch;
+  seed(scratch, 2);
+  REQUIRE(run_verb(scratch, {"claim", "--entity", "task:1", "--no-locality-probe"}).code == 0);
+  depends_on(scratch, 1, 2);
+
+  auto const again = run_verb(scratch, {"claim", "--entity", "task:1", "--no-locality-probe"});
+  CHECK(again.code == 1);
+  CHECK(again.err.contains("ClaimContention"));
+  CHECK_FALSE(again.err.contains("not ready"));
+}
+
+// ===========================================================================
+// Recovery readiness: a doing task under a lapsed claim (plan 1142)
+// ===========================================================================
+
+namespace {
+
+/// Run one SQL statement against the scratch database.
+auto exec_sql(const scratch_dir& scratch, std::string_view sql) -> void {
+  auto conn = planar::db::connection::open(scratch.db_path().string());
+  REQUIRE(conn.has_value());
+  REQUIRE(conn->execute(sql).has_value());
+}
+
+/// The packet's verdict for `task_id`, read through the engine.
+auto packet_ready(const scratch_dir& scratch, std::int64_t task_id) -> bool {
+  auto conn = planar::db::connection::open(scratch.db_path().string());
+  REQUIRE(conn.has_value());
+  auto const assembled = packet::assemble_task(*conn, task_id);
+  REQUIRE(assembled.has_value());
+  return assembled->ready();
+}
+
+/// The `plan next` bucket for `task_id` on plan 1, or nullopt when it is not listed.
+auto next_bucket(const scratch_dir& scratch, std::int64_t task_id) -> std::optional<aa::next_work_bucket> {
+  auto conn = planar::db::connection::open(scratch.db_path().string());
+  REQUIRE(conn.has_value());
+  auto const rows = aa::next_work(*conn, 1);
+  REQUIRE(rows.has_value());
+  for (auto const& row : *rows) {
+    if (row.task_id == task_id) {
+      return row.bucket;
+    }
+  }
+  return std::nullopt;
+}
+
+} // namespace
+
+TEST_CASE("a doing task under an expired claim is ready and recoverable without --allow-unready",
+          "[cmd][agent][readiness][recovery][7483]") {
+  scratch_dir scratch;
+  seed(scratch, 1);
+  REQUIRE(run_verb(scratch, {"claim", "--entity", "task:1", "--no-locality-probe"}).code == 0);
+  CHECK(scalar_text(scratch, "select status from tasks where id = 1") == "doing");
+
+  // A live claim: the task is not ready, it is listed as claimed, and a second claim is contention.
+  CHECK_FALSE(packet_ready(scratch, 1));
+  CHECK(next_bucket(scratch, 1) == aa::next_work_bucket::claimed);
+  auto const contended = run_verb(scratch, {"claim", "--entity", "task:1", "--no-transition", "--no-locality-probe"});
+  CHECK(contended.code == 1);
+  CHECK(contended.err.contains("ClaimContention"));
+  CHECK_FALSE(contended.err.contains("not ready"));
+
+  // The lease lapses: the task becomes ready for recovery and plan next still lists it.
+  exec_sql(scratch, "update agent_work_claims set lease_expires_at = '2000-01-01T00:00:00.000Z' where id = 1");
+  CHECK(packet_ready(scratch, 1));
+  CHECK(next_bucket(scratch, 1) == aa::next_work_bucket::stale);
+
+  // The documented lapsed-claim recovery: re-claim without a transition, no override, then complete.
+  auto const recovered = run_verb(scratch, {"claim", "--entity", "task:1", "--no-transition", "--no-locality-probe"});
+  REQUIRE(recovered.code == 0);
+  CHECK(recovered.err.empty());
+  CHECK(scalar_text(scratch, "select count(*) from agent_actions where metadata like '%unready_override%'") == "0");
+  // The lapsed row stays `active` until reconcile sweeps it, so the NEW token is the newest row's.
+  auto const token = scalar_text(scratch, "select claim_token from agent_work_claims order by id desc limit 1");
+  CHECK(scalar_text(scratch, "select count(*) from agent_work_claims") == "2");
+  auto const done = run_verb(scratch, {"complete", "--claim", token, "--summary", "recovered"});
+  INFO(done.err);
+  CHECK(done.code == 0);
+  CHECK(done.out == "ok task:1 status:done claim_status:completed\n");
+  CHECK(scalar_text(scratch, "select status from tasks where id = 1") == "done");
+}
+
+TEST_CASE("a stale-marked claim counts as stale for recovery readiness", "[cmd][agent][readiness][recovery][7483]") {
+  scratch_dir scratch;
+  seed(scratch, 1);
+  REQUIRE(run_verb(scratch, {"claim", "--entity", "task:1", "--no-locality-probe"}).code == 0);
+  CHECK_FALSE(packet_ready(scratch, 1));
+
+  // `reconcile` marks a lapsed claim stale; the lease value is irrelevant once the status is stale.
+  exec_sql(scratch, "update agent_work_claims set status = 'stale' where id = 1");
+  CHECK(packet_ready(scratch, 1));
+  CHECK(next_bucket(scratch, 1) == aa::next_work_bucket::stale);
+
+  auto const recovered = run_verb(scratch, {"claim", "--entity", "task:1", "--no-transition", "--no-locality-probe"});
+  CHECK(recovered.code == 0);
+  CHECK(recovered.err.empty());
+}
+
+TEST_CASE("a plain claim of a doing task under a lapsed claim keeps its IllegalTransition refusal",
+          "[cmd][agent][readiness][recovery][7483]") {
+  scratch_dir scratch;
+  seed(scratch, 1);
+  REQUIRE(run_verb(scratch, {"claim", "--entity", "task:1", "--no-locality-probe"}).code == 0);
+  exec_sql(scratch, "update agent_work_claims set lease_expires_at = '2000-01-01T00:00:00.000Z' where id = 1");
+
+  auto const plain = run_verb(scratch, {"claim", "--entity", "task:1", "--no-locality-probe"});
+  CHECK(plain.code != 0);
+  CHECK(plain.err.contains("IllegalTransition"));
+  CHECK(scalar_text(scratch, "select count(*) from agent_work_claims where status = 'active'") == "1");
+}
+
+// ===========================================================================
+// pull --model and claim --parent-action (plan 1142)
+// ===========================================================================
+
+TEST_CASE("pull --model records the model verbatim on the claim and the dispatch action", "[cmd][agent][flags][7485]") {
+  scratch_dir scratch;
+  seed(scratch, 2);
+
+  auto const pulled = run_verb(scratch, {"pull", "1", "--no-locality-probe", "--model", "Some Model 4.7 [1m]"});
+  REQUIRE(pulled.code == 0);
+  CHECK(scalar_text(scratch, "select model from agent_work_claims where entity_id = 1") == "Some Model 4.7 [1m]");
+  CHECK(scalar_text(scratch, "select model from agent_actions where claim_id = 1") == "Some Model 4.7 [1m]");
+
+  // Omitted, the column stays NULL: the flag adds nothing a caller did not state.
+  REQUIRE(run_verb(scratch, {"pull", "1", "--no-locality-probe"}).code == 0);
+  CHECK(scalar_text(scratch, "select count(*) from agent_work_claims where entity_id = 2 and model is null") == "1");
+}
+
+TEST_CASE("claim --parent-action nests the claim's action under the parent and refuses a bad parent writing nothing",
+          "[cmd][agent][flags][7485]") {
+  scratch_dir scratch;
+  seed(scratch, 3);
+  REQUIRE(run_verb(scratch, {"pull", "1", "--no-locality-probe"}).code == 0); // action 1: the orchestrator's row
+
+  // A transitioning claim parents its claim_check marker.
+  auto const nested = run_verb(scratch, {"claim", "--entity", "task:2", "--no-locality-probe", "--parent-action", "1"});
+  REQUIRE(nested.code == 0);
+  CHECK(scalar_text(scratch, "select action_kind from agent_actions where id = 2") == "claim_check");
+  CHECK(scalar_text(scratch, "select parent_action_id from agent_actions where id = 2") == "1");
+  CHECK(scalar_text(scratch, "select claim_id from agent_actions where id = 2") == "2");
+
+  // A bare claim has no marker (abort would read one as proof it moved the task), so it gets an open
+  // `other` action under the parent instead; the terminal verb closes it.
+  auto const bare =
+      run_verb(scratch, {"claim", "--entity", "task:3", "--no-transition", "--no-locality-probe", "--parent-action", "1"});
+  REQUIRE(bare.code == 0);
+  CHECK(scalar_text(scratch, "select action_kind from agent_actions where id = 3") == "other");
+  CHECK(scalar_text(scratch, "select parent_action_id from agent_actions where id = 3") == "1");
+  CHECK(scalar_text(scratch, "select count(*) from agent_actions where claim_id = 3 and action_kind = 'claim_check'") == "0");
+  CHECK(scalar_text(scratch, "select status from tasks where id = 3") == "todo");
+  auto const token = scalar_text(scratch, "select claim_token from agent_work_claims where id = 3");
+  REQUIRE(run_verb(scratch, {"release", "--claim", token}).code == 0);
+  CHECK(scalar_text(scratch, "select count(*) from agent_actions where claim_id = 3 and ended_at is null") == "0");
+
+  // Without the flag nothing is parented.
+  auto const plain = scalar_text(scratch, "select count(*) from agent_actions where parent_action_id is not null");
+  CHECK(plain == "2");
+
+  // A bad parent is refused before any write, with pull's codes.
+  scratch_dir other;
+  seed(other, 2);
+  auto const zero = run_verb(other, {"claim", "--entity", "task:1", "--no-locality-probe", "--parent-action", "0"});
+  CHECK(zero.code == 2);
+  CHECK(zero.err.contains("--parent-action must be a positive integer"));
+  auto const missing = run_verb(other, {"claim", "--entity", "task:1", "--no-locality-probe", "--parent-action", "999"});
+  CHECK(missing.code == 1);
+  CHECK(missing.err.contains("--parent-action 999: action not found"));
+  CHECK(scalar_text(other, "select count(*) from agent_work_claims") == "0");
+  CHECK(scalar_text(other, "select count(*) from agent_actions") == "0");
+  CHECK(scalar_text(other, "select status from tasks where id = 1") == "todo");
+}
+
+// ===========================================================================
+// The default lease (plan 1142)
+// ===========================================================================
+
+TEST_CASE("claim and pull without --ttl take a two-hour lease and --help states it", "[cmd][agent][ttl][7486]") {
+  scratch_dir scratch;
+  seed(scratch, 3);
+
+  auto const lease_secs = [&](std::string_view where) {
+    return std::stoll(scalar_text(
+        scratch, std::format("select cast(round((julianday(lease_expires_at) - julianday(claimed_at)) * 86400) as integer) "
+                             "from agent_work_claims where {}",
+                             where)));
+  };
+
+  REQUIRE(run_verb(scratch, {"claim", "--entity", "task:1", "--no-locality-probe"}).code == 0);
+  CHECK(std::abs(lease_secs("entity_id = 1") - 7200) <= 2);
+
+  REQUIRE(run_verb(scratch, {"pull", "1", "--no-locality-probe"}).code == 0);
+  CHECK(std::abs(lease_secs("entity_id = 2") - 7200) <= 2);
+
+  // An explicit --ttl is untouched, and a bare heartbeat renews the length the claim holds.
+  REQUIRE(run_verb(scratch, {"claim", "--entity", "task:3", "--no-locality-probe", "--ttl", "10m"}).code == 0);
+  CHECK(std::abs(lease_secs("entity_id = 3") - 600) <= 2);
+  auto const token = scalar_text(scratch, "select claim_token from agent_work_claims where entity_id = 3");
+  REQUIRE(run_verb(scratch, {"heartbeat", "--claim", token}).code == 0);
+  CHECK(std::abs(lease_secs("entity_id = 3") - 600) <= 2);
+
+  for (auto const* verb : {"claim", "pull"}) {
+    INFO(verb);
+    auto const help = run_verb(scratch, {verb, "--help"});
+    CHECK(help.code == 0);
+    CHECK(help.out.contains("default 2h"));
+    CHECK(help.out.contains("[7200]"));
+    CHECK_FALSE(help.out.contains("600"));
+  }
+}
+
+// ===========================================================================
+// Bookkeeping actions of a bare claim must not let reconcile reset the task (plan 1142)
+// ===========================================================================
+
+namespace {
+
+/// Two tasks: task 1 pulled (its dispatch action 1 is the parent), task 2 left `doing` with no claim.
+auto doing_task_with_parent(scratch_dir const& scratch) -> void {
+  seed(scratch, 2);
+  REQUIRE(run_verb(scratch, {"pull", "1", "--no-locality-probe"}).code == 0);
+  write_sql(scratch, "update tasks set status = 'doing' where id = 2");
+}
+
+/// Lapse every claim on `task_id` and sweep.
+auto lapse_and_reconcile(scratch_dir const& scratch, int task_id) -> void {
+  write_sql(scratch, std::format("update agent_work_claims set lease_expires_at = '2000-01-01T00:00:00.000Z' "
+                                 "where entity_id = {}",
+                                 task_id));
+  REQUIRE(run_verb(scratch, {"reconcile"}).code == 0);
+}
+
+} // namespace
+
+TEST_CASE("reconcile leaves a doing task alone after a stale bare claim with --parent-action",
+          "[cmd][agent][readiness][recovery][reconcile][1142]") {
+  scratch_dir scratch;
+  doing_task_with_parent(scratch);
+  REQUIRE(
+      run_verb(scratch, {"claim", "--entity", "task:2", "--no-transition", "--no-locality-probe", "--parent-action", "1"}).code ==
+      0);
+  CHECK(scalar_text(scratch, "select count(*) from agent_actions where claim_id = 2 and ended_at is null") == "1");
+
+  lapse_and_reconcile(scratch, 2);
+  CHECK(scalar_text(scratch, "select status from agent_work_claims where entity_id = 2") == "stale");
+  CHECK(scalar_text(scratch, "select status from tasks where id = 2") == "doing");
+  // The nested bookkeeping row is closed with the claim, so diagnose has no unended action to flag.
+  CHECK(scalar_text(scratch, "select count(*) from agent_actions where claim_id = 2 and ended_at is null") == "0");
+}
+
+TEST_CASE("reconcile leaves a doing task alone after a stale bare claim with --allow-unready",
+          "[cmd][agent][readiness][recovery][reconcile][1142]") {
+  scratch_dir scratch;
+  doing_task_with_parent(scratch);
+  link_open_question(scratch, 2);
+  REQUIRE(run_verb(scratch, {"claim", "--entity", "task:2", "--no-transition", "--no-locality-probe", "--allow-unready"}).code ==
+          0);
+  CHECK(scalar_text(scratch, "select count(*) from agent_actions where claim_id = 2 and metadata like '%unready_override%'") ==
+        "1");
+
+  lapse_and_reconcile(scratch, 2);
+  CHECK(scalar_text(scratch, "select status from tasks where id = 2") == "doing");
+
+  // Both bookkeeping rows together.
+  scratch_dir both;
+  doing_task_with_parent(both);
+  link_open_question(both, 2);
+  REQUIRE(run_verb(both, {"claim", "--entity", "task:2", "--no-transition", "--no-locality-probe", "--allow-unready",
+                          "--parent-action", "1"})
+              .code == 0);
+  lapse_and_reconcile(both, 2);
+  CHECK(scalar_text(both, "select status from tasks where id = 2") == "doing");
+  CHECK(scalar_text(both, "select count(*) from agent_actions where claim_id = 2 and ended_at is null") == "0");
+}
+
+TEST_CASE("reconcile still resets a task whose claim owns the transition", "[cmd][agent][reconcile][1142]") {
+  // Regression guard: pull --role other opens an `other` dispatch action, which is real evidence.
+  scratch_dir other;
+  seed(other, 1);
+  REQUIRE(run_verb(other, {"pull", "1", "--no-locality-probe", "--role", "other"}).code == 0);
+  CHECK(scalar_text(other, "select action_kind from agent_actions where claim_id = 1") == "other");
+  lapse_and_reconcile(other, 1);
+  CHECK(scalar_text(other, "select status from tasks where id = 1") == "todo");
+
+  // And a transitioning direct claim (claim_check marker) with a parent resets too.
+  scratch_dir direct;
+  seed(direct, 2);
+  REQUIRE(run_verb(direct, {"pull", "1", "--no-locality-probe"}).code == 0);
+  REQUIRE(run_verb(direct, {"claim", "--entity", "task:2", "--no-locality-probe", "--parent-action", "1"}).code == 0);
+  lapse_and_reconcile(direct, 2);
+  CHECK(scalar_text(direct, "select status from tasks where id = 2") == "todo");
+}
+
+TEST_CASE("a bare claim's nested action is closed by abort", "[cmd][agent][reconcile][1142]") {
+  scratch_dir scratch;
+  doing_task_with_parent(scratch);
+  REQUIRE(
+      run_verb(scratch, {"claim", "--entity", "task:2", "--no-transition", "--no-locality-probe", "--parent-action", "1"}).code ==
+      0);
+  auto const token = scalar_text(scratch, "select claim_token from agent_work_claims where entity_id = 2");
+  REQUIRE(run_verb(scratch, {"abort", "--claim", token, "--reason", "test"}).code == 0);
+  CHECK(scalar_text(scratch, "select count(*) from agent_actions where claim_id = 2 and ended_at is null") == "0");
+  CHECK(scalar_text(scratch, "select status from tasks where id = 2") == "doing");
+}
+
+TEST_CASE("the invalid_task_status hint names the status and the claimable states", "[cmd][agent][readiness][1142]") {
+  scratch_dir scratch;
+  seed(scratch, 1);
+  write_sql(scratch, "update tasks set status = 'done' where id = 1");
+  auto const refused = run_verb(scratch, {"claim", "--entity", "task:1", "--no-transition", "--no-locality-probe"});
+  CHECK(refused.code == 1);
+  CHECK(refused.err.contains("invalid_task_status: the task is done; only a todo task, or a doing task with no live claim, "
+                             "can be claimed"));
+  CHECK_FALSE(refused.err.contains("wait for its lease"));
+}
+
+// ===========================================================================
+// review (plan 1142, task mo-review-record)
+// ===========================================================================
+
+namespace {
+
+/// Pull the plan's next task under `session` and return its claim token.
+auto pull_token(const scratch_dir& scratch, std::string_view session) -> std::string {
+  std::vector<std::string> argv{"pull", "1", "--no-locality-probe", "--vendor", "claude", "--role", "coder"};
+  if (!session.empty()) {
+    argv.push_back("--vendor-session");
+    argv.emplace_back(session);
+  }
+  auto const pulled = run_verb(scratch, argv);
+  REQUIRE(pulled.code == 0);
+  return scalar_text(scratch, "select claim_token from agent_work_claims order by id desc limit 1");
+}
+
+auto review_rows(const scratch_dir& scratch) -> std::string {
+  return scalar_text(scratch, "select count(*) from agent_actions where action_kind = 'review'");
+}
+
+auto all_rows(const scratch_dir& scratch) -> std::string {
+  return scalar_text(scratch, "select (select count(*) from agent_actions) || '/' || (select count(*) from sessions)");
+}
+
+} // namespace
+
+TEST_CASE("review under a different session records one review action, a child of the claim's action",
+          "[cmd][agent][review][1142]") {
+  scratch_dir scratch;
+  seed(scratch, 1);
+  auto const token = pull_token(scratch, "claude:coder-1");
+  auto const root  = scalar_text(scratch, std::format("select min(id) from agent_actions where claim_id = (select id from "
+                                                      "agent_work_claims where claim_token = '{}')",
+                                                      token));
+
+  auto const done = run_verb(scratch, {"review", "--claim", token, "--verdict", "approve", "--summary", "Matches the spec",
+                                       "--vendor", "claude", "--vendor-session", "claude:reviewer-1"});
+  REQUIRE(done.code == 0);
+  INFO(done.err);
+  CHECK(done.out.starts_with("review recorded: action "));
+  CHECK(done.out.contains(" verdict approve for claim " + token.substr(0, 8)));
+  CHECK(review_rows(scratch) == "1");
+
+  CHECK(scalar_text(scratch, "select verdict from agent_actions where action_kind = 'review'") == "approve");
+  CHECK(scalar_text(scratch, "select summary from agent_actions where action_kind = 'review'") == "Matches the spec");
+  CHECK(scalar_text(scratch, "select parent_action_id from agent_actions where action_kind = 'review'") == root);
+  CHECK(scalar_text(scratch, "select claim_id from agent_actions where action_kind = 'review'") ==
+        scalar_text(scratch, std::format("select id from agent_work_claims where claim_token = '{}'", token)));
+  CHECK(scalar_text(scratch, "select ended_at is not null and outcome = 'ok' from agent_actions where action_kind = 'review'") ==
+        "1");
+  CHECK(scalar_text(scratch, "select metadata from agent_actions where action_kind = 'review'") ==
+        R"({"reviewer_session":"claude:reviewer-1"})");
+  CHECK(scalar_text(scratch, "select s.vendor_session_id from agent_actions a join sessions s on s.id = a.session_id "
+                             "where a.action_kind = 'review'") == "claude:reviewer-1");
+
+  // The coder's claim is untouched by the verdict: still active, task still doing.
+  CHECK(scalar_text(scratch, std::format("select status from agent_work_claims where claim_token = '{}'", token)) == "active");
+  CHECK(scalar_text(scratch, "select status from tasks where id = 1") == "doing");
+
+  // --json carries the same facts.
+  auto const json = run_verb(scratch, {"review", "--claim", token, "--verdict", "request-changes", "--summary", "Add a test",
+                                       "--vendor-session", "claude:reviewer-1", "--json"});
+  REQUIRE(json.code == 0);
+  CHECK(json.out.contains(R"("verdict":"request-changes")"));
+  CHECK(json.out.contains(std::format(R"("reviewed_claim":"{}")", token)));
+  CHECK(json.out.contains(std::format(R"("parent_action_id":{})", root)));
+  CHECK(json.out.contains(R"("action_id":)"));
+  CHECK(review_rows(scratch) == "2");
+}
+
+TEST_CASE("review from the reviewed claim's own session is refused and writes nothing", "[cmd][agent][review][1142]") {
+  scratch_dir scratch;
+  seed(scratch, 1);
+  auto const token  = pull_token(scratch, "claude:coder-1");
+  auto const before = all_rows(scratch);
+
+  auto const same = run_verb(
+      scratch, {"review", "--claim", token, "--verdict", "approve", "--summary", "LGTM", "--vendor-session", "claude:coder-1"});
+  CHECK(same.code == 1);
+  CHECK(same.err.contains("run the review under a different claim or session than the coder's"));
+  CHECK(same.out.empty());
+
+  // Naming the coder's own claim as the reviewer claim is the same session.
+  auto const own =
+      run_verb(scratch, {"review", "--claim", token, "--verdict", "approve", "--summary", "LGTM", "--reviewer-claim", token});
+  CHECK(own.code == 1);
+  CHECK(own.err.contains("different claim or session"));
+
+  // --json carries the refusal's tag on stdout like every other refused verb.
+  auto const json = run_verb(scratch, {"review", "--claim", token, "--verdict", "approve", "--summary", "LGTM",
+                                       "--vendor-session", "claude:coder-1", "--json"});
+  CHECK(json.code == 1);
+  CHECK(json.out.contains("ReviewerNotIndependent"));
+
+  CHECK(all_rows(scratch) == before);
+  CHECK(review_rows(scratch) == "0");
+}
+
+TEST_CASE("review refuses a missing or invalid verdict at exit 2 and never writes a NULL-verdict row",
+          "[cmd][agent][review][1142]") {
+  scratch_dir scratch;
+  seed(scratch, 1);
+  auto const token  = pull_token(scratch, "claude:coder-1");
+  auto const before = all_rows(scratch);
+
+  auto const missing =
+      run_verb(scratch, {"review", "--claim", token, "--summary", "no verdict", "--vendor-session", "claude:reviewer-1"});
+  CHECK(missing.code == 2);
+  CHECK(missing.err.contains("--verdict is required"));
+
+  auto const invalid = run_verb(scratch, {"review", "--claim", token, "--verdict", "lgtm", "--summary", "bad verdict",
+                                          "--vendor-session", "claude:reviewer-1"});
+  CHECK(invalid.code == 2);
+  CHECK(invalid.err.contains("invalid --verdict 'lgtm'"));
+
+  auto const blank = run_verb(scratch, {"review", "--claim", token, "--verdict", "", "--summary", "empty verdict",
+                                        "--vendor-session", "claude:reviewer-1"});
+  CHECK(blank.code == 2);
+
+  auto const no_summary =
+      run_verb(scratch, {"review", "--claim", token, "--verdict", "approve", "--vendor-session", "claude:reviewer-1"});
+  CHECK(no_summary.code == 2);
+  CHECK(no_summary.err.contains("--summary is required"));
+
+  auto const anonymous = run_verb(scratch, {"review", "--claim", token, "--verdict", "approve", "--summary", "who am I"});
+  CHECK(anonymous.code == 2);
+  CHECK(anonymous.err.contains("pass --reviewer-claim <token> or --vendor-session <id>"));
+
+  // Every refusal above left the database as it was...
+  CHECK(all_rows(scratch) == before);
+  CHECK(review_rows(scratch) == "0");
+
+  // ...and the verb that does write has no path that stores a review without its verdict.
+  REQUIRE(run_verb(scratch, {"review", "--claim", token, "--verdict", "approve", "--summary", "fine", "--vendor-session",
+                             "claude:reviewer-1"})
+              .code == 0);
+  REQUIRE(run_verb(scratch, {"review", "--claim", token, "--verdict", "request-changes", "--summary", "not fine",
+                             "--vendor-session", "claude:reviewer-2"})
+              .code == 0);
+  CHECK(review_rows(scratch) == "2");
+  CHECK(scalar_text(scratch, "select count(*) from agent_actions where action_kind = 'review' and verdict is null") == "0");
+  CHECK(scalar_text(scratch, "select count(*) from agent_actions where action_kind <> 'review' and verdict is not null") == "0");
+}
+
+TEST_CASE("review names an unknown claim token and writes nothing", "[cmd][agent][review][1142]") {
+  scratch_dir scratch;
+  seed(scratch, 1);
+  auto const token  = pull_token(scratch, "claude:coder-1");
+  auto const before = all_rows(scratch);
+
+  auto const unknown = run_verb(scratch, {"review", "--claim", "0123456789abcdef0123456789abcdef", "--verdict", "approve",
+                                          "--summary", "x", "--vendor-session", "claude:reviewer-1"});
+  CHECK(unknown.code == 1);
+  CHECK(unknown.err.contains("no claim with token 0123456789abcdef0123456789abcdef"));
+
+  auto const no_reviewer = run_verb(scratch, {"review", "--claim", token, "--verdict", "approve", "--summary", "x",
+                                              "--reviewer-claim", "fedcba9876543210fedcba9876543210"});
+  CHECK(no_reviewer.code == 1);
+  CHECK(no_reviewer.err.contains("no reviewer claim with token fedcba9876543210fedcba9876543210"));
+  CHECK(all_rows(scratch) == before);
+}
+
+TEST_CASE("a reviewed claim without a vendor session is reviewed only under a reviewer claim that has one",
+          "[cmd][agent][review][1142]") {
+  scratch_dir scratch;
+  seed(scratch, 1);
+  auto const token = pull_token(scratch, "");
+  REQUIRE(scalar_text(scratch, "select vendor_session_id is null from agent_work_claims where id = 1") == "1");
+
+  // The reviewer's own claim, taken the way a reviewer takes one.
+  REQUIRE(run_verb(scratch, {"claim", "--entity", "plan:1", "--no-locality-probe", "--vendor", "claude", "--vendor-session",
+                             "claude:reviewer-1", "--role", "reviewer"})
+              .code == 0);
+  auto const reviewer = scalar_text(scratch, "select claim_token from agent_work_claims where entity_kind = 'plan'");
+  auto const before   = all_rows(scratch);
+
+  // A bare session id cannot be compared with nothing.
+  auto const by_session = run_verb(
+      scratch, {"review", "--claim", token, "--verdict", "approve", "--summary", "ok", "--vendor-session", "claude:reviewer-1"});
+  CHECK(by_session.code == 1);
+  CHECK(by_session.err.contains("the reviewed claim has no vendor session"));
+  CHECK(by_session.err.contains("--reviewer-claim"));
+  CHECK(all_rows(scratch) == before);
+
+  auto const by_claim =
+      run_verb(scratch, {"review", "--claim", token, "--verdict", "approve", "--summary", "ok", "--reviewer-claim", reviewer});
+  REQUIRE(by_claim.code == 0);
+  CHECK(review_rows(scratch) == "1");
+  CHECK(scalar_text(scratch, "select metadata from agent_actions where action_kind = 'review'") ==
+        std::format(R"({{"reviewer_session":"claude:reviewer-1","reviewer_claim":"{}"}})", reviewer));
+  // The review belongs to the reviewer claim's session, not to a fresh one.
+  CHECK(scalar_text(scratch, "select a.session_id = c.session_id from agent_actions a join agent_work_claims c "
+                             "on c.entity_kind = 'plan' where a.action_kind = 'review'") == "1");
+}
+
+TEST_CASE("review is reserved: action start refuses the kind and pull --role review degrades to coder",
+          "[cmd][agent][review][1142]") {
+  scratch_dir scratch;
+  seed(scratch, 2);
+  auto const token = pull_token(scratch, "claude:coder-1");
+
+  auto const forged = run_verb(scratch, {"action", "start", "--claim", token, "--kind", "review", "--no-locality-probe"});
+  CHECK(forged.code == 2);
+  CHECK(forged.err.contains("written only by `planar-agent review`"));
+  CHECK(review_rows(scratch) == "0");
+
+  REQUIRE(run_verb(scratch, {"pull", "1", "--no-locality-probe", "--role", "review"}).code == 0);
+  CHECK(review_rows(scratch) == "0");
+  CHECK(scalar_text(scratch, "select action_kind from agent_actions where claim_id = 2 order by id limit 1") == "coder");
+}
+
+TEST_CASE("review shows its flags on --help and in the schema catalog", "[cmd][agent][review][1142]") {
+  scratch_dir scratch;
+  auto const  help = run_verb(scratch, {"review", "--help"});
+  REQUIRE(help.code == 0);
+  for (auto const* flag : {"--claim", "--verdict", "--summary", "--reviewer-claim", "--vendor-session", "--json"}) {
+    INFO(flag);
+    CHECK(help.out.contains(flag));
+  }
+  CHECK(help.out.contains("approve | request-changes"));
 }

@@ -989,7 +989,7 @@ TEST_CASE("the decision workbench quartet is SERVED, and writes nothing when una
     CHECK(res.out.empty());
     CHECK(res.err == "error: cannot resolve anchor plan for decision 1: NoPlanLink\nerror: NoPlanLink\n");
   }
-  for (auto const& verb : {"diff", "review"}) {
+  for (auto const& verb : {"review"}) {
     INFO("decision " << verb);
     auto const res = dispatch(fx, {"decision", verb, "1"});
     CHECK(res.code == 1);

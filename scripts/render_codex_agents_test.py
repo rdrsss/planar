@@ -39,15 +39,18 @@ class RenderCodexAgents(unittest.TestCase):
             return tomllib.load(f)
 
     def test_happy_path_over_repo_agents(self):
-        shutil.copytree(os.path.join(ROOT, 'agents'), self.src,
-                        dirs_exist_ok=True)
+        # The role agents left in agents/ and the examples under
+        # examples/agents/, with the doctrine documents beside them.
+        for rel in ('agents', os.path.join('examples', 'agents')):
+            shutil.copytree(os.path.join(ROOT, rel), self.src,
+                            dirs_exist_ok=True)
         r = self.run_script()
         self.assertEqual(r.returncode, 0, r.stderr)
         got = sorted(os.listdir(self.out))
         want = sorted(f[:-3] + '.toml' for f in os.listdir(self.src)
                       if f.startswith('planar-') and f.endswith('.md'))
         self.assertEqual(got, want)
-        self.assertEqual(len(got), 15)
+        self.assertEqual(len(got), 11)
         for doc in ('doctrine', 'methodology', 'models', 'cross-scope-writes'):
             self.assertNotIn(doc + '.toml', got)
         for fn in got:
