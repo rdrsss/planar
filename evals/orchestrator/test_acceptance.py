@@ -240,22 +240,45 @@ class EnvironmentTest(unittest.TestCase):
         self.assertNotIn("ANTHROPIC_API_KEY", neutral)
 
     def test_the_real_environment_cannot_leak_into_a_child(self):
-        home = acceptance.real_home()
-        for vendor in (None, "claude", "codex"):
-            env = acceptance.sandbox_env(self.root, vendor=vendor)
-            acceptance.assert_sandboxed(env, self.root)
-            for name, value in env.items():
-                if name in acceptance.AUTH_ENV_VARS["claude"] + acceptance.AUTH_ENV_VARS["codex"]:
-                    continue
-                for piece in value.split(os.pathsep):
-                    if piece.startswith("/"):
-                        self.assertFalse(Path(piece).resolve().is_relative_to(home), f"{name}={piece}")
-                        self.assertFalse(Path(piece).resolve().is_relative_to(home / ".planar"), f"{name}={piece}")
+        # The "real" environment is a fixture operator home and Planar state
+        # beside the sandbox, so the check does not depend on where the host's
+        # HOME sits (a CI container's HOME can be an ancestor of every tempdir).
+        fixture = {
+            "HOME": str(self.operator),
+            "PLANAR_HOME": str(self.operator / ".planar"),
+            "PLANAR_DB": str(self.operator / ".planar" / "planar.db"),
+            "PLANAR_CONFIG_PATH": str(self.operator / ".planar" / "config.toml"),
+            "PATH": f"{self.operator / '.local' / 'bin'}:/usr/bin:/bin",
+        }
+        with mock.patch.dict(os.environ, fixture):
+            home = acceptance.real_home()
+            self.assertEqual(home, self.operator.resolve())
+            for vendor in (None, "claude", "codex"):
+                env = acceptance.sandbox_env(self.root, vendor=vendor)
+                acceptance.assert_sandboxed(env, self.root)
+                for name, value in env.items():
+                    if name in acceptance.AUTH_ENV_VARS["claude"] + acceptance.AUTH_ENV_VARS["codex"]:
+                        continue
+                    for piece in value.split(os.pathsep):
+                        if piece.startswith("/"):
+                            self.assertFalse(Path(piece).resolve().is_relative_to(home), f"{name}={piece}")
+                            self.assertFalse(Path(piece).resolve().is_relative_to(home / ".planar"), f"{name}={piece}")
+            # A sandbox placed under that home is refused.
+            with self.assertRaisesRegex(acceptance.AcceptanceError, "lies under the operator's home"):
+                acceptance.assert_sandboxed(acceptance.sandbox_env(self.operator / "inside"), self.operator / "inside")
 
     def test_path_drops_system_directories_under_the_operator_home(self):
-        entries = acceptance.system_path_entries(Path("/usr"))
-        self.assertNotIn("/usr/bin", entries)
-        self.assertIn("/bin", entries)
+        # Fixture directories stand in for SYSTEM_PATH: on a merged-usr host
+        # /bin is a symlink into /usr/bin, so the real entries cannot tell
+        # "under the home" from "kept".
+        under = self.operator / "bin"
+        under.mkdir()
+        outside = self.root / "system-bin"
+        outside.mkdir()
+        with mock.patch.object(acceptance, "SYSTEM_PATH", (str(under), str(outside))):
+            entries = acceptance.system_path_entries(self.operator)
+        self.assertNotIn(str(under), entries)
+        self.assertIn(str(outside), entries)
 
     def test_assert_sandboxed_refuses_each_escape(self):
         good = self.env("claude")

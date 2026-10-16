@@ -200,7 +200,12 @@ class ScratchIsolationTests(unittest.TestCase):
 
 class RunConformanceTests(unittest.TestCase):
     def test_the_checker_sees_a_scratch_copy_policy_and_flags(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        # The operator's home is a fixture directory outside the temp tree, so
+        # the assertion holds when the host's HOME is an ancestor of every
+        # tempdir (as in a CI container with HOME=/tmp).
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory(
+            prefix="operator-home-fixture-"
+        ) as operator_home, mock.patch.dict(os.environ, {"HOME": operator_home}):
             root = Path(tmp)
             source = root / "trail.db"
             digest = make_database(source)
@@ -213,7 +218,8 @@ class RunConformanceTests(unittest.TestCase):
             self.assertIn("ARGV health conformance 7 --json --floor 3 --scope global", seen)
             self.assertIn("require_model = true", seen)
             self.assertNotIn(str(source), seen)
-            self.assertNotIn(str(Path.home()), seen)
+            self.assertEqual(str(Path.home()), operator_home)
+            self.assertNotIn(operator_home, seen)
             self.assertNotIn("DBSIZE 0", seen)
             self.assertEqual(hashlib.sha256(source.read_bytes()).hexdigest(), digest)
 
