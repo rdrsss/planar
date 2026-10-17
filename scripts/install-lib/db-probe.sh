@@ -5,8 +5,8 @@
 # rel-install-order; tech spec 677, "Order of an install", steps 5, 6 and 8;
 # decisions 1324-1327).
 #
-# Sourced by install.sh after queue-retire.sh (it uses _qr_classify_probe and
-# _QR_JSON_AWK) and data-paths.sh (_planar_dp_value). Bash 3.2 and base
+# Sourced by install.sh after queue-retire.sh (it uses _QR_JSON_AWK) and
+# data-paths.sh (_planar_dp_value). Bash 3.2 and base
 # utilities only. Functions return a status and never exit; every command
 # substitution that may fail clears the ERR trap inside its own subshell.
 #
@@ -23,18 +23,20 @@
 #         missing  no file at the path: initialization is required. The probe
 #                  never creates one.
 #         behind   older than BINDIR's binaries: migration is required.
-#         current  the same schema and a usable queue store.
+#         current  the same schema, and `planar-watch plans --json` answers one
+#                  JSON object with a "plans" array.
 #         ahead    newer than BINDIR's binaries: an older release must never be
 #                  installed over it.
-#         fault    anything else: unreadable, corrupt, a foreign or incompatible
-#                  queue schema at the same version, a non-empty file with no
+#         fault    anything else: unreadable, corrupt, a non-empty file with no
 #                  migration record, or an answer the probe cannot classify.
-#       The main-schema boundary is `planar-watch`'s startup handshake (it opens
-#       the database read-only and refuses a schema behind or ahead of its own at
-#       exit 7, naming both versions); the queue store at the current version is
-#       `planar-agent queue status 1 --json`, classified by _qr_classify_probe.
-#       Queue compatibility never decides the main schema: an ahead database is
-#       ahead whatever its queue tables say.
+#       The one schema handshake is `planar-watch plans --json`. It opens the
+#       database read-only through its startup check, which refuses a schema
+#       behind or ahead of its own at exit 7 and names both versions on stderr:
+#       the first line reads `error: schema version N in PATH is older than ...`
+#       or `... newer than ...`, and a line `error: SchemaVersionBehind` or
+#       `error: SchemaVersionAhead` carries the tag. The probe reads the
+#       versions from that first line and the direction from the tag. Queue
+#       tables are not read, so a queue store never changes the answer.
 #
 #   planar_db_migrate BINDIR
 #       Run BINDIR/planar init --skip-project --allow-no-repo from / against the
@@ -45,8 +47,8 @@
 #   planar_queue_warning BINDIR
 #       Name the running and waiting host-queue entries through BINDIR's
 #       read-only `planar-watch queue --json`, with the lease warning. Absence or
-#       failure prints one line saying the queue could not be checked. Never
-#       fails.
+#       failure, including a planar-watch with no `queue` verb, prints one line
+#       saying the queue could not be checked. Never fails.
 
 planar_db_resolve() {
   local root="${1%/}" v
@@ -94,21 +96,23 @@ planar_db_probe() {
     INSTALL_DB_DETAIL="no database at $PLANAR_INSTALL_DB"
     return 0
   fi
-  _pdb_run "$bindir" planar-watch queue --json
+  _pdb_run "$bindir" planar-watch plans --json
   if [ "$_PDB_RC" = 0 ]; then
+    # The answer is one JSON object with no error key whose "plans" member is
+    # an array (the envelope `planar-watch plans --json` prints).
     kind="$(trap - ERR; printf '%s\n' "$_PDB_OUT" | tr '\r\n' '  ' | LC_ALL=C awk "$_QR_JSON_AWK")" || kind="bad|0|"
-    if [ "${kind%%|*}" != array ]; then
-      INSTALL_DB_DETAIL="planar-watch queue --json exited 0 without a JSON list: $(_pdb_first_line "$_PDB_OUT")"
-      return 0
-    fi
-    _pdb_run "$bindir" planar-agent queue status 1 --json
-    _qr_classify_probe "$_PDB_RC" "$_PDB_OUT"
-    if [ "$QR_VERDICT" = usable ]; then
-      INSTALL_DB_STATE="current"
-      INSTALL_DB_DETAIL="the schema matches and the queue store is usable ($QR_DETAIL)"
-      return 0
-    fi
-    INSTALL_DB_DETAIL="the queue store is not usable: $QR_VERDICT ($QR_DETAIL)${_PDB_ERR:+: $(_pdb_first_line "$_PDB_ERR")}"
+    case "$kind" in
+      object\|0\|*) ;;
+      *) INSTALL_DB_DETAIL="planar-watch plans --json exited 0 without one JSON object: $(_pdb_first_line "$_PDB_OUT")"
+         return 0 ;;
+    esac
+    case "$(printf '%s' "$_PDB_OUT" | tr '\r\n' '  ')" in
+      *'"plans":['*) ;;
+      *) INSTALL_DB_DETAIL="planar-watch plans --json exited 0 without a plans array: $(_pdb_first_line "$_PDB_OUT")"
+         return 0 ;;
+    esac
+    INSTALL_DB_STATE="current"
+    INSTALL_DB_DETAIL="the schema matches and planar-watch plans --json lists the plans"
     return 0
   fi
   first="$(_pdb_first_line "$_PDB_ERR")"

@@ -8,9 +8,9 @@
 #     omits fails the run), and a second run reports no changes;
 #   - an old agent.db and its sidecars and old numbered queue logs are moved,
 #     unread, into retired/<date>/, colliding names are never overwritten, and
-#     the probe in front of it is the shared classifier (concatenated objects, a
-#     tag outside the error object and a same-version foreign queue schema are
-#     refused before anything changes);
+#     the probe in front of it is the shared classifier (a plans answer that is
+#     not exactly one JSON list, and an unreadable or ahead database, are refused
+#     before anything changes);
 #   - --link with --prebuilt exits 2 and a bundle missing a binary (or another
 #     required file) exits 1, each before ~/.planar exists;
 #   - a source install writes release.json whose version is the sixth token of
@@ -212,14 +212,16 @@ pass
 
 # --- the probe in front of it is the shared classifier --------------------------------------
 
-# probe_case NAME RC OUT EXPECT -- stub planar-agent's answer; EXPECT is `proceeds` or `refuses`.
+# probe_case NAME RC OUT EXPECT [ERR] -- stub planar-watch's `plans --json` answer
+# (exit RC, stdout OUT, stderr ERR); EXPECT is `proceeds` or `refuses`.
 probe_case() {
-  local name="$1" rc="$2" out="$3" expect="$4" h p
+  local name="$1" rc="$2" out="$3" expect="$4" err="${5:-}" h p
   h="$(new_home "probe-$name")"; p="$h/.planar"
   mkdir -p "$p"
   printf 'SQLite format 3\n' > "$p/planar.db"
   printf 'old\n' > "$p/agent.db"
-  printf '%s' "$out" > "$p/stub.out"; printf '%s' "$rc" > "$p/stub.rc"
+  printf '%s' "$out" > "$p/plans.out"; printf '%s' "$rc" > "$p/plans.rc"
+  printf '%s\n' "$err" > "$p/plans.err"
   run_prebuilt "$h" "$BUNDLE" --
   no_python
   if [[ "$expect" == proceeds ]]; then
@@ -230,23 +232,24 @@ probe_case() {
     # no move of agent.db, and no journal or staging left behind.
     [[ "$RC" == 1 ]] || fail "probe case $name: expected a refusal at exit 1, got $RC: $(cat "$TMP/err")"
     grep -Fq 'refusing to install: the database' "$TMP/err" || fail "probe case $name: the refusal does not name the database: $(cat "$TMP/err")"
-    grep -Fq 'Nothing was changed' "$TMP/err" || fail "probe case $name: the refusal does not say nothing changed: $(cat "$TMP/err")"
+    grep -Fqi 'nothing was changed' "$TMP/err" || fail "probe case $name: the refusal does not say nothing changed: $(cat "$TMP/err")"
     [[ "$(cat "$p/agent.db")" == old && ! -e "$p/retired" ]] || fail "probe case $name: agent.db moved despite the refusal"
     [[ ! -e "$p/bin" && ! -e "$p/.planar-journal" && -z "$(ls -d "$p"/.staging-* 2>/dev/null)" ]] \
       || fail "probe case $name: the refused attempt left changes: $(ls -a "$p")"
   fi
 }
-probe_case usable 0 '{"seq":1}' proceeds
-probe_case notfound 1 '{"error":{"verb":"queue status","tag":"not_found","message":"m"}}' proceeds
-# A same-version foreign queue schema is a database fault: refused before any
-# change (tech spec 677 step 5), no longer a warning.
-probe_case foreign 125 '{"error":{"verb":"queue status","tag":"queue_schema_foreign","message":"m"}}' refuses
-grep -Fq 'foreign' "$TMP/err" || fail "the foreign verdict was not reported"
-probe_case concatenated 0 '{"seq":1}{"seq":2}' refuses
+probe_case empty 0 '{"generated_at":"t","plans":[]}' proceeds
+probe_case rows 0 '{"generated_at":"t","plans":[{"plan_id":1,"active_claims":0,"active_actions":0,"last_event_at":null}]}' proceeds
+# A plan row that carries an error key is still a row: only a top-level error
+# object is a refusal.
+probe_case nested 0 '{"generated_at":"t","plans":[{"plan_id":1,"x":{"error":1}}]}' proceeds
+probe_case object 0 '{"seq":1}' refuses
+probe_case bare_list 0 '[]' refuses
+probe_case concatenated 0 '{"plans":[]}{"plans":[]}' refuses
 probe_case invalid 0 '{garbage}' refuses
-probe_case taghoisted 125 '{"error":{"verb":"queue status"},"tag":"queue_schema_foreign"}' refuses
-probe_case unknowntag 125 '{"error":{"verb":"queue status","tag":"store_unreachable"}}' refuses
-probe_case nested 0 '{"seq":1,"x":{"error":1}}' proceeds
+probe_case unreadable 1 '' refuses 'error: cannot read the database at /x/planar.db: file is not a database.'
+probe_case ahead 7 '' refuses 'error: schema version 42 in /x/planar.db is newer than this binary'"'"'s embedded max (41); the DB was migrated by a newer build
+error: SchemaVersionAhead'
 pass
 
 # --- --link is refused with --prebuilt -------------------------------------------------------
