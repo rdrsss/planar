@@ -19,6 +19,12 @@ constexpr int k_busy_timeout_ms = 2000;
 /// @brief The retention a database without a usable `tagged_history_days` row reads as.
 constexpr int k_default_tagged_history_days = 90;
 
+/// @brief The smallest stored `tagged_history_days` the reader accepts (705 § Settings).
+constexpr int k_min_tagged_history_days = 1;
+
+/// @brief The largest stored `tagged_history_days` the reader accepts (705 § Settings).
+constexpr int k_max_tagged_history_days = 36500;
+
 /// @brief The identity value every build queue database stores in `queue_identity.kind`.
 constexpr std::string_view k_identity_kind = "planar-build-queue";
 
@@ -142,13 +148,14 @@ auto read_identity(planar::db::connection& conn, const std::filesystem::path& pa
   return stmt->column_text(1);
 }
 
-/// @brief Parses a stored retention value: a non-negative decimal integer, nothing else.
+/// @brief Parses a stored retention value: a decimal integer in 1..36500 days, nothing else.
 /// @param text The stored value.
-/// @return The number of days, or nullopt when the text is not one.
+/// @return The number of days, or nullopt when the text is not one in that range.
 auto parse_days(std::string_view text) -> std::optional<int> {
   int value            = 0;
   auto const [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), value);
-  if (ec != std::errc{} || ptr != text.data() + text.size() || value < 0) {
+  if (ec != std::errc{} || ptr != text.data() + text.size() || value < k_min_tagged_history_days ||
+      value > k_max_tagged_history_days) {
     return std::nullopt;
   }
   return value;

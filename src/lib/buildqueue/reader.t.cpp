@@ -199,8 +199,8 @@ TEST_CASE("reader: a missing or invalid retention setting reads as 90 days", "[b
   REQUIRE(missing.has_value());
   CHECK(missing->tagged_history_days == 90);
 
-  // A value that is not a non-negative integer.
-  for (std::string_view invalid : {"soon", "-5", "", "30 days"}) {
+  // A value that is not an integer in 1..36500.
+  for (std::string_view invalid : {"soon", "-5", "", "30 days", "0", "36501", "abc"}) {
     set_tagged_days(conn, invalid);
     auto facts = read_queue_facts(path);
     REQUIRE(facts.has_value());
@@ -425,4 +425,20 @@ TEST_CASE("reader: a stored argv with escaped characters decodes to the strings 
   REQUIRE(runs.has_value());
   REQUIRE(runs->runs.size() == 1);
   CHECK(runs->runs[0].argv == std::vector<std::string>{"a\"b", "back\\slash", "/", "x\ty", "\xC3\xA9", "\xC3\xA9"});
+}
+
+TEST_CASE("reader: the retention bounds 1 and 36500 read as themselves", "[buildqueue][reader]") {
+  scratch_dir scratch;
+  auto const  path = scratch.file("bounds.db");
+  auto        conn = make_queue_db(path);
+
+  set_tagged_days(conn, "1");
+  auto lowest = read_queue_facts(path);
+  REQUIRE(lowest.has_value());
+  CHECK(lowest->tagged_history_days == 1);
+
+  set_tagged_days(conn, "36500");
+  auto highest = read_queue_facts(path);
+  REQUIRE(highest.has_value());
+  CHECK(highest->tagged_history_days == 36500);
 }
