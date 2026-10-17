@@ -54,17 +54,18 @@ export struct queue_settings {
   auto operator==(const queue_settings&) const -> bool = default;
 };
 
+/// @brief The class of a setting failure.
+export enum class settings_error_kind : std::uint8_t {
+  unknown_key, ///< The key is not one of the queue settings.
+  refused,     ///< The value, or the combination it forms with the other settings, is out of range or malformed.
+  database,    ///< The `queue_settings` table could not be read.
+};
+
 /// @brief Why a setting could not be read or written.
 export struct settings_error {
-  /// @brief The class of failure.
-  enum class kind : std::uint8_t {
-    unknown_key, ///< The key is not one of the queue settings.
-    refused,     ///< The value, or the combination it forms with the other settings, is out of range or malformed.
-    database,    ///< The `queue_settings` table could not be read.
-  };
-  kind        kind_ = kind::refused; ///< The class of failure.
-  std::string key;                   ///< The setting the message is about; empty for `database`.
-  std::string message;               ///< A one-line description that names the key.
+  settings_error_kind kind = settings_error_kind::refused; ///< The class of failure.
+  std::string         key;                                 ///< The setting the message is about; empty for `database`.
+  std::string         message;                             ///< A one-line description that names the key.
 };
 
 /// @brief Parses a duration given on the command line (`queue run --timeout`,

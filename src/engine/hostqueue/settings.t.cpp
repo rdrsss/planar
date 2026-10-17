@@ -117,7 +117,7 @@ TEST_CASE("settings: a stored value that fails validation is refused by the load
   store(conn, "slots", "0");
   auto const got = hq::load_settings(conn);
   REQUIRE_FALSE(got.has_value());
-  CHECK(got.error().kind_ == hq::settings_error::kind::refused);
+  CHECK(got.error().kind == hq::settings_error_kind::refused);
   CHECK(got.error().key == "slots");
   CHECK(got.error().message.contains("slots"));
 }
@@ -129,7 +129,7 @@ TEST_CASE("settings: a stored window that is shorter than the poll interval is r
   store(conn, "stale_after", "5s");
   auto const got = hq::load_settings(conn);
   REQUIRE_FALSE(got.has_value());
-  CHECK(got.error().kind_ == hq::settings_error::kind::refused);
+  CHECK(got.error().kind == hq::settings_error_kind::refused);
   CHECK(got.error().key == "stale_after");
   CHECK(got.error().message.contains("poll_interval"));
 }
@@ -140,7 +140,7 @@ TEST_CASE("settings: a missing queue_settings table is a database error, never t
   REQUIRE(opened.has_value());
   auto const got = hq::load_settings(*opened);
   REQUIRE_FALSE(got.has_value());
-  CHECK(got.error().kind_ == hq::settings_error::kind::database);
+  CHECK(got.error().kind == hq::settings_error_kind::database);
   CHECK(got.error().key.empty());
   CHECK(got.error().message.contains("queue_settings"));
 }
@@ -148,11 +148,11 @@ TEST_CASE("settings: a missing queue_settings table is a database error, never t
 TEST_CASE("settings: each out-of-range, malformed or unknown setting is refused with a message naming its key",
           "[hostqueue][settings]") {
   struct refusal_case {
-    std::string_view         key;
-    std::string_view         value;
-    hq::settings_error::kind kind_;
+    std::string_view        key;
+    std::string_view        value;
+    hq::settings_error_kind kind;
   };
-  using enum hq::settings_error::kind;
+  using enum hq::settings_error_kind;
   constexpr std::array cases = {
       refusal_case{"slots", "0", refused},
       refusal_case{"slots", "1025", refused},
@@ -184,7 +184,7 @@ TEST_CASE("settings: each out-of-range, malformed or unknown setting is refused 
     INFO("setting: " << one.key << " = " << one.value);
     auto const got = hq::validate_setting(one.key, one.value, hq::default_queue_settings());
     REQUIRE_FALSE(got.has_value());
-    CHECK(got.error().kind_ == one.kind_);
+    CHECK(got.error().kind == one.kind);
     CHECK(got.error().key == one.key);
     CHECK(got.error().message.contains(std::string{one.key}));
   }

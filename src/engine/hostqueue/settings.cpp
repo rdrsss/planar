@@ -84,7 +84,7 @@ auto parse_integer(std::string_view text) -> std::optional<std::int64_t> {
 /// @brief A refusal naming `key`.
 auto refuse(std::string_view key, std::string message) -> std::unexpected<settings_error> {
   return std::unexpected(
-      settings_error{.kind_ = settings_error::kind::refused, .key = std::string{key}, .message = std::move(message)});
+      settings_error{.kind = settings_error_kind::refused, .key = std::string{key}, .message = std::move(message)});
 }
 
 /// @brief Applies an integer setting, refusing a value outside `[lo, hi]`.
@@ -142,7 +142,7 @@ auto apply_value(queue_settings& settings, std::string_view key, std::string_vie
     return apply_integer(settings, key, text, 1, k_max_history_days, &queue_settings::tagged_history_days);
   }
   return std::unexpected(settings_error{
-      .kind_   = settings_error::kind::unknown_key,
+      .kind    = settings_error_kind::unknown_key,
       .key     = std::string{key},
       .message = std::format("{} is not a queue setting (expected slots, poll_interval, stale_after, grace, history_days, "
                              "tagged_history_days)",
@@ -213,7 +213,7 @@ auto validate_setting(std::string_view key, std::string_view value_text, const q
 auto load_settings(db::connection& conn) -> std::expected<queue_settings, settings_error> {
   auto stmt = conn.prepare("select key, value from queue_settings");
   if (!stmt.has_value()) {
-    return std::unexpected(settings_error{.kind_   = settings_error::kind::database,
+    return std::unexpected(settings_error{.kind    = settings_error_kind::database,
                                           .key     = {},
                                           .message = std::format("cannot read queue_settings: {}", stmt.error().message_)});
   }
@@ -221,7 +221,7 @@ auto load_settings(db::connection& conn) -> std::expected<queue_settings, settin
   while (true) {
     auto stepped = stmt->step();
     if (!stepped.has_value()) {
-      return std::unexpected(settings_error{.kind_   = settings_error::kind::database,
+      return std::unexpected(settings_error{.kind    = settings_error_kind::database,
                                             .key     = {},
                                             .message = std::format("cannot read queue_settings: {}", stepped.error().message_)});
     }
