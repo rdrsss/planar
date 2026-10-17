@@ -7,6 +7,7 @@ module planar.buildqueue.reader;
 
 import std;
 import planar.db;
+import planar.json_dom;
 
 namespace planar::buildqueue {
 
@@ -17,6 +18,12 @@ constexpr int k_busy_timeout_ms = 2000;
 
 /// @brief The retention a database without a usable `tagged_history_days` row reads as.
 constexpr int k_default_tagged_history_days = 90;
+
+/// @brief The smallest stored `tagged_history_days` the reader accepts (705 § Settings).
+constexpr int k_min_tagged_history_days = 1;
+
+/// @brief The largest stored `tagged_history_days` the reader accepts (705 § Settings).
+constexpr int k_max_tagged_history_days = 36500;
 
 /// @brief The identity value every build queue database stores in `queue_identity.kind`.
 constexpr std::string_view k_identity_kind = "planar-build-queue";
@@ -141,13 +148,14 @@ auto read_identity(planar::db::connection& conn, const std::filesystem::path& pa
   return stmt->column_text(1);
 }
 
-/// @brief Parses a stored retention value: a non-negative decimal integer, nothing else.
+/// @brief Parses a stored retention value: a decimal integer in 1..36500 days, nothing else.
 /// @param text The stored value.
-/// @return The number of days, or nullopt when the text is not one.
+/// @return The number of days, or nullopt when the text is not one in that range.
 auto parse_days(std::string_view text) -> std::optional<int> {
   int value            = 0;
   auto const [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), value);
-  if (ec != std::errc{} || ptr != text.data() + text.size() || value < 0) {
+  if (ec != std::errc{} || ptr != text.data() + text.size() || value < k_min_tagged_history_days ||
+      value > k_max_tagged_history_days) {
     return std::nullopt;
   }
   return value;
@@ -191,193 +199,25 @@ auto read_header(planar::db::connection& conn, const std::filesystem::path& path
 // --- argv decoding ----------------------------------------------------------
 //
 // `queue_history.argv` stores a JSON array of strings, written by the engine's
-// `encode_argv` (src/engine/hostqueue/queue.cpp). Layer 1 cannot import the
-// engine, so the decoder is a copy of the engine's `decode_argv` shape. It
-// accepts the same grammar: a JSON array whose every element is a string, with
-// the escapes JSON defines.
+// `encode_argv` (src/engine/hostqueue/queue.cpp). The reader decodes it with
+// `planar.json_dom`, the parser the engine's `decode_argv` uses, so both read
+// the same grammar.
 
-/// @brief A read position in the stored text.
-struct cursor {
-  std::string_view text;    ///< The stored text.
-  std::size_t      pos = 0; ///< The next byte to read.
-};
-
-/// @brief Advances past JSON insignificant whitespace.
-/// @param cur The read position, moved in place.
-void skip_space(cursor& cur) {
-  while (cur.pos < cur.text.size()) {
-    char const ch = cur.text[cur.pos];
-    if (ch != ' ' && ch != '\t' && ch != '\n' && ch != '\r') {
-      return;
-    }
-    ++cur.pos;
-  }
-}
-
-/// @brief Reads four hexadecimal digits at `at`.
-/// @param text The stored text.
-/// @param at The offset of the first digit.
-/// @return The code unit, or nullopt when fewer than four hex digits are there.
-auto parse_hex4(std::string_view text, std::size_t at) -> std::optional<std::uint32_t> {
-  if (at + 4 > text.size()) {
-    return std::nullopt;
-  }
-  std::uint32_t value = 0;
-  for (std::size_t i = at; i < at + 4; ++i) {
-    char const    ch    = text[i];
-    std::uint32_t digit = 0;
-    if (ch >= '0' && ch <= '9') {
-      digit = static_cast<std::uint32_t>(ch - '0');
-    } else if (ch >= 'a' && ch <= 'f') {
-      digit = static_cast<std::uint32_t>(ch - 'a' + 10);
-    } else if (ch >= 'A' && ch <= 'F') {
-      digit = static_cast<std::uint32_t>(ch - 'A' + 10);
-    } else {
-      return std::nullopt;
-    }
-    value = (value << 4) | digit;
-  }
-  return value;
-}
-
-/// @brief Appends one code point as UTF-8.
-/// @param out The string to append to.
-/// @param cp The code point, at most U+10FFFF and not a surrogate.
-void append_utf8(std::string& out, std::uint32_t cp) {
-  if (cp < 0x80) {
-    out.push_back(static_cast<char>(cp));
-  } else if (cp < 0x800) {
-    out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
-    out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-  } else if (cp < 0x10000) {
-    out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
-    out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
-    out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-  } else {
-    out.push_back(static_cast<char>(0xF0 | (cp >> 18)));
-    out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
-    out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
-    out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-  }
-}
-
-/// @brief Reads one JSON string, starting at its opening quote.
-/// @param cur The read position, moved past the closing quote on success.
-/// @return The decoded string, or nullopt when the text is not a JSON string.
-auto parse_string(cursor& cur) -> std::optional<std::string> {
-  if (cur.pos >= cur.text.size() || cur.text[cur.pos] != '"') {
-    return std::nullopt;
-  }
-  ++cur.pos;
-  std::string out;
-  while (cur.pos < cur.text.size()) {
-    char const ch = cur.text[cur.pos++];
-    if (ch == '"') {
-      return out;
-    }
-    if (static_cast<unsigned char>(ch) < 0x20) {
-      return std::nullopt;
-    }
-    if (ch != '\\') {
-      out.push_back(ch);
-      continue;
-    }
-    if (cur.pos >= cur.text.size()) {
-      return std::nullopt;
-    }
-    char const esc = cur.text[cur.pos++];
-    switch (esc) {
-    case '"':
-    case '\\':
-    case '/':
-      out.push_back(esc);
-      break;
-    case 'b':
-      out.push_back('\b');
-      break;
-    case 'f':
-      out.push_back('\f');
-      break;
-    case 'n':
-      out.push_back('\n');
-      break;
-    case 'r':
-      out.push_back('\r');
-      break;
-    case 't':
-      out.push_back('\t');
-      break;
-    case 'u': {
-      auto unit = parse_hex4(cur.text, cur.pos);
-      if (!unit) {
-        return std::nullopt;
-      }
-      cur.pos += 4;
-      std::uint32_t cp = *unit;
-      if (cp >= 0xD800 && cp <= 0xDBFF) {
-        // A high surrogate must be followed by a low one, and the pair names one code point.
-        if (cur.pos + 2 > cur.text.size() || cur.text[cur.pos] != '\\' || cur.text[cur.pos + 1] != 'u') {
-          return std::nullopt;
-        }
-        auto low = parse_hex4(cur.text, cur.pos + 2);
-        if (!low || *low < 0xDC00 || *low > 0xDFFF) {
-          return std::nullopt;
-        }
-        cur.pos += 6;
-        cp = 0x10000 + ((cp - 0xD800) << 10) + (*low - 0xDC00);
-      } else if (cp >= 0xDC00 && cp <= 0xDFFF) {
-        return std::nullopt;
-      }
-      append_utf8(out, cp);
-      break;
-    }
-    default:
-      return std::nullopt;
-    }
-  }
-  return std::nullopt;
-}
-
-/// @brief Decodes a stored `argv` column.
-/// @param text The column text.
-/// @return The arguments, or nullopt when the text is not a JSON array of strings.
+/// @brief Decodes a stored argv: a JSON array whose every element is a string.
+/// @param text The stored argv text.
+/// @return The strings, or nullopt when the text is not such an array.
 auto decode_argv(std::string_view text) -> std::optional<std::vector<std::string>> {
-  cursor cur{.text = text};
-  skip_space(cur);
-  if (cur.pos >= text.size() || text[cur.pos] != '[') {
+  auto parsed = json_dom::parse_json(text);
+  if (!parsed || parsed->kind != json_dom::json_kind::array) {
     return std::nullopt;
   }
-  ++cur.pos;
   std::vector<std::string> argv;
-  skip_space(cur);
-  if (cur.pos < text.size() && text[cur.pos] == ']') {
-    ++cur.pos;
-  } else {
-    while (true) {
-      skip_space(cur);
-      auto element = parse_string(cur);
-      if (!element) {
-        return std::nullopt;
-      }
-      argv.push_back(std::move(*element));
-      skip_space(cur);
-      if (cur.pos >= text.size()) {
-        return std::nullopt;
-      }
-      if (text[cur.pos] == ',') {
-        ++cur.pos;
-        continue;
-      }
-      if (text[cur.pos] == ']') {
-        ++cur.pos;
-        break;
-      }
+  argv.reserve(parsed->array.size());
+  for (auto& element : parsed->array) {
+    if (element.kind != json_dom::json_kind::string) {
       return std::nullopt;
     }
-  }
-  skip_space(cur);
-  if (cur.pos != text.size()) {
-    return std::nullopt;
+    argv.push_back(std::move(element.string));
   }
   return argv;
 }

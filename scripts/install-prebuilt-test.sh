@@ -9,8 +9,8 @@
 #   - an old agent.db and its sidecars and old numbered queue logs are moved,
 #     unread, into retired/<date>/, colliding names are never overwritten, and
 #     the probe in front of it is the shared classifier (a plans answer that is
-#     not exactly one JSON list, and an unreadable or ahead database, are refused
-#     before anything changes);
+#     not exactly one JSON object with a plans array, and an unreadable or ahead
+#     database, are refused before anything changes);
 #   - --link with --prebuilt exits 2 and a bundle missing a binary (or another
 #     required file) exits 1, each before ~/.planar exists;
 #   - a source install writes release.json whose version is the sixth token of

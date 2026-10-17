@@ -52,7 +52,8 @@ The migration runner reads the table before it applies anything:
   table and no `queue_identity` table. That is a `planar.db`.
 - An empty file is accepted by either chain.
 
-A refusal names both files, runs no statement, and leaves the file unchanged.
+A refusal names the two database kinds (a build queue database or a planar.db),
+runs no statement, and leaves the file unchanged.
 The check lives in `planar.db.migrate` (`apply_all` and `apply_build_queue`), so
 both chains get it.
 

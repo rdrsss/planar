@@ -7,8 +7,9 @@
 //  - hostqueue SQL names no planning table (it may name `queue_entries`,
 //    `queue_history`, `queue_schema`, `sqlite_sequence`, and introspect with
 //    `sqlite_master` and `pragma_table_info`, which the schema module does);
-//  - no SQL literal outside the hostqueue directory, the migrations and the
-//    tests names a queue table;
+//  - no SQL literal outside the hostqueue directory, the reader directory
+//    (`src/lib/buildqueue`, Planar's sanctioned read-only path to the queue),
+//    the migrations and the tests names a queue table;
 //  - the queue tables have no foreign key to or from any other table, and no
 //    trigger or view mentions them.
 // A literal counts as SQL when it contains `select`, `insert`, `update`,
@@ -96,7 +97,7 @@ auto hostqueue_violations(std::string_view source, const std::set<std::string, s
 }
 
 // Rule 2. Every SQL literal in `source` (any file outside hostqueue, the
-// migrations and the tests) that names a queue table.
+// reader directory, the migrations and the tests) that names a queue table.
 auto queue_name_violations(std::string_view source) -> std::vector<std::string> {
   std::vector<std::string> out;
   for (auto const& literal : string_literals(source)) {
@@ -198,6 +199,14 @@ auto in_hostqueue(const std::filesystem::path& path) -> bool {
   return path.parent_path().lexically_normal() == (source_root() / "engine" / "hostqueue").lexically_normal();
 }
 
+// The reader directory: Planar's read-only path to the host queue database
+// (`planar.buildqueue.reader`). It is the other allowed home for queue SQL
+// besides hostqueue; the migrations sit outside `src/`, so the scan never
+// reaches them.
+auto in_buildqueue(const std::filesystem::path& path) -> bool {
+  return path.parent_path().lexically_normal() == (source_root() / "lib" / "buildqueue").lexically_normal();
+}
+
 // Production sources of the hostqueue directory.
 auto hostqueue_sources() -> std::vector<std::filesystem::path> {
   std::vector<std::filesystem::path> out;
@@ -209,11 +218,23 @@ auto hostqueue_sources() -> std::vector<std::filesystem::path> {
   return out;
 }
 
-// Every production source under src/ outside the hostqueue directory.
+// Production sources of the reader directory.
+auto buildqueue_sources() -> std::vector<std::filesystem::path> {
+  std::vector<std::filesystem::path> out;
+  for (auto const& file : production_sources(source_root())) {
+    if (in_buildqueue(file)) {
+      out.push_back(file);
+    }
+  }
+  return out;
+}
+
+// Every production source under src/ outside the hostqueue and reader
+// directories.
 auto other_sources() -> std::vector<std::filesystem::path> {
   std::vector<std::filesystem::path> out;
   for (auto const& file : production_sources(source_root())) {
-    if (!in_hostqueue(file)) {
+    if (!in_hostqueue(file) && !in_buildqueue(file)) {
       out.push_back(file);
     }
   }
@@ -221,8 +242,8 @@ auto other_sources() -> std::vector<std::filesystem::path> {
 }
 
 constexpr std::string_view k_remedy_outside =
-    "remedy: call the planar.engine.hostqueue API instead; queue SQL belongs in src/engine/hostqueue (tech spec 656 § "
-    "Separability)";
+    "remedy: call the planar.engine.hostqueue API, or the planar.buildqueue reader for read-only access; queue SQL "
+    "belongs in src/engine/hostqueue or src/lib/buildqueue (tech spec 656 § Separability)";
 constexpr std::string_view k_remedy_inside =
     "remedy: move the planning query out of hostqueue; hostqueue SQL may name only the queue tables, sqlite_sequence and "
     "SQLite introspection (tech spec 656 § Separability)";
@@ -404,7 +425,7 @@ TEST_CASE("a header is exempt from the separability rules only when every includ
   CHECK(report.contains("prod/orphan.hpp: names queue table 'queue_schema': update queue_schema set compat = 2"));
   CHECK_FALSE(report.contains("test_store.hpp"));
   CHECK_FALSE(report.contains("chain.hpp"));
-  CHECK(report.contains("call the planar.engine.hostqueue API instead"));
+  CHECK(report.contains("call the planar.engine.hostqueue API, or the planar.buildqueue reader"));
   CHECK(report.contains("tech spec 656"));
 
   // The inside-hostqueue remedy names the other direction.
@@ -498,6 +519,17 @@ TEST_CASE("no SQL literal outside hostqueue, the migrations and the tests names 
     hits += queue_name_violations(read_text(file)).size();
   }
   CHECK(hits >= 10);
+
+  // Control for the reader directory: the same scan, pointed at src/lib/buildqueue,
+  // sees `queue_history` in the reader's own SQL. The exemption therefore hides
+  // real queue SQL, not an empty directory.
+  auto const reader_files = buildqueue_sources();
+  REQUIRE(!reader_files.empty());
+  std::size_t reader_hits = 0;
+  for (auto const& file : reader_files) {
+    reader_hits += queue_name_violations(read_text(file)).size();
+  }
+  CHECK(reader_hits >= 1);
 }
 
 // ---------------------------------------------------------------------------

@@ -420,9 +420,10 @@ qr_run planar_db_probe || fail "the probe failed on a prefix with no planar.db: 
 [[ ! -e "$QR_P/planar.db" ]] || fail "the probe created planar.db"
 qr_untouched
 
-# Current: `planar-watch plans --json` answers a JSON list, whatever the list
-# holds. It runs from / against the prefix database, and the probe asks
-# planar-agent nothing: the queue tables are not read and no queue verb is run.
+# Current: `planar-watch plans --json` answers one JSON object with a `plans`
+# array, whatever the array holds. It runs from / against the prefix database,
+# and the probe asks planar-agent nothing: the queue tables are not read and no
+# queue verb is run.
 qr_current_case=0
 for qr_list in '{"generated_at":"t","plans":[]}' '{"generated_at":"t","plans":[{"plan_id":1,"active_claims":0,"active_actions":0}]}'; do
   qr_current_case=$((qr_current_case + 1))
@@ -478,7 +479,7 @@ qr_untouched
 
 # Faults keep the probe's own diagnostic: unreadable or corrupt (exit 1), an
 # exit-7 answer whose versions cannot be read, and an answer that is not
-# exactly one JSON list.
+# exactly one JSON object with a plans array.
 qr_fault_case=0
 for qr_fault in \
   "1||error: cannot read the database at /x/planar.db: file is not a database.|cannot read the database" \
