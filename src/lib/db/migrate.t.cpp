@@ -1898,3 +1898,190 @@ TEST_CASE("a database with no version table is still a fresh database at version
   REQUIRE(version.has_value());
   CHECK(*version == 0);
 }
+
+// ---------------------------------------------------------------------------
+// Plan 1163, task bq-migrations-chain: the build queue's own chain (decisions
+// 1430, 1432 and 1440; tech spec 705 § Schema Changes). Its 0001_init creates
+// the queue tables in their final shape, and apply_build_queue refuses a
+// planar.db before any statement runs.
+
+namespace {
+
+/// @brief The bytes of `path`, read whole, so a refused apply can be shown to
+/// have left the file untouched.
+auto file_bytes(std::filesystem::path const& path) -> std::string {
+  std::ifstream in(path, std::ios::binary);
+  return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
+/// @brief Whether `conn` holds a table named `name`.
+auto has_table(planar::db::connection& conn, std::string_view name) -> bool {
+  auto stmt = conn.prepare(std::format("select count(*) from sqlite_master where type = 'table' and name = '{}'", name));
+  REQUIRE(stmt.has_value());
+  REQUIRE(stmt->step().has_value());
+  return stmt->column_int64(0) == 1;
+}
+
+/// @brief How many of `columns` are columns of `table`.
+auto columns_present(planar::db::connection& conn, std::string_view table, std::string_view columns) -> std::int64_t {
+  auto stmt = conn.prepare(std::format("select count(*) from pragma_table_info('{}') where name in ({})", table, columns));
+  REQUIRE(stmt.has_value());
+  REQUIRE(stmt->step().has_value());
+  return stmt->column_int64(0);
+}
+
+} // namespace
+
+TEST_CASE("the build queue chain creates its tables, identity, marker and sequence floor, and up-down-up is lossless",
+          "[db][migrate][build_queue][bq-migrations-chain]") {
+  scratch_db_path scratch;
+  auto            conn = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(conn.has_value());
+
+  REQUIRE(planar::db::apply_build_queue(*conn).has_value());
+
+  for (auto const table :
+       {"queue_entries", "queue_history", "queue_schema", "queue_identity", "queue_settings", "schema_migrations"}) {
+    INFO("table " << table);
+    CHECK(has_table(*conn, table));
+  }
+
+  // The queue's own tables carry no vendor, role or claim token, and carry tag.
+  for (auto const table : {"queue_entries", "queue_history"}) {
+    INFO("table " << table);
+    CHECK(columns_present(*conn, table, "'vendor', 'role', 'claim_token'") == 0);
+    CHECK(columns_present(*conn, table, "'tag'") == 1);
+  }
+
+  // Each probe below is scoped so its statement is finalized before the
+  // down migration runs: a live statement keeps its tables locked, and the
+  // drops would fail with SQLITE_LOCKED.
+
+  // queue_schema holds the marker row (1, 1).
+  {
+    auto marker = conn->prepare("select count(*), min(version), min(compat) from queue_schema");
+    REQUIRE(marker.has_value());
+    REQUIRE(marker->step().has_value());
+    CHECK(marker->column_int64(0) == 1);
+    CHECK(marker->column_int64(1) == 1);
+    CHECK(marker->column_int64(2) == 1);
+  }
+
+  // queue_identity holds exactly one row, kind planar-build-queue.
+  {
+    auto identity = conn->prepare("select count(*), min(kind) from queue_identity");
+    REQUIRE(identity.has_value());
+    REQUIRE(identity->step().has_value());
+    CHECK(identity->column_int64(0) == 1);
+    CHECK(identity->column_text(1) == "planar-build-queue");
+  }
+
+  // The CHECK on queue_settings' key list refuses a key the list does not name.
+  CHECK_FALSE(conn->execute("insert into queue_settings (key, value) values ('bogus', '1')").has_value());
+
+  // schema_migrations holds exactly row 1, in this database's own table.
+  {
+    auto version_row = conn->prepare("select count(*), max(version) from schema_migrations");
+    REQUIRE(version_row.has_value());
+    REQUIRE(version_row->step().has_value());
+    CHECK(version_row->column_int64(0) == 1);
+    CHECK(version_row->column_int64(1) == 1);
+  }
+
+  // The build queue's chain reads as current to its own handshake.
+  {
+    auto state = planar::db::assert_schema_compatible(*conn, planar::db::build_queue_migrations());
+    REQUIRE(state.has_value());
+    CHECK(state->verdict_ == planar::db::schema_compatibility::current);
+    CHECK(state->embedded_max_ == 1);
+  }
+
+  // The sequence floor: the first enqueued entry is 2000001.
+  REQUIRE(conn->execute("insert into queue_entries (state, host_id, pid, pid_started, cwd, argv, enqueued_at, refreshed_mono) "
+                        "values ('waiting', 'host', 1, 1, '/', '[]', 0, 0)")
+              .has_value());
+  {
+    auto floor = conn->prepare("select max(seq) from queue_entries");
+    REQUIRE(floor.has_value());
+    REQUIRE(floor->step().has_value());
+    CHECK(floor->column_int64(0) == 2000001);
+  }
+
+  // Re-applying to a build queue database is a no-op that its own identity
+  // check accepts.
+  CHECK(planar::db::apply_build_queue(*conn).has_value());
+
+  // Up, down, up leaves the same schema.
+  auto const chain = planar::db::build_queue_migrations();
+  REQUIRE(chain.size() == 1);
+  auto const first = canonical_schema_dump(*conn);
+  REQUIRE(conn->execute(chain[0].down_sql_).has_value());
+  // The down drops every table it created. SQLite leaves an empty
+  // sqlite_sequence behind, so the check names the tables rather than the dump.
+  for (auto const table :
+       {"queue_entries", "queue_history", "queue_schema", "queue_identity", "queue_settings", "schema_migrations"}) {
+    INFO("table " << table);
+    CHECK_FALSE(has_table(*conn, table));
+  }
+  REQUIRE(planar::db::apply_build_queue(*conn).has_value());
+  CHECK(canonical_schema_dump(*conn) == first);
+}
+
+TEST_CASE("the main chain and the build queue chain never cross: each refuses the other's file before any statement runs",
+          "[db][migrate][build_queue][bq-migrations-chain]") {
+  scratch_db_path bq_scratch;
+  scratch_db_path main_scratch;
+
+  // Create one file of each kind and close it, so each refusal is measured
+  // against a settled file.
+  {
+    auto bq = planar::db::connection::open(bq_scratch.path_.string());
+    REQUIRE(bq.has_value());
+    REQUIRE(planar::db::apply_build_queue(*bq).has_value());
+  }
+  {
+    auto main = planar::db::connection::open(main_scratch.path_.string());
+    REQUIRE(main.has_value());
+    REQUIRE(planar::db::apply_all(*main).has_value());
+  }
+
+  SECTION("the main chain is refused on a build queue database, and the file is unchanged") {
+    auto const before = file_bytes(bq_scratch.path_);
+    auto const result = [&] {
+      auto conn = planar::db::connection::open(bq_scratch.path_.string());
+      REQUIRE(conn.has_value());
+      return planar::db::apply_all(*conn);
+    }();
+
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error().message_.contains("refusing to apply the main chain"));
+    CHECK(file_bytes(bq_scratch.path_) == before);
+  }
+
+  SECTION("the build queue chain is refused on a planar.db, and the file is unchanged") {
+    auto const before = file_bytes(main_scratch.path_);
+    auto const result = [&] {
+      auto conn = planar::db::connection::open(main_scratch.path_.string());
+      REQUIRE(conn.has_value());
+      return planar::db::apply_build_queue(*conn);
+    }();
+
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error().message_.contains("refusing to apply the build queue chain"));
+    CHECK(file_bytes(main_scratch.path_) == before);
+  }
+}
+
+TEST_CASE("the embedded build queue chain is exactly the files under migrations-build-queue/",
+          "[db][migrations][bq-migrations-chain]") {
+  // Compared with the DIRECTORY it claims to embed, as the main chain is, so a
+  // dropped or stale generated unit fails here.
+  auto const chain = planar::db::build_queue_migrations();
+  REQUIRE_FALSE(chain.empty());
+
+  auto const files = up_files_in(PLANAR_BUILD_QUEUE_MIGRATIONS_DIR);
+  REQUIRE_FALSE(files.empty());
+  CHECK(records_of(chain) == files);
+  CHECK(planar::db::require_contiguous(chain).has_value());
+  CHECK(planar::db::embedded_max(chain) == chain.size());
+}

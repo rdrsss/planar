@@ -9,9 +9,10 @@
 # the build tree, never the source tree.
 #
 # One call per migration stream. The stream's identity in the generated unit
-# is parameterized so a stream lands in its own module; the only caller today
-# is src/lib/db/CMakeLists.txt, for `migrations/` (the agent database's second
-# stream was retired with agent.db, plan 1089):
+# is parameterized so a stream lands in its own module. src/lib/db/CMakeLists.txt
+# calls it twice: for `migrations/` (the main chain) and for
+# `migrations-build-queue/` (the build queue's chain, plan 1163), each with its
+# own ACCESSOR and OUT_FILE, both implementing `planar.db.migrations`:
 #
 #   MODULE_NAME     the module the unit implements (`planar.db.migrations`)
 #   NAMESPACE       the C++ namespace the accessor is defined in

@@ -58,6 +58,54 @@ constexpr int k_sqlite_misuse = 21;
 
 } // namespace
 
+namespace {
+
+/// @brief Whether `table` exists in `conn`'s `sqlite_master`. `table` is one
+/// of this file's constant identity names, never operator input.
+/// @param conn The connection to inspect.
+/// @param table The table name to look for.
+/// @return Whether the table exists, or the SQLite failure.
+auto table_exists(connection& conn, std::string_view table) -> std::expected<bool, db_error> {
+  auto stmt = conn.prepare(std::format("select count(*) from sqlite_master where type = 'table' and name = '{}'", table));
+  if (!stmt) {
+    return std::unexpected(stmt.error());
+  }
+  auto step = stmt->step();
+  if (!step) {
+    return std::unexpected(step.error());
+  }
+  return stmt->column_int64(0) > 0;
+}
+
+} // namespace
+
+auto require_chain_identity(connection& conn, database_chain chain) -> std::expected<void, db_error> {
+  auto const is_build_queue = table_exists(conn, "queue_identity");
+  if (!is_build_queue) {
+    return std::unexpected(is_build_queue.error());
+  }
+  auto const is_main = table_exists(conn, k_main_version_table);
+  if (!is_main) {
+    return std::unexpected(is_main.error());
+  }
+
+  if (chain == database_chain::main && *is_build_queue) {
+    return std::unexpected(db_error{
+        .code_    = k_sqlite_misuse,
+        .message_ = "refusing to apply the main chain: this is a planar-build-queue database (it has queue_identity); "
+                    "the main chain belongs in planar.db",
+    });
+  }
+  if (chain == database_chain::build_queue && !*is_build_queue && *is_main) {
+    return std::unexpected(db_error{
+        .code_    = k_sqlite_misuse,
+        .message_ = "refusing to apply the build queue chain: this is a planar.db (it has schema_migrations and no "
+                    "queue_identity); the build queue chain belongs in planar-build-queue.db",
+    });
+  }
+  return {};
+}
+
 auto embedded_max(std::span<migration_record const> chain) -> std::uint32_t {
   std::uint32_t highest = 0;
   for (auto const& record : chain) {
@@ -217,7 +265,20 @@ auto apply_all(connection& conn) -> std::expected<void, db_error> {
   // `subspan(0, i + 1)` prefix). Enforcing it there would reject the
   // seam's whole purpose while adding nothing: a caller that hands over
   // its own chain already knows what it built.
+  //
+  // The chain-identity refusal runs first, before any statement: a
+  // build-queue database must never take the main chain.
+  if (auto identity = require_chain_identity(conn, database_chain::main); !identity) {
+    return std::unexpected(identity.error());
+  }
   return apply_contiguous(conn, migrations());
+}
+
+auto apply_build_queue(connection& conn) -> std::expected<void, db_error> {
+  if (auto identity = require_chain_identity(conn, database_chain::build_queue); !identity) {
+    return std::unexpected(identity.error());
+  }
+  return apply_contiguous(conn, build_queue_migrations());
 }
 
 auto apply_contiguous(connection& conn, std::span<migration_record const> chain) -> std::expected<void, db_error> {

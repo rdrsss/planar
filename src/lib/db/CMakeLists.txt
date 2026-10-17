@@ -26,6 +26,16 @@ planar_generate_migrations(
   OUT_FILE "${_planar_db_migrations_generated}"
   MODULE_NAME "planar.db.migrations")
 
+# The build queue's chain (plan 1163) is a second stream in the same module,
+# with its own accessor and generated unit, so the two never share a name.
+set(_planar_db_build_queue_generated
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/build_queue_migrations.generated.cpp")
+planar_generate_migrations(
+  MIGRATIONS_DIR "${CMAKE_SOURCE_DIR}/migrations-build-queue"
+  OUT_FILE "${_planar_db_build_queue_generated}"
+  MODULE_NAME "planar.db.migrations"
+  ACCESSOR "build_queue_migrations")
+
 planar_module(db
   INTERFACE
     db.cppm
@@ -35,6 +45,7 @@ planar_module(db
     db.cpp
     migrate.cpp
     "${_planar_db_migrations_generated}"
+    "${_planar_db_build_queue_generated}"
   EMBED)
 
 target_link_libraries(planar_db PRIVATE SQLite::SQLite3)
@@ -47,5 +58,6 @@ if(TARGET planar_db_tests)
   # migrate.t.cpp compares the embedded chain with the DIRECTORY it claims
   # to embed, so the test binary knows the stream directory in the source tree.
   target_compile_definitions(planar_db_tests PRIVATE
-    "PLANAR_MIGRATIONS_DIR=\"${CMAKE_SOURCE_DIR}/migrations\"")
+    "PLANAR_MIGRATIONS_DIR=\"${CMAKE_SOURCE_DIR}/migrations\""
+    "PLANAR_BUILD_QUEUE_MIGRATIONS_DIR=\"${CMAKE_SOURCE_DIR}/migrations-build-queue\"")
 endif()
