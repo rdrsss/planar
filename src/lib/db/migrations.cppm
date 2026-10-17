@@ -37,4 +37,12 @@ export struct migration_record {
 /// @return An ordered, immutable view over every embedded migration.
 export auto migrations() -> std::span<migration_record const>;
 
+/// @brief The build queue's embedded migration chain, in
+/// ascending version order: generated at configure time from
+/// `migrations-build-queue/*.up.sql` by the same codegen as `migrations()`.
+/// It is a separate chain for a separate database (the build queue database),
+/// so its versions are its own, starting at `1`.
+/// @return An ordered, immutable view over every build queue migration.
+export auto build_queue_migrations() -> std::span<migration_record const>;
+
 } // namespace planar::db

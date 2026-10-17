@@ -40,6 +40,28 @@ export constexpr std::string_view k_main_version_table = "schema_migrations";
 /// SQLite failure as a `db_error` for any other kind of failure.
 export auto current_version(connection& conn) -> std::expected<std::uint32_t, db_error>;
 
+/// @brief Which chain a database belongs to, by its identity tables. A
+/// `planar.db` (`main`) and the build queue database (`build_queue`) share
+/// the `schema_migrations` contract but never a file, so the apply entry
+/// points refuse the chain that is not theirs.
+export enum class database_chain : std::uint8_t {
+  main,        ///< The main chain (`migrations()`), for `planar.db`.
+  build_queue, ///< The build queue chain (`build_queue_migrations()`), for the build queue database.
+};
+
+/// @brief Refuses to apply `chain` to a database that belongs to the other
+/// chain. Read-only: it inspects `sqlite_master` and writes nothing.
+///
+/// Identity is the `queue_identity` table, which only the build queue chain
+/// creates. A database with `queue_identity` is a build-queue database; a
+/// database with `schema_migrations` and no `queue_identity` is a `planar.db`.
+/// An empty file is neither, so either chain may create it.
+/// @param conn The connection to inspect, before any migration runs.
+/// @param chain The chain the caller is about to apply.
+/// @return Success, or a `db_error` naming both files when the chain is not
+/// the database's own, or the SQLite failure as a `db_error`.
+export auto require_chain_identity(connection& conn, database_chain chain) -> std::expected<void, db_error>;
+
 /// @brief The verdict of the schema-version handshake between a live
 /// database and the migration chain a binary embeds.
 ///
@@ -208,8 +230,8 @@ export auto apply_all(connection& conn, std::span<migration_record const> chain)
 
 /// @brief Apply `chain` after enforcing that it is CONTIGUOUS from 1.
 ///
-/// The enforcement point `apply_all(connection&)` delegates to (task 6697).
-/// It exists as a named, callable function rather than as three inline lines
+/// The enforcement point `apply_all(connection&)` and `apply_build_queue`
+/// delegate to (task 6697). It exists as a named, callable function rather than as three inline lines
 /// so the enforcement itself can be pinned by a test: the embedded chain is
 /// contiguous, so a guard wired only into `apply_all(connection&)` can never
 /// fire, and a reviewer probe deleting that call passed the ENTIRE suite
@@ -225,10 +247,19 @@ export auto apply_all(connection& conn, std::span<migration_record const> chain)
 export auto apply_contiguous(connection& conn, std::span<migration_record const> chain) -> std::expected<void, db_error>;
 
 /// @brief Convenience overload applying `planar::db::migrations()` — the
-/// real embedded chain.
+/// real embedded chain. Refuses a build-queue database before any statement
+/// runs (`require_chain_identity`).
 /// @param conn The connection to migrate.
-/// @return Success, or the failing migration's `db_error`.
+/// @return Success, or the refusal, or the failing migration's `db_error`.
 export auto apply_all(connection& conn) -> std::expected<void, db_error>;
+
+/// @brief Applies `planar::db::build_queue_migrations()` to a build queue
+/// database. Refuses a `planar.db` before any statement runs
+/// (`require_chain_identity`), then applies the chain with the same
+/// contiguity check and immediate-lock transactions as `apply_all`.
+/// @param conn The connection to migrate.
+/// @return Success, or the refusal, or the failing migration's `db_error`.
+export auto apply_build_queue(connection& conn) -> std::expected<void, db_error>;
 
 /// @brief Runs every down migration in `chain`, in descending version
 /// order, unconditionally — mirrors `zig/src/db/migrate.zig`'s
