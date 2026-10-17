@@ -419,12 +419,28 @@ TEST_CASE("reader: a stored argv with escaped characters decodes to the strings 
   {
     auto conn = make_queue_db(path);
     // A quote, a backslash, a solidus escape, a tab, a \u escape and literal UTF-8 (U+00E9 both ways).
+    // The \u escape is six stored characters, backslash u 0 0 e 9, so the decoder must expand it.
     insert_run(conn, 2000001, "T", R"(["a\"b","back\\slash","\/","x\ty","é","é"])", "exited", 0, 1);
   }
   auto const runs = read_tagged_runs(path, "T");
   REQUIRE(runs.has_value());
   REQUIRE(runs->runs.size() == 1);
   CHECK(runs->runs[0].argv == std::vector<std::string>{"a\"b", "back\\slash", "/", "x\ty", "\xC3\xA9", "\xC3\xA9"});
+}
+
+TEST_CASE("reader: a lone surrogate escape decodes as planar.json_dom decodes it", "[buildqueue][reader]") {
+  scratch_dir scratch;
+  auto const  path = scratch.file("lone-surrogate.db");
+  {
+    auto conn = make_queue_db(path);
+    // The stored text holds the six characters backslash u D 8 0 0. The engine's decode_argv
+    // parses the same text with the same planar.json_dom call, so both yield these bytes.
+    insert_run(conn, 2000001, "T", R"(["\uD800"])", "exited", 0, 1);
+  }
+  auto const runs = read_tagged_runs(path, "T");
+  REQUIRE(runs.has_value());
+  REQUIRE(runs->runs.size() == 1);
+  CHECK(runs->runs[0].argv == std::vector<std::string>{"\xED\xA0\x80"});
 }
 
 TEST_CASE("reader: the retention bounds 1 and 36500 read as themselves", "[buildqueue][reader]") {
