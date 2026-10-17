@@ -1,7 +1,6 @@
 /// @file path.cppm
 /// @brief `planar.buildqueue.path` — the layer-1 resolver for the host build
-/// queue's database and its detached-run log directory (plan 1163, decision
-/// 1438).
+/// queue's database and its detached-run log directory (decision 1438).
 ///
 /// Entry points: `resolve_queue_db_path(env)` picks the database file, and
 /// `queue_log_directory(db_path)` names the directory that holds detached-run

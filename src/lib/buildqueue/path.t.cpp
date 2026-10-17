@@ -1,5 +1,5 @@
 // @file path.t.cpp
-// @brief Unit tests for `planar.buildqueue.path` (plan 1163, decision 1438).
+// @brief Unit tests for `planar.buildqueue.path` (decision 1438).
 // Every case drives the resolver with an injected map, so no test reads or
 // sets a process environment variable.
 

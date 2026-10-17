@@ -1,5 +1,5 @@
 # planar.buildqueue — layer-1 home of the host build queue's database and log
-# locations (plan 1163, decision 1438).
+# locations (decision 1438).
 #
 # Layer 1 by name (cmake/architecture.cmake classifies anything not `cmd_*` /
 # `engine_*` as layer 1). DEPENDS nothing: the resolver is a pure function of
