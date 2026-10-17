@@ -1,7 +1,9 @@
 // @file arena_pins.t.cpp
 // @brief The arena pins every entry point that runs a from-source binary to
-// scratch state: the harness strips an inherited `PLANAR_QUEUE_SLOT`, and the
-// three gate scripts and the `make smoke` recipe pin `PLANAR_DB`.
+// scratch state: the harness strips the inherited queue markers and the build
+// queue database override (`PLANAR_QUEUE_SLOT`, `PLANAR_BUILD_QUEUE_SLOT`,
+// `PLANAR_BUILD_QUEUE_DB`), and the three gate scripts and the `make smoke`
+// recipe pin `PLANAR_DB`.
 //
 // This file replaces `arena_agent_db.t.cpp` (plan 1089 M1). The agent
 // database is gone, so nothing pins `PLANAR_AGENT_DB` any more; the pins that
@@ -273,6 +275,29 @@ TEST_CASE("arena: a map that names PLANAR_QUEUE_SLOT still delivers it", "[arena
   INFO("env dump:\n" << got.out);
   REQUIRE(got.code == 0);
   CHECK(slot_from_env_dump(got.out) == std::optional<std::string>{"5"});
+}
+
+TEST_CASE("arena: a child sees no build queue variables and its default queue path lies under the arena HOME", "[arena][queue]") {
+  // A developer's shell can carry a build queue database override or a slot
+  // marker. Planted here, the harness must strip both from the child, or the
+  // child would resolve the queue path from the caller's environment.
+  scoped_env const inherited_db{"PLANAR_BUILD_QUEUE_DB", "/nonexistent/foreign/build-queue.db"};
+  scoped_env const inherited_slot{"PLANAR_BUILD_QUEUE_SLOT", "424242"};
+  REQUIRE(std::getenv("PLANAR_BUILD_QUEUE_DB") != nullptr); // the plants took effect
+  REQUIRE(std::getenv("PLANAR_BUILD_QUEUE_SLOT") != nullptr);
+
+  auto const arena = make_arena("queue_path_home");
+  auto const got   = run_pinned("/usr/bin/env", std::span<const std::string>{}, arena.cpp_root, "envdump");
+  INFO("env dump:\n" << got.out);
+  REQUIRE(got.code == 0);
+  CHECK_FALSE(var_from_env_dump(got.out, "PLANAR_BUILD_QUEUE_DB").has_value());
+  CHECK_FALSE(var_from_env_dump(got.out, "PLANAR_BUILD_QUEUE_SLOT").has_value());
+  // The child's HOME is the arena's, so the database it would fall back to,
+  // $HOME/.planar/build-queue.db, lies under the arena and not the real home.
+  auto const home = var_from_env_dump(got.out, "HOME");
+  REQUIRE(home == std::optional<std::string>{(arena.cpp_root / "fakehome").string()});
+  auto const fallback = std::filesystem::path{*home} / ".planar" / "build-queue.db";
+  CHECK(fallback.string().starts_with(arena.cpp_root.string()));
 }
 
 // ---------------------------------------------------------------------------

@@ -114,15 +114,18 @@ inline auto pinned_env(const std::filesystem::path& work) -> std::vector<pinned_
 
 /// @brief The `env VAR=... ` prefix a pinned invocation runs behind.
 ///
-/// It first removes `PLANAR_QUEUE_SLOT` (task 7061): a suite run under
+/// It first removes the queue markers: `PLANAR_QUEUE_SLOT` (the old name) and
+/// `PLANAR_BUILD_QUEUE_SLOT` (its successor). A suite run under
 /// `planar-agent queue run -- make test` inherits the marker, and every arena
-/// submitter would then look like a nested run of that entry. The removal
-/// comes before the assignments, so a map that names the marker still
+/// submitter would then look like a nested run of that entry. It also removes
+/// `PLANAR_BUILD_QUEUE_DB`, so no child resolves the build queue database
+/// from the caller's environment and can reach a real file. The removals come
+/// before the assignments, so a map that names one of these variables still
 /// delivers it.
 /// @param env The variables, normally `pinned_env(work)`.
 /// @return A shell fragment ending in a trailing space, ready for a binary.
 inline auto pinned_env_prefix(std::span<const pinned_var> env) -> std::string {
-  std::string child = "env -u PLANAR_QUEUE_SLOT";
+  std::string child = "env -u PLANAR_QUEUE_SLOT -u PLANAR_BUILD_QUEUE_SLOT -u PLANAR_BUILD_QUEUE_DB";
   // Options first: `env` stops reading options at the first assignment.
   for (auto const& var : env) {
     if (var.unset) {
