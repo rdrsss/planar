@@ -747,7 +747,7 @@ add_test(NAME queue_retire_reader
   COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/install-lib/queue_retire.test.py"
     "${PROJECT_SOURCE_DIR}/scripts/install-lib/queue_retire.py")
 set_tests_properties(queue_retire_reader PROPERTIES LABELS "queue;scripts")
-# `install_queue.t.cpp`'s `queue_retire_live_oracle` runs the same reader.
+# `install_probe.t.cpp`'s `queue_retire_live_oracle` runs the same reader.
 if(TARGET planar_cmd_planar_tests)
   target_compile_definitions(planar_cmd_planar_tests PRIVATE "PLANAR_PYTHON3=\"${Python3_EXECUTABLE}\"")
 endif()
