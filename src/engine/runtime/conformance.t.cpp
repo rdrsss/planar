@@ -75,6 +75,15 @@ struct world {
   int                         next_token       = 0;
   cf::policy_view             policy;
   std::vector<comp::gate_run> runs;
+  std::string                 runs_tag; ///< The tag `runs` are recorded under; empty matches every tag.
+  std::optional<std::string>  lookup_failure;
+  /// The build queue database's header: present, created long ago and keeping tagged runs for the maximum, so
+  /// the horizon sits before every fixture claim unless a case moves it.
+  cf::queue_header header{
+      .path = "/q/build-queue.db", .present = true, .created_at = "2020-01-01T00:00:00.000Z", .tagged_history_days = 36500};
+  std::optional<std::string> header_failure;
+  int                        header_calls = 0;
+  std::vector<std::string>   tags_asked;
 
   world() {
     exec(conn, "insert into sessions (vendor) values ('test'), ('test')");
@@ -101,6 +110,7 @@ struct world {
     std::string                lease_expires_at = std::string{k_future};
     std::optional<std::string> repo_root        = "/work/repo";
     bool                       with_parent      = true;
+    std::string                released_at      = "2026-02-02T00:00:00.000Z";
   };
 
   auto text_or_null(const std::optional<std::string>& value) -> std::string {
@@ -116,7 +126,7 @@ struct world {
                      "values ('{}', {}, 'task', {}, '{}', 'test', {}, {}, {}, '{}', '{}', {}, {})",
                      token, coder_session, task_id, spec.status, text_or_null(spec.role), text_or_null(spec.model),
                      text_or_null(spec.digest), spec.claimed_at, spec.lease_expires_at, text_or_null(spec.repo_root),
-                     spec.status == "active" ? "null" : "'2026-02-02T00:00:00.000Z'"));
+                     spec.status == "active" ? "null" : std::format("'{}'", spec.released_at)));
     auto const id = scalar_int(conn, "select max(id) from agent_work_claims");
     if (spec.with_parent) {
       exec(conn, "insert into agent_actions (session_id, action_kind, vendor) values (1, 'orchestrator', 'test')");
@@ -147,17 +157,38 @@ struct world {
   }
 
   auto lookup() -> comp::gate_run_lookup {
-    return [this](planar::db::connection&, std::string_view) -> std::expected<std::vector<comp::gate_run>, aa::agent_error> {
+    return [this](std::string_view tag) -> std::expected<std::vector<comp::gate_run>, std::string> {
+      tags_asked.emplace_back(tag);
+      if (lookup_failure.has_value()) {
+        return std::unexpected(*lookup_failure);
+      }
+      if (!runs_tag.empty() && tag != runs_tag) {
+        return std::vector<comp::gate_run>{};
+      }
       return runs;
     };
   }
 
-  auto grade(std::optional<std::int64_t> floor = std::nullopt) -> cf::report {
+  auto header_reader() -> cf::queue_header_reader {
+    return [this]() -> std::expected<cf::queue_header, std::string> {
+      ++header_calls;
+      if (header_failure.has_value()) {
+        return std::unexpected(*header_failure);
+      }
+      return header;
+    };
+  }
+
+  auto try_grade(std::optional<std::int64_t> floor = std::nullopt) -> std::expected<cf::report, cf::check_error> {
     auto const resolver = [this](planar::db::connection&, std::int64_t) -> std::expected<cf::policy_view, std::string> {
       return policy;
     };
-    auto result =
-        cf::check(conn, cf::options{.plan_id = 1, .floor_claim_id = floor, .now = std::string{k_now}}, resolver, lookup());
+    return cf::check(conn, cf::options{.plan_id = 1, .floor_claim_id = floor, .now = std::string{k_now}}, resolver, lookup(),
+                     header_reader());
+  }
+
+  auto grade(std::optional<std::int64_t> floor = std::nullopt) -> cf::report {
+    auto result = try_grade(floor);
     REQUIRE(result.has_value());
     return std::move(*result);
   }
@@ -481,6 +512,144 @@ TEST_CASE("rule 5: a gate with no use_queue is not graded", "[conformance][1142]
   CHECK(w.grade().conforms());
 }
 
+/// A world graded under `use_queue` and a `make test` gate, the setup every rule 5 horizon case starts from.
+auto gated_world() -> std::unique_ptr<world> {
+  auto w              = std::make_unique<world>();
+  w->policy.use_queue = true;
+  w->policy.task_gate = std::vector<std::string>{"make", "test"};
+  return w;
+}
+
+TEST_CASE("rule 5: the lookup is asked for the claim's token as the tag, and the header is read once", "[conformance][queue]") {
+  auto w = gated_world();
+  w->add_claim(w->add_task("done", k_after), world::claim_spec{});
+  auto const second = w->add_claim(w->add_task("done", k_after), world::claim_spec{});
+  w->runs_tag       = std::format("{:032x}", 1);
+  w->runs           = {comp::gate_run{.argv = {"make", "test"}, .cwd = "/work/repo", .passed = true}};
+  auto const report = w->grade();
+  // Only the first claim's token has a run; the second's token is another tag.
+  CHECK(summary(report) == strings{std::format("5:claim:{}", second)});
+  CHECK(w->tags_asked == strings{std::format("{:032x}", 1), std::format("{:032x}", 2)});
+  CHECK(w->header_calls == 1);
+}
+
+TEST_CASE("rule 5: with the build queue database absent, a claim after migration 44 fails and names the missing path",
+          "[conformance][queue]") {
+  auto w = gated_world();
+  exec(w->conn,
+       std::format("insert into schema_migrations (version, applied_at, description) values (44, '{}', 'test')", k_later));
+  w->header =
+      cf::queue_header{.path = "/q/build-queue.db", .present = false, .created_at = std::nullopt, .tagged_history_days = 90};
+  auto const before = w->add_claim(w->add_task("done", k_after), world::claim_spec{.released_at = std::string{k_after}});
+  auto const after  = w->add_claim(w->add_task("done", k_after), world::claim_spec{.released_at = "2026-04-01T00:00:00.000Z"});
+  // Ended exactly at the horizon: graded, because the rule says at or after.
+  auto const at     = w->add_claim(w->add_task("done", k_after), world::claim_spec{.released_at = std::string{k_later}});
+  auto const report = w->grade();
+  CHECK(summary(report) == strings{std::format("5:claim:{}", after), std::format("5:claim:{}", at)});
+  REQUIRE(report.violations.size() == 2);
+  CHECK(report.violations[0].reason == "no build queue database at /q/build-queue.db");
+  CHECK(report.violations[1].reason == "no build queue database at /q/build-queue.db");
+  REQUIRE(report.queue_evidence_unavailable.size() == 1);
+  CHECK(report.queue_evidence_unavailable[0].claim_id == before);
+  CHECK(cf::render_text(report).contains(std::format("claim {} [", before)));
+  CHECK(cf::render_json(report).contains(std::format("\"queue_evidence_unavailable\":[{{\"claim_id\":{},", before)));
+}
+
+TEST_CASE("rule 5: with no database and no record of migration 44, every gated claim is ungraded and none fails",
+          "[conformance][queue]") {
+  auto w = gated_world();
+  exec(w->conn, "delete from schema_migrations where version = 44");
+  w->header =
+      cf::queue_header{.path = "/q/build-queue.db", .present = false, .created_at = std::nullopt, .tagged_history_days = 90};
+  w->add_claim(w->add_task("done", k_after), world::claim_spec{.released_at = "2026-05-31T00:00:00.000Z"});
+  w->add_claim(w->add_task("done", k_after), world::claim_spec{});
+  auto const report = w->grade();
+  CHECK(report.conforms());
+  CHECK(report.queue_evidence_unavailable.size() == 2);
+}
+
+TEST_CASE("rule 5: the horizon is the later of the database's creation and now minus tagged_history_days",
+          "[conformance][queue]") {
+  SECTION("a database created 10 days ago with 90 days kept: creation is the horizon") {
+    auto w                        = gated_world();
+    w->header.created_at          = "2026-05-22T00:00:00.000Z"; // 10 days before k_now
+    w->header.tagged_history_days = 90;
+    auto const eleven_days =
+        w->add_claim(w->add_task("done", k_after), world::claim_spec{.released_at = "2026-05-21T00:00:00.000Z"});
+    auto const nine_days =
+        w->add_claim(w->add_task("done", k_after), world::claim_spec{.released_at = "2026-05-23T00:00:00.000Z"});
+    auto const report = w->grade();
+    CHECK(summary(report) == strings{std::format("5:claim:{}", nine_days)});
+    REQUIRE(report.queue_evidence_unavailable.size() == 1);
+    CHECK(report.queue_evidence_unavailable[0].claim_id == eleven_days);
+  }
+  SECTION("a database created 100 days ago with 30 days kept: the retention is the horizon") {
+    auto w                        = gated_world();
+    w->header.created_at          = "2026-02-21T00:00:00.000Z"; // 100 days before k_now
+    w->header.tagged_history_days = 30;
+    auto const thirty_one =
+        w->add_claim(w->add_task("done", k_after), world::claim_spec{.released_at = "2026-05-01T00:00:00.000Z"});
+    auto const twenty_nine =
+        w->add_claim(w->add_task("done", k_after), world::claim_spec{.released_at = "2026-05-03T00:00:00.000Z"});
+    auto const report = w->grade();
+    CHECK(summary(report) == strings{std::format("5:claim:{}", twenty_nine)});
+    REQUIRE(report.queue_evidence_unavailable.size() == 1);
+    CHECK(report.queue_evidence_unavailable[0].claim_id == thirty_one);
+  }
+}
+
+TEST_CASE("rule 5: deleting the build queue database resets the horizon", "[conformance][queue]") {
+  auto w           = gated_world();
+  w->runs_tag      = std::format("{:032x}", 1);
+  w->runs          = {comp::gate_run{.argv = {"make", "test"}, .cwd = "/work/repo", .passed = true}};
+  auto const claim = w->add_claim(w->add_task("done", k_after), world::claim_spec{});
+  CHECK(w->grade().conforms());
+  CHECK(w->grade().queue_evidence_unavailable.empty());
+
+  // The file is deleted and a fresh one created yesterday: the earlier claim is no longer gradable.
+  w->header.created_at = "2026-05-31T00:00:00.000Z";
+  w->runs.clear();
+  auto const report = w->grade();
+  CHECK(report.conforms());
+  REQUIRE(report.queue_evidence_unavailable.size() == 1);
+  CHECK(report.queue_evidence_unavailable[0].claim_id == claim);
+}
+
+TEST_CASE("rule 5: use_queue without a task_gate grades nothing and never reads the database", "[conformance][queue]") {
+  for (bool const present : {true, false}) {
+    auto w = gated_world();
+    w->policy.task_gate.reset();
+    w->header.present = present;
+    w->add_claim(w->add_task("done", k_after), world::claim_spec{});
+    auto const report = w->grade();
+    CHECK(report.conforms());
+    CHECK(report.queue_evidence_unavailable.empty());
+    CHECK(w->header_calls == 0);
+    CHECK(w->tags_asked.empty());
+  }
+}
+
+TEST_CASE("rule 5: a busy, unreadable or incompatible database grades nothing and refuses the check", "[conformance][queue]") {
+  SECTION("the header cannot be read") {
+    auto w = gated_world();
+    w->add_claim(w->add_task("done", k_after), world::claim_spec{});
+    w->header_failure = "/q/build-queue.db: database is locked";
+    auto const result = w->try_grade();
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error().kind == cf::error_kind::queue_unreadable);
+    CHECK(result.error().detail == "the build queue database cannot be read: /q/build-queue.db: database is locked");
+  }
+  SECTION("the runs cannot be read after the header was") {
+    auto w = gated_world();
+    w->add_claim(w->add_task("done", k_after), world::claim_spec{});
+    w->lookup_failure = "/q/build-queue.db: queue_history has no column tag";
+    auto const result = w->try_grade();
+    REQUIRE_FALSE(result.has_value());
+    CHECK(result.error().kind == cf::error_kind::queue_unreadable);
+    CHECK(result.error().detail == "the build queue database cannot be read: /q/build-queue.db: queue_history has no column tag");
+  }
+}
+
 TEST_CASE("rule 6: a completed claim whose review came from its own session is exactly one violation", "[conformance][1142]") {
   world w;
   w.policy.review_required = true;
@@ -630,7 +799,7 @@ TEST_CASE("a policy that cannot be resolved refuses the check and names why", "[
   auto const refuse = [](planar::db::connection&, std::int64_t) -> std::expected<cf::policy_view, std::string> {
     return std::unexpected(std::string{"config.toml is not valid"});
   };
-  auto const result = cf::check(w.conn, cf::options{.plan_id = 1}, refuse, w.lookup());
+  auto const result = cf::check(w.conn, cf::options{.plan_id = 1}, refuse, w.lookup(), w.header_reader());
   REQUIRE_FALSE(result.has_value());
   CHECK(result.error().kind == cf::error_kind::policy_unavailable);
   CHECK(result.error().detail == "config.toml is not valid");
@@ -641,7 +810,7 @@ TEST_CASE("an unknown plan is refused", "[conformance][1142]") {
   auto const resolver = [&](planar::db::connection&, std::int64_t) -> std::expected<cf::policy_view, std::string> {
     return w.policy;
   };
-  auto const result = cf::check(w.conn, cf::options{.plan_id = 99}, resolver, w.lookup());
+  auto const result = cf::check(w.conn, cf::options{.plan_id = 99}, resolver, w.lookup(), w.header_reader());
   REQUIRE_FALSE(result.has_value());
   CHECK(result.error().kind == cf::error_kind::plan_not_found);
 }

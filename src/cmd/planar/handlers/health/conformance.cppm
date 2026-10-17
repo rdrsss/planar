@@ -20,11 +20,17 @@ export auto attach_conformance(CLI::App* health) -> CLI::App* {
       "done made with --force is an override);\n  2 every "
       "claim ended in a terminal verb; 3 under require_model every coder claim records a model;\n  4 every worker claim carries "
       "a "
-      "parent action; 5 under use_queue and task_gate every completed claim has a\n  queued gate run; 6 under review_required "
+      "parent action; 5 under use_queue and task_gate every completed claim has a\n  queued gate run tagged with its token in "
+      "the build queue database; 6 under review_required "
       "every "
       "completed claim has a review from another session.\n\n  History from before the cut-over is counted and never fails. The "
-      "default cut-over is when migration\n  00042 was applied; --floor names a claim id instead.\n\n  Exit codes:\n    0  the "
-      "trail broke no rule\n    1  at least one violation, or the plan or its policy could not be read");
+      "default cut-over is when migration\n  00042 was applied; --floor names a claim id instead.\n\n  Rule 5 grades a claim "
+      "only if it ended at or after the evidence horizon: the later of the build "
+      "queue database's\n  creation and now minus its tagged-history days (with no such database, when migration 00044 was "
+      "applied). "
+      "An earlier claim is\n  listed under queue_evidence_unavailable and not graded on rule 5.\n\n  Exit codes:\n    0  the "
+      "trail broke no rule\n    1  at least one violation, or the plan, its policy or the build queue database could not be "
+      "read");
   add_positional(*conformance, "plan-id", "Plan id");
   add_string(*conformance, "--scope", "Require the plan to be in this scope slug");
   add_int(*conformance, "--floor", "Grade claims with this id or higher; replaces the data-derived cut-over");

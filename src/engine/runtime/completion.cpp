@@ -48,12 +48,11 @@ auto check_review(db::connection& conn, const aa::claim& held)
 }
 
 /// @brief The gate half of the check.
-/// @param conn The connection.
 /// @param held The completing claim.
 /// @param gate The policy's argv.
 /// @param lookup The injected run lookup.
 /// @return The unmet requirement, or unset when a passing run matches.
-auto check_gate(db::connection& conn, const aa::claim& held, const std::vector<std::string>& gate, const gate_run_lookup& lookup)
+auto check_gate(const aa::claim& held, const std::vector<std::string>& gate, const gate_run_lookup& lookup)
     -> std::expected<std::optional<unmet_requirement>, aa::agent_error> {
   std::vector<std::string> roots;
   if (held.repo_root.has_value()) {
@@ -74,9 +73,10 @@ auto check_gate(db::connection& conn, const aa::claim& held, const std::vector<s
   if (!lookup) {
     return std::unexpected(aa::agent_error::query_failed);
   }
-  auto const runs = lookup(conn, held.claim_token);
+  auto const runs = lookup(held.claim_token);
   if (!runs) {
-    return std::unexpected(runs.error());
+    return std::optional<unmet_requirement>{
+        {requirement_kind::gate_unreadable, std::format("task_gate: the build queue database cannot be read: {}", runs.error())}};
   }
   for (auto const& run : *runs) {
     if (!run.passed || run.argv != gate) {
@@ -145,7 +145,7 @@ auto unmet_completion_requirements(db::connection& conn, std::string_view claim_
     }
   }
   if (requirements.task_gate.has_value()) {
-    auto const gate = check_gate(conn, *held, *requirements.task_gate, lookup);
+    auto const gate = check_gate(*held, *requirements.task_gate, lookup);
     if (!gate) {
       return std::unexpected(gate.error());
     }

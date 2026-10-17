@@ -4,9 +4,10 @@
 module planar.cmd.planar_agent.completion_policy;
 
 import std;
+import planar.buildqueue.path;
+import planar.buildqueue.reader;
 import planar.db;
 import planar.engine.config;
-import planar.engine.hostqueue;
 import planar.engine.runtime.agentactivity;
 import planar.engine.runtime.agentatomic;
 import planar.engine.runtime.completion;
@@ -19,7 +20,7 @@ namespace planar::cmd::agent {
 namespace aa   = engine::runtime::agentactivity;
 namespace comp = engine::runtime::completion;
 namespace cfg  = engine::config;
-namespace hq   = engine::hostqueue;
+namespace bq   = buildqueue;
 
 namespace {
 
@@ -47,29 +48,32 @@ auto join_clauses(const std::vector<comp::unmet_requirement>& unmet) -> std::str
 
 } // namespace
 
-auto history_gate_lookup() -> engine::runtime::completion::gate_run_lookup {
-  return [](db::connection& conn, std::string_view claim_token) -> std::expected<std::vector<comp::gate_run>, aa::agent_error> {
-    auto const rows = hq::history_for_claim(conn, claim_token);
-    if (!rows) {
-      return std::unexpected(aa::agent_error::query_failed);
+auto history_gate_lookup(const internal::env_lookup& env) -> engine::runtime::completion::gate_run_lookup {
+  auto path = bq::resolve_queue_db_path(env);
+  return [path = std::move(path)](std::string_view tag) -> std::expected<std::vector<comp::gate_run>, std::string> {
+    if (!path) {
+      return std::unexpected(bq::error_message(path.error()));
+    }
+    auto const read = bq::read_tagged_runs(*path, tag);
+    if (!read) {
+      return std::unexpected(read.error().reason);
     }
     std::vector<comp::gate_run> runs;
-    runs.reserve(rows->size());
-    for (auto const& row : *rows) {
-      runs.push_back(comp::gate_run{.argv   = row.argv,
-                                    .cwd    = row.cwd,
-                                    .passed = row.outcome == hq::history_outcome::exited && row.exit_code.has_value() &&
-                                              *row.exit_code == 0});
+    runs.reserve(read->runs.size());
+    for (auto const& run : read->runs) {
+      runs.push_back(comp::gate_run{.argv   = run.argv,
+                                    .cwd    = run.cwd,
+                                    .passed = run.outcome == "exited" && run.exit_code.has_value() && *run.exit_code == 0});
     }
     return runs;
   };
 }
 
-auto completion_check(std::optional<std::filesystem::path> config_path, completion_report* report)
+auto completion_check(std::optional<std::filesystem::path> config_path, completion_report* report, internal::env_lookup env)
     -> std::function<std::expected<void, engine::runtime::agentactivity::agent_error>(
         db::connection&, const engine::runtime::agentactivity::claim&)> {
-  return [path = std::move(config_path), report](db::connection&  conn,
-                                                 const aa::claim& held) -> std::expected<void, aa::agent_error> {
+  return [path = std::move(config_path), report,
+          env  = std::move(env)](db::connection& conn, const aa::claim& held) -> std::expected<void, aa::agent_error> {
     if (held.kind != aa::entity_kind::task) {
       return {};
     }
@@ -106,7 +110,7 @@ auto completion_check(std::optional<std::filesystem::path> config_path, completi
     }
     comp::completion_requirements const requirements{.review_required = resolved->values.review_required,
                                                      .task_gate       = resolved->values.task_gate};
-    auto const unmet = comp::unmet_completion_requirements(conn, held.claim_token, requirements, history_gate_lookup());
+    auto const unmet = comp::unmet_completion_requirements(conn, held.claim_token, requirements, history_gate_lookup(env));
     if (!unmet) {
       return std::unexpected(unmet.error());
     }
@@ -148,6 +152,8 @@ auto completion_refusal(const completion_report& report) -> domain_error {
       case comp::requirement_kind::gate_no_locality:
         locality = true;
         break;
+      case comp::requirement_kind::gate_unreadable:
+        break;
       }
     }
     if (review_hint) {
@@ -161,8 +167,8 @@ auto completion_refusal(const completion_report& report) -> domain_error {
         command += command.empty() ? "" : " ";
         command += shell_quote(word);
       }
-      body += std::format("\n  to record the gate run, run from the claim's repository root or worktree: planar-agent queue run "
-                          "--claim {} -- {}",
+      body += std::format("\n  to record the gate run, run from the claim's repository root or worktree: planar-build-queue run "
+                          "--tag {} -- {}",
                           token, command);
     }
     if (locality) {

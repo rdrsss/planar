@@ -1,18 +1,17 @@
 /// @file completion.cppm
 /// @brief `planar.engine.runtime.completion` — what a claim must show before
-/// `planar-agent complete` may end it (plan 1142, tech spec components 5-7):
-/// an independent approving review when the policy requires one, and a passing
-/// queued run of the policy's gate argv.
+/// `planar-agent complete` may end it: an independent approving review when the
+/// policy requires one, and a passing queued run of the policy's gate argv.
 ///
 /// The module decides from facts only. The policy arrives as a value
 /// (`completion_requirements`), so this bucket imports no config module (the
 /// `engine_* -> engine_*` edge is forbidden, as for `task_policy`), and the
 /// gate evidence arrives through an injected lookup (`gate_run_lookup`) because
-/// the host queue's tables belong to `engine_hostqueue`, a sibling bucket whose
-/// SQL must stay separable from the planning tables. `cmd_planar_agent` binds
-/// the lookup to `hostqueue::history_for_claim` and resolves the policy from
-/// `config.toml`; the later conformance report calls the same function with the
-/// same lookup.
+/// the build queue's database is another program's, read through the layer-1
+/// `planar.buildqueue.reader`, which this bucket does not link. `cmd_planar_agent`
+/// binds the lookup to that reader and resolves the policy from `config.toml`;
+/// the conformance report calls the same function with a lookup bound the same
+/// way.
 ///
 /// **Review.** Satisfied when the claim's LATEST `review` action (by action id)
 /// carries the verdict `approve` and was written by a session other than the
@@ -20,7 +19,7 @@
 /// one that a later approval superseded does not. An action whose verdict is
 /// NULL is never a review (`reviews_for_claim` does not return it).
 ///
-/// **Gate.** Satisfied by a run the lookup returns for the claim's token that
+/// **Gate.** Satisfied by a run the lookup returns for the claim's token (the queue's tag) that
 /// (1) passed, which the lookup reports from `outcome = 'exited'` and
 /// `exit_code = 0`, (2) has an argv equal to the policy's argv element by
 /// element (no shell splitting, no prefix match, no case folding), and (3) ran
@@ -29,7 +28,10 @@
 /// trailing separator. A run in a subdirectory does not count, and a claim that
 /// recorded neither path can show no gate run. Either path of the claim
 /// suffices, because a claim in a linked worktree records both and a run from
-/// the main checkout is not that claim's work.
+/// the main checkout is not that claim's work. A lookup that fails (the queue
+/// database is busy, unreadable or incompatible) is its own unmet requirement,
+/// `gate_unreadable`, never "no evidence"; a database that does not exist is a
+/// lookup that returns no runs.
 ///
 /// Read-only. Error boundary: `std::expected<..., agent_error>`; nothing throws.
 module;
@@ -54,19 +56,20 @@ export struct completion_requirements {
   }
 };
 
-/// @brief One recorded queued run carrying the claim's token.
+/// @brief One recorded queued run tagged with the claim's token.
 export struct gate_run {
   std::vector<std::string> argv;           ///< The decoded argv the run executed.
   std::string              cwd;            ///< The directory the run executed in, as recorded.
   bool                     passed = false; ///< The run ended `exited` with exit code 0.
 };
 
-/// @brief Reads every recorded queued run that named `claim_token`.
+/// @brief Reads every recorded queued run that carries `tag`.
 ///
-/// Injected by the caller because the queue's tables are another bucket's. It may return rows in any
-/// order and need not filter by argv, directory or outcome beyond reporting `passed`.
-export using gate_run_lookup = std::function<std::expected<std::vector<gate_run>, agentactivity::agent_error>(
-    db::connection& conn, std::string_view claim_token)>;
+/// Injected by the caller because the build queue's database is not this bucket's. The claim token is the
+/// tag. It returns an empty list when the queue database does not exist, may return rows in any order, and
+/// need not filter by argv, directory or outcome beyond reporting `passed`. The error string is the reason
+/// the database could not be read (busy, unreadable or incompatible) and reaches the operator verbatim.
+export using gate_run_lookup = std::function<std::expected<std::vector<gate_run>, std::string>(std::string_view tag)>;
 
 /// @brief Which requirement is unmet.
 export enum class requirement_kind : std::uint8_t {
@@ -75,6 +78,7 @@ export enum class requirement_kind : std::uint8_t {
   review_not_independent, ///< The latest approving review was written by the claim's own session.
   gate_no_locality,       ///< The claim recorded no repository root or worktree to compare a run against.
   gate_missing,           ///< No passing run with the gate's argv, this claim's token and this claim's directory exists.
+  gate_unreadable,        ///< The build queue database exists but could not be read, so the gate cannot be judged.
 };
 
 /// @brief One unmet requirement.
@@ -103,7 +107,7 @@ export auto same_directory(std::string_view lhs, std::string_view rhs) -> bool;
 /// @param conn An open connection (read-only is sufficient).
 /// @param claim_token The completing claim's token.
 /// @param requirements The policy values for the claim's scope.
-/// @param lookup Reads the claim's queued runs; required when `requirements.task_gate` is set.
+/// @param lookup Reads the runs tagged with the claim's token; required when `requirements.task_gate` is set.
 /// @return The unmet requirements (empty when the claim may complete), `claim_not_found`, or `query_failed`.
 export auto unmet_completion_requirements(db::connection& conn, std::string_view claim_token,
                                           const completion_requirements& requirements, const gate_run_lookup& lookup)

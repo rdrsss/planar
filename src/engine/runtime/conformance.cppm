@@ -26,10 +26,18 @@
 ///    to the same claim. A claim with no role is never graded, and a tree with no orchestration (a solo session)
 ///    grades no claim on this rule.
 /// 5. **Queued gate.** Only when `use_queue` AND a `task_gate` are both set (`use_queue` alone grades nothing),
-///    every completed task claim has a passing queued run of exactly the gate argv carrying its token, run in
-///    its directory. The queue's history arrives through the injected `gate_run_lookup`, because that table
-///    belongs to another bucket; the requirement itself is `completion::unmet_completion_requirements`, the
-///    function `complete` applies.
+///    every completed task claim has a passing queued run of exactly the gate argv tagged with its token, run in
+///    its directory. The runs arrive through the injected `gate_run_lookup`, and the build queue database's header
+///    through the injected `queue_header_reader`, because that database is read by a layer-1 module this bucket
+///    does not link; the requirement itself is `completion::unmet_completion_requirements`, the function
+///    `complete` applies. The database keeps tagged runs only for `tagged_history_days`, and exists only since it
+///    was created, so a claim is graded only if it ended at or after the **evidence horizon**: the later of the
+///    database's `created_at` and the clock minus `tagged_history_days`; with no database, the `applied_at` of
+///    `planar.db`'s migration 44 (the split). A claim that ended before the horizon is listed in
+///    `queue_evidence_unavailable` and not graded on this rule, as `policy_changed` is. When no horizon is known
+///    (no database and no record of migration 44) every gated claim is listed there. With no database, a claim
+///    after the horizon has no evidence and fails with the reason `no build queue database at <path>`. A database
+///    that is busy, unreadable or incompatible refuses the whole check (`queue_unreadable`) and grades nothing.
 /// 6. **Independent review.** Under `review_required`, every completed task claim passes the same review test
 ///    `complete` applies: the latest review (a row with a non-NULL verdict) approves and was written by
 ///    another session. A NULL-verdict row is never a review.
@@ -100,6 +108,20 @@ export struct policy_view {
   std::string digest; ///< `policy_digest` of the resolved values; compared with `agent_work_claims.policy_digest`.
 };
 
+/// @brief The build queue database's header, as the evidence horizon needs it.
+export struct queue_header {
+  std::string                path;                     ///< Where the database is expected, for the missing-database reason.
+  bool                       present = false;          ///< Whether the file exists.
+  std::optional<std::string> created_at;               ///< `queue_identity.created_at` (ISO-8601 text); unset when absent.
+  int                        tagged_history_days = 90; ///< Retention for tagged runs, in days.
+};
+
+/// @brief Reads the build queue database's header, once per check, and only when a gated claim is graded.
+///
+/// Injected because the reader is not this bucket's. The string is the reason the database could not be read
+/// (busy, unreadable or incompatible, or no location could be resolved).
+export using queue_header_reader = std::function<std::expected<queue_header, std::string>()>;
+
 /// @brief Resolves the effective policy for a plan's scope.
 ///
 /// Injected because the config module belongs to another bucket. The string is the reason the policy
@@ -124,6 +146,12 @@ export struct override_entry {
 
 /// @brief A claim graded only on the policy-independent rules.
 export struct policy_changed_claim {
+  std::int64_t claim_id = 0; ///< The claim.
+  std::string  claim_token;  ///< Its token.
+};
+
+/// @brief A gated claim that ended before the evidence horizon, so rule 5 did not grade it.
+export struct queue_evidence_unavailable_claim {
   std::int64_t claim_id = 0; ///< The claim.
   std::string  claim_token;  ///< Its token.
 };
@@ -163,15 +191,16 @@ export struct options {
 
 /// @brief The grade of one plan.
 export struct report {
-  std::int64_t                      plan_id = 0;           ///< The graded plan.
-  std::int64_t                      plans   = 0;           ///< Plans graded: the plan and its descendants.
-  floor_info                        floor;                 ///< The cut-over used.
-  std::int64_t                      claims_graded     = 0; ///< Claims at or above the floor.
-  std::int64_t                      done_tasks_graded = 0; ///< Done tasks at or after the cut-over.
-  std::vector<violation>            violations;            ///< Ordered by rule, then entity kind, then id.
-  std::vector<override_entry>       overrides;             ///< Forced done tasks, ordered by task id.
-  std::vector<policy_changed_claim> policy_changed;        ///< Claims not graded on the policy rules.
-  before_floor                      before;                ///< Counted, never graded.
+  std::int64_t                                  plan_id = 0;                ///< The graded plan.
+  std::int64_t                                  plans   = 0;                ///< Plans graded: the plan and its descendants.
+  floor_info                                    floor;                      ///< The cut-over used.
+  std::int64_t                                  claims_graded     = 0;      ///< Claims at or above the floor.
+  std::int64_t                                  done_tasks_graded = 0;      ///< Done tasks at or after the cut-over.
+  std::vector<violation>                        violations;                 ///< Ordered by rule, then entity kind, then id.
+  std::vector<override_entry>                   overrides;                  ///< Forced done tasks, ordered by task id.
+  std::vector<policy_changed_claim>             policy_changed;             ///< Claims not graded on the policy rules.
+  std::vector<queue_evidence_unavailable_claim> queue_evidence_unavailable; ///< Gated claims not graded on rule 5: too old.
+  before_floor                                  before;                     ///< Counted, never graded.
 
   /// @brief Whether the trail broke no rule.
   /// @return True when `violations` is empty.
@@ -185,12 +214,13 @@ export enum class error_kind : std::uint8_t {
   plan_not_found,     ///< The plan does not exist.
   query_failed,       ///< SQL failure.
   policy_unavailable, ///< The policy resolver failed; `detail` says why.
+  queue_unreadable,   ///< The build queue database could not be read; `detail` says why.
 };
 
 /// @brief A refusal with its detail.
 export struct check_error {
   error_kind  kind = error_kind::query_failed; ///< Which refusal.
-  std::string detail;                          ///< For `policy_unavailable`, the resolver's reason; otherwise empty.
+  std::string detail;                          ///< For `policy_unavailable` and `queue_unreadable`, the reason; otherwise empty.
 };
 
 /// @brief Resolve the floor without grading: the default for this database, or the explicit one.
@@ -204,10 +234,12 @@ export auto resolve_floor(db::connection& conn, std::optional<std::int64_t> expl
 /// @param conn An open connection (read-only is sufficient).
 /// @param opts The plan, the optional floor and the optional clock.
 /// @param resolve Resolves the effective policy of a plan's scope; called once per plan that has a graded claim.
-/// @param lookup Reads the queued runs of a claim, for rule 5.
+/// @param lookup Reads the runs tagged with a claim's token, for rule 5.
+/// @param header Reads the build queue database's header, for rule 5's evidence horizon.
 /// @return The grade, or why it could not be made.
 export auto check(db::connection& conn, const options& opts, const policy_resolver& resolve,
-                  const completion::gate_run_lookup& lookup) -> std::expected<report, check_error>;
+                  const completion::gate_run_lookup& lookup, const queue_header_reader& header)
+    -> std::expected<report, check_error>;
 
 /// @brief Render a grade the way `planar health conformance` prints it without `--json`.
 /// @param value The grade.

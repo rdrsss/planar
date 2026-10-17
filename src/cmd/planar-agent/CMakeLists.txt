@@ -205,6 +205,7 @@ planar_binary(planar_agent
     engine_planning
     engine_ingest
     engine_hostqueue
+    buildqueue
     engine_config
     engine_identity
     engine_diagnose
