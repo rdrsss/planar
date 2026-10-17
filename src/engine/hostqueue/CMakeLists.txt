@@ -54,6 +54,10 @@
 # hand-maintained column lists and the protocol constants. It imports only
 # `db`.
 #
+# `settings.cppm` holds the build queue's
+# settings: the field set, the validation ranges and the loader that reads the
+# `queue_settings` table of the build queue database. It imports only `db`.
+#
 # `hostqueue.cppm` is the umbrella re-export, matching
 # the other engine buckets' umbrella modules, e.g. `engine/identity`.
 
@@ -70,6 +74,7 @@ planar_module(engine_hostqueue
     guard.cppm
     rule.cppm
     schema.cppm
+    settings.cppm
     hostqueue.cppm
   SOURCES
     queue.cpp
@@ -83,6 +88,7 @@ planar_module(engine_hostqueue
     guard.cpp
     rule.cpp
     schema.cpp
+    settings.cpp
   DEPENDS
     db
     json_dom

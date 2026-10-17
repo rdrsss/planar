@@ -84,6 +84,11 @@ constexpr std::array k_fingerprint_ledger{
                     "select over queue_history by the claim_token column migration 00042 already added (indexed), so "
                     "`complete` can find the runs a claim recorded. Nothing stored changes and no existing statement, "
                     "liveness or slot rule is touched, so compat stays 1 and an older binary never runs the new read"},
+    fingerprint_pin{2, "3c101d2922df86d5bf223d7a548e4af4e37c100c998e22274ea54c6a5751bb74",
+                    "still queue version 2: settings.cpp adds one read-only select over queue_settings, a table of the "
+                    "separate build queue database's chain; nothing in planar.db's queue tables is stored or judged "
+                    "differently, and no liveness or slot rule changes, so compat stays 1. The ledger restarts when the "
+                    "engine moves to the build queue chain"},
 };
 
 // ---------------------------------------------------------------------------

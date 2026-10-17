@@ -20,3 +20,4 @@ export import planar.engine.hostqueue.observer;
 export import planar.engine.hostqueue.guard;
 export import planar.engine.hostqueue.rule;
 export import planar.engine.hostqueue.schema;
+export import planar.engine.hostqueue.settings;
