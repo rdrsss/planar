@@ -492,7 +492,7 @@ TEST_CASE("every SQL literal under src/engine/hostqueue names only queue tables,
   CHECK(saw_pragma);
 }
 
-TEST_CASE("no SQL literal outside hostqueue, the migrations and the tests names a queue table",
+TEST_CASE("no SQL literal outside hostqueue, the build queue reader, the migrations and the tests names a queue table",
           "[hostqueue][separability][qp-separability]") {
   auto const files = other_sources();
   // Not vacuous: the whole tree is here, the planar-watch handler whose
