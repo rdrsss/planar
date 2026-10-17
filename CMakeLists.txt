@@ -103,7 +103,7 @@ endif()
 enable_testing()
 
 # The installer test time limit. Every ctest case named install.* (the scripts/install-*-test.sh
-# family, install.queue_probe and install.scenarios; not bootstrap.release, dist.* or release.*,
+# family and install.scenarios; not bootstrap.release, dist.* or release.*,
 # which test other artifacts) must finish within PLANAR_INSTALLER_TEST_LIMIT seconds: five
 # minutes, the ceiling in the release-bundles test spec (docs/testing.md, "The installer test
 # limit"). Its ctest TIMEOUT is the limit plus PLANAR_INSTALLER_TEST_MARGIN seconds of slack for

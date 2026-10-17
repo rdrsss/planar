@@ -1,22 +1,23 @@
-// @file install_queue.t.cpp
-// @brief The installer's queue-upgrade steps driven against the REAL built
-// binaries (plan 1089, task qp-install-migrate; tech spec 656, "Install and
-// upgrade"; test spec 658, the install scenarios that name the post-build
-// ctest case).
+// @file install_probe.t.cpp
+// @brief The installer's database probe and migration, and the retired
+// agent.db oracle, driven against the REAL built binaries (plan 1089, task
+// qp-install-migrate; tech spec 656, "Install and upgrade"; test spec 658, the
+// install scenarios that name the post-build ctest case).
 //
 // `scripts/install-lib/db-probe.sh` and `queue-retire.sh` hold the steps
-// install.sh runs: the database probe with the staged binaries, the migration
-// with the installed ones, and the old queue store's retirement.
+// install.sh runs: the database probe with the staged binaries, which reads the
+// main schema through `planar-watch plans --json` and needs no queue verb, the
+// migration with the installed ones, and the old queue store's retirement.
 // `scripts/install-manifest-test.sh` drives the same functions with stub
 // binaries, before anything is built, which pins the state table. What a stub
 // cannot show is that the states hold for what the shipped binaries actually
-// print and do: that a truncated `planar.db` really probes behind with both
+// print and do: that a behind planar.db really probes behind with both
 // versions, that `planar init` run the way the step runs it really migrates it
 // from inside a linked worktree, and that an ahead database really reads ahead
 // (plan 1122, decision 1326). ctest runs only after the build, so the binaries
 // here are always current.
 //
-// `queue_retire_live_oracle` (task qp-install-retire) is the only check that
+// `queue_retire_live_oracle` is the only check that
 // `scripts/install-lib/queue_retire.py`, the installer's fail-closed reader of
 // the retired `agent.db`, agrees with the ENGINE on identity format, start-time
 // units and parsing: it writes rows with the real `planar.process.identity`
@@ -46,12 +47,10 @@ import planar.db.migrations;
 import planar.process.identity;
 
 #include "parity_harness.hpp"
-#include "planar-agent/queue_test_store.hpp"
 
 namespace {
 
 namespace parity = ::planar::cmd::parity;
-namespace qfix   = ::planar::cmd::qfix;
 
 using parity::capture;
 
@@ -88,45 +87,79 @@ void must(std::string_view what, bool ok) {
   }
 }
 
-/// @brief The installer's store reader in this checkout.
-/// @return The path.
-auto reader_py() -> std::filesystem::path {
-  return std::filesystem::path{PLANAR_TARGET_SOURCE_ROOT} / "scripts" / "install-lib" / "queue_retire.py";
+/// @brief The bytes of `path`, for "left exactly as it was" assertions.
+/// @param path The file.
+/// @return Its contents, empty when absent.
+auto file_bytes(const std::filesystem::path& path) -> std::string {
+  std::ifstream      in(path, std::ios::binary);
+  std::ostringstream buffer;
+  buffer << in.rdbuf();
+  return buffer.str();
 }
 
-/// @brief The queue tables of the retired agent store (agent migrations
-/// 00002 and 00003), which `queue_retire.py` reads.
-constexpr std::string_view k_agent_schema = R"(
-create table agent_schema_migrations (version integer primary key, compat integer not null, description text not null);
-create table queue_entries (
-  seq integer primary key autoincrement,
-  state text not null check(state in ('waiting', 'running')),
-  host_id text not null, pid integer not null, pid_started integer not null,
-  child_pgid integer, child_started integer, parent_seq integer, terminating_since_mono integer,
-  terminate_reason text check(terminate_reason in ('timeout', 'cancelled')), cancelled_by text,
-  cwd text not null, argv text not null, label text, vendor text, role text, claim_token text, log_path text,
-  enqueued_at integer not null, started_at integer, refreshed_mono integer not null, deadline_mono integer,
-  wait_deadline_mono integer, run_limit_ms integer, wait_limit_ms integer);
-create table queue_history (
-  seq integer primary key, outcome text not null, exit_code integer, signal integer, successor_seq integer,
-  cancelled_by text, nested integer not null default 0, parent_seq integer, cwd text not null, argv text not null,
-  label text, vendor text, role text, log_path text, enqueued_at integer not null, started_at integer,
-  ended_at integer not null, waited_ms integer not null, ran_ms integer, run_limit_ms integer, wait_limit_ms integer);
-)";
+/// @brief The head version of the embedded main chain.
+/// @return The version.
+auto head_version() -> std::uint32_t {
+  return planar::db::embedded_max();
+}
 
-/// @brief Creates an idle retired agent store at `path`: the queue tables,
-/// no entries, an old maximum sequence number of 57.
-/// @param path The store.
-void idle_agent_store(const std::filesystem::path& path) {
+/// @brief Opens an existing database at `path` and runs one statement on it.
+/// @param path The database file, which must exist.
+/// @param sql The statement.
+void exec_sql(const std::filesystem::path& path, std::string_view sql) {
+  auto opened = planar::db::connection::open_existing(path.string(), 5000);
+  must("open the database to alter it", opened.has_value());
+  must("run the alteration", opened->execute(sql).has_value());
+}
+
+/// @brief The `schema_migrations` versions of the database at `path`,
+/// comma-joined in ascending order.
+/// @param path The database file.
+/// @return The versions.
+auto applied_versions(const std::filesystem::path& path) -> std::string {
+  auto opened = planar::db::connection::open_read_only(path.string());
+  must("open the store read-only", opened.has_value());
+  auto stmt = opened->prepare("select version from schema_migrations order by version");
+  must("prepare schema_migrations", stmt.has_value());
+  std::string out;
+  for (;;) {
+    auto stepped = stmt->step();
+    must("step schema_migrations", stepped.has_value());
+    if (*stepped == planar::db::step_result::done) {
+      return out;
+    }
+    out += out.empty() ? "" : ",";
+    out += std::to_string(stmt->column_int64(0));
+  }
+}
+
+/// @brief A `planar.db` at the head of the embedded main chain: the compatible,
+/// equal-version store the probe answers current.
+/// @param path The database file; its parent directory must exist.
+void head_main_store(const std::filesystem::path& path) {
   auto opened = planar::db::connection::open(path.string());
-  must("open the agent store", opened.has_value());
-  must("create the agent tables", opened->execute(k_agent_schema).has_value());
-  must("seed the old range",
-       opened
-           ->execute("insert into queue_history (seq, outcome, cwd, argv, enqueued_at, ended_at, waited_ms) "
-                     "values (57, 'exited', '/', '[]', 1, 2, 0); "
-                     "insert into sqlite_sequence (name, seq) values ('queue_entries', 57);")
-           .has_value());
+  must("open the main store", opened.has_value());
+  must("apply the main chain", planar::db::apply_all(*opened).has_value());
+}
+
+/// @brief A `planar.db` whose main chain stops one migration short of head: a
+/// truly truncated chain, so `init` then applies a real migration (test spec
+/// 658, "Behind, for migration tests").
+/// @param path The database file.
+void behind_main_store(const std::filesystem::path& path) {
+  auto opened = planar::db::connection::open(path.string());
+  must("open the behind store", opened.has_value());
+  auto const chain = planar::db::migrations();
+  must("a chain longer than one migration", chain.size() > 1);
+  auto applied = planar::db::apply_all(*opened, chain.first(chain.size() - 1));
+  must("apply the chain minus its head", applied.has_value());
+}
+
+/// @brief Ahead: head plus one extra `schema_migrations` row above it.
+/// @param path The database file.
+void ahead_main_store(const std::filesystem::path& path) {
+  head_main_store(path);
+  exec_sql(path, std::format("insert into schema_migrations (version, description) values ({}, 'newer')", head_version() + 1));
 }
 
 /// @brief A scratch install: a prefix holding the built binaries and a
@@ -175,19 +208,6 @@ auto make_install(std::string_view tag) -> install_fixture {
     must("write the canary", static_cast<bool>(out));
   }
   return fx;
-}
-
-/// @brief A `planar.db` whose chain stops one migration short of head: a
-/// truly truncated chain, so `init` then applies a real migration (test spec
-/// 658, "Behind, for migration tests").
-/// @param path The database file.
-void truncated_store(const std::filesystem::path& path) {
-  auto opened = planar::db::connection::open(path.string());
-  must("open the truncated store", opened.has_value());
-  auto const chain = planar::db::migrations();
-  must("a chain longer than one migration", chain.size() > 1);
-  auto applied = planar::db::apply_all(*opened, chain.first(chain.size() - 1));
-  must("apply the chain minus its head", applied.has_value());
 }
 
 /// @brief Runs one function of the seam with the fixture's prefix.
@@ -271,7 +291,7 @@ auto db_state(const std::filesystem::path& path) -> std::string {
     }
     names.push_back(tables->column_text(0));
   }
-  std::string out = qfix::applied_versions(path) + "|";
+  std::string out = applied_versions(path) + "|";
   for (auto const& name : names) {
     auto count = opened->prepare(std::format("select count(*) from \"{}\"", name));
     must("count a table", count.has_value());
@@ -295,36 +315,77 @@ void make_proj_a_linked_worktree(const std::filesystem::path& work) {
   must("proj is a linked worktree", std::filesystem::is_regular_file(work / "proj" / ".git"));
 }
 
-/// @brief The position of `needle` in `hay`, failing the case when absent.
-/// @param hay The text.
-/// @param needle What to find.
-/// @return Its offset.
-auto position_of(const std::string& hay, std::string_view needle) -> std::size_t {
-  auto const at = hay.find(needle);
-  INFO("looking for: " << needle << "\nin:\n" << hay);
-  REQUIRE(at != std::string::npos);
-  return at;
-}
-
 /// @brief The canary's bytes and modification time, for "untouched".
 /// @param path The canary.
 /// @return Both, as one comparable string.
 auto canary_state(const std::filesystem::path& path) -> std::string {
   std::error_code ec;
   auto const      when = std::filesystem::last_write_time(path, ec);
-  return std::format("{}|{}", qfix::file_bytes(path), when.time_since_epoch().count());
+  return std::format("{}|{}", file_bytes(path), when.time_since_epoch().count());
+}
+
+/// @brief The queue tables of the retired agent store (agent migrations
+/// 00002 and 00003), which `queue_retire.py` reads.
+constexpr std::string_view k_agent_schema = R"(
+create table agent_schema_migrations (version integer primary key, compat integer not null, description text not null);
+create table queue_entries (
+  seq integer primary key autoincrement,
+  state text not null check(state in ('waiting', 'running')),
+  host_id text not null, pid integer not null, pid_started integer not null,
+  child_pgid integer, child_started integer, parent_seq integer, terminating_since_mono integer,
+  terminate_reason text check(terminate_reason in ('timeout', 'cancelled')), cancelled_by text,
+  cwd text not null, argv text not null, label text, vendor text, role text, claim_token text, log_path text,
+  enqueued_at integer not null, started_at integer, refreshed_mono integer not null, deadline_mono integer,
+  wait_deadline_mono integer, run_limit_ms integer, wait_limit_ms integer);
+create table queue_history (
+  seq integer primary key, outcome text not null, exit_code integer, signal integer, successor_seq integer,
+  cancelled_by text, nested integer not null default 0, parent_seq integer, cwd text not null, argv text not null,
+  label text, vendor text, role text, log_path text, enqueued_at integer not null, started_at integer,
+  ended_at integer not null, waited_ms integer not null, ran_ms integer, run_limit_ms integer, wait_limit_ms integer);
+)";
+
+/// @brief The installer's store reader in this checkout.
+/// @return The path.
+auto reader_py() -> std::filesystem::path {
+  return std::filesystem::path{PLANAR_TARGET_SOURCE_ROOT} / "scripts" / "install-lib" / "queue_retire.py";
 }
 
 } // namespace
 
 TEST_CASE("install_db_probe_migrate", "[cmd][install][queue]") {
+  SECTION("a missing planar.db is missing, and the probe creates nothing") {
+    auto       fx            = make_install("ip_missing");
+    auto const canary_before = canary_state(fx.canary);
+    auto const got           = run_seam(fx, "planar_db_probe", "missing");
+    INFO("stdout:\n" << got.out << "\nstderr:\n" << got.err);
+    REQUIRE(got.code == 0);
+    CHECK(got.out.find("db state: missing") != std::string::npos);
+    CHECK_FALSE(std::filesystem::exists(fx.db));
+    CHECK(canary_state(fx.canary) == canary_before);
+  }
+
+  SECTION("a planar.db at head is current, and a probe changes no table") {
+    auto fx = make_install("ip_head");
+    head_main_store(fx.db);
+    auto const config_before = file_bytes(fx.config);
+    auto const canary_before = canary_state(fx.canary);
+    auto const state_before  = db_state(fx.db);
+    auto const got           = run_seam(fx, "planar_db_probe", "head");
+    INFO("stdout:\n" << got.out << "\nstderr:\n" << got.err);
+    REQUIRE(got.code == 0);
+    CHECK(got.out.find("db state: current") != std::string::npos);
+    CHECK(db_state(fx.db) == state_before);
+    CHECK(file_bytes(fx.config) == config_before);
+    CHECK(canary_state(fx.canary) == canary_before);
+  }
+
   SECTION("a behind prefix planar.db is migrated from a linked worktree, and a second probe finds it current") {
     auto fx = make_install("iq_behind");
-    truncated_store(fx.db);
+    behind_main_store(fx.db);
     make_proj_a_linked_worktree(fx.work);
-    auto const head = qfix::head_version();
-    REQUIRE_FALSE(qfix::applied_versions(fx.db).ends_with(std::to_string(head)));
-    auto const config_before = qfix::file_bytes(fx.config);
+    auto const head = head_version();
+    REQUIRE_FALSE(applied_versions(fx.db).ends_with(std::to_string(head)));
+    auto const config_before = file_bytes(fx.config);
     auto const canary_before = canary_state(fx.canary);
     auto const prefix_before = listing(fx.prefix);
     auto const home_before   = listing(fx.work / "fakehome" / ".planar");
@@ -338,25 +399,13 @@ TEST_CASE("install_db_probe_migrate", "[cmd][install][queue]") {
     INFO("stdout:\n" << first.out << "\nstderr:\n" << first.err);
     REQUIRE(first.code == 0);
     CHECK(first.out.find("db state: current") != std::string::npos);
-    CHECK(qfix::applied_versions(fx.db).ends_with(std::format(",{}", head)));
+    CHECK(applied_versions(fx.db).ends_with(std::format(",{}", head)));
     // Nothing new under the prefix or the scratch HOME's .planar, no config
     // created or modified, and the canary untouched.
-    CHECK(qfix::file_bytes(fx.config) == config_before);
+    CHECK(file_bytes(fx.config) == config_before);
     CHECK(listing(fx.prefix) == prefix_before);
     CHECK(listing(fx.work / "fakehome" / ".planar") == home_before);
     CHECK(canary_state(fx.canary) == canary_before);
-
-    // The migrated database serves the queue.
-    auto env = parity::pinned_env(fx.work);
-    for (auto& var : env) {
-      if (var.name == "PLANAR_DB") {
-        var.value = fx.db.string();
-      }
-    }
-    std::vector<std::string> const run_true{"queue", "run", "--", "true"};
-    auto const                     ran = parity::run_pinned(agent_bin(), run_true, fx.work, "run_true", env);
-    INFO("queue run stderr:\n" << ran.err);
-    REQUIRE(ran.code == 0);
 
     // A second probe finds the database current and changes no table.
     auto const state_before = db_state(fx.db);
@@ -365,56 +414,23 @@ TEST_CASE("install_db_probe_migrate", "[cmd][install][queue]") {
     REQUIRE(second.code == 0);
     CHECK(second.out.find("db state: current") != std::string::npos);
     CHECK(db_state(fx.db) == state_before);
-    CHECK(qfix::file_bytes(fx.config) == config_before);
+    CHECK(file_bytes(fx.config) == config_before);
     CHECK(canary_state(fx.canary) == canary_before);
   }
 
-  SECTION("an ahead planar.db is ahead whatever its queue tables say, and a same-version foreign queue is a fault") {
-    // Decision 1326 replaces the old "an ahead database is never refused": the
-    // install refuses both before anything live changes. Queue compatibility
-    // never decides the main schema.
-    struct probe_case {
-      std::string_view tag;
-      void (*build)(const std::filesystem::path&);
-      std::string_view state;  ///< The expected "db state: ..." prefix.
-      std::string_view detail; ///< A phrase the detail must carry; empty for none.
-    };
-    std::array const cases{
-        probe_case{.tag = "iq_ahead", .build = qfix::ahead_store, .state = "db state: ahead", .detail = "newer than"},
-        probe_case{
-            .tag = "iq_incompat", .build = qfix::incompatible_ahead_store, .state = "db state: ahead", .detail = "newer than"},
-        probe_case{
-            .tag = "iq_foreign", .build = qfix::foreign_store, .state = "db state: fault", .detail = "queue_schema_foreign"},
-    };
-    for (auto const& one : cases) {
-      auto fx = make_install(one.tag);
-      one.build(fx.db);
-      auto const state_before = db_state(fx.db);
-      auto const got          = run_seam(fx, "planar_db_probe", "probe");
-      INFO(one.tag << " stdout:\n" << got.out << "\nstderr:\n" << got.err);
-      CHECK(got.code == 0);
-      CHECK(got.out.find(one.state) != std::string::npos);
-      CHECK(got.out.find(one.detail) != std::string::npos);
-      CHECK(db_state(fx.db) == state_before);
-      if (one.state == "db state: ahead") {
-        auto const head = qfix::head_version();
-        CHECK(got.out.find(std::format("db state: ahead {} {}", head + 1, head)) != std::string::npos);
-      }
-    }
-  }
-
-  SECTION("a probe that finds seq 1 as residue still counts as current") {
-    auto fx = make_install("iq_seq1");
-    qfix::head_store(fx.db);
-    qfix::exec(fx.db, "insert into queue_history (seq, outcome, exit_code, cwd, argv, enqueued_at, ended_at, waited_ms) "
-                      "values (1, 'exited', 0, '/', '[\"true\"]', 1, 2, 0)");
-    auto const versions_before = qfix::applied_versions(fx.db);
-    auto const got             = run_seam(fx, "planar_db_probe", "seq1");
+  SECTION("an ahead planar.db is ahead") {
+    // Decision 1326: an ahead database is refused before anything live
+    // changes. The probe reads the main schema alone.
+    auto fx = make_install("iq_ahead");
+    ahead_main_store(fx.db);
+    auto const state_before = db_state(fx.db);
+    auto const got          = run_seam(fx, "planar_db_probe", "probe");
     INFO("stdout:\n" << got.out << "\nstderr:\n" << got.err);
     CHECK(got.code == 0);
-    CHECK(got.out.find("db state: current") != std::string::npos);
-    CHECK(got.out.find("exit 0 with a status object") != std::string::npos);
-    CHECK(qfix::applied_versions(fx.db) == versions_before);
+    CHECK(got.out.find("newer than") != std::string::npos);
+    auto const head = head_version();
+    CHECK(got.out.find(std::format("db state: ahead {} {}", head + 1, head)) != std::string::npos);
+    CHECK(db_state(fx.db) == state_before);
   }
 }
 
@@ -629,51 +645,4 @@ TEST_CASE("queue_retire_live_oracle", "[cmd][install][queue]") {
   CHECK(lists(third.out, "dead", 1));
   CHECK(lists(third.out, "dead", 2));
   CHECK(lists(third.out, "dead", 3));
-}
-
-TEST_CASE("queue_retire_ignores_the_new_queue", "[cmd][install][queue]") {
-  // A live new-binary run in planar.db never blocks retiring agent.db, and
-  // its log (numbered above the floor) survives the retire.
-  auto fx = make_install("qr_newqueue");
-  qfix::head_store(fx.db);
-  idle_agent_store(fx.prefix / "agent.db");
-
-  auto env = parity::pinned_env(fx.work);
-  for (auto& var : env) {
-    if (var.name == "PLANAR_DB") {
-      var.value = fx.db.string();
-    }
-  }
-  std::vector<std::string> const detach{"queue", "run", "--detach", "--", "sleep", "2"};
-  auto const                     ticket = parity::run_pinned(agent_bin(), detach, fx.work, "detach", env);
-  INFO("detach:\n" << ticket.out << ticket.err);
-  REQUIRE(ticket.code == 0);
-  auto const seq = ticket.out.substr(0, ticket.out.find('\n'));
-  REQUIRE(std::stoll(seq) > qfix::k_seq_floor);
-  auto const log = fx.prefix / "queue-logs" / std::format("{}.log", seq);
-
-  auto const recheck = run_seam(fx, "queue_live_guard", "recheck", "re-check");
-  INFO("re-check:\n" << recheck.out << recheck.err);
-  CHECK(recheck.code == 0);
-  auto const retired = run_seam(fx, "queue_retire_store", "retire");
-  INFO("retire:\n" << retired.out << retired.err);
-  CHECK(retired.code == 0);
-  CHECK_FALSE(std::filesystem::exists(fx.prefix / "agent.db"));
-
-  // The new run completes normally and keeps its log.
-  std::string state;
-  for (int attempt = 0; attempt < 400; ++attempt) {
-    std::vector<std::string> const status{"queue", "status", seq, "--json"};
-    auto const                     got = parity::run_pinned(agent_bin(), status, fx.work, "status", env);
-    if (got.out.find(R"("state":"ended")") != std::string::npos) {
-      state = got.out;
-      break;
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(25));
-  }
-  INFO("final status: " << state);
-  REQUIRE_FALSE(state.empty());
-  CHECK(state.find(R"("outcome":"exited")") != std::string::npos);
-  CHECK(state.find(R"("exit_code":0)") != std::string::npos);
-  CHECK(std::filesystem::exists(log));
 }

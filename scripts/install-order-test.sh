@@ -10,8 +10,7 @@
 #     its plan and task intact;
 #   - a database ahead of the bundle is refused before any change, naming both
 #     versions; the arena is byte-identical and no staging or journal is left;
-#   - corrupt, same-version foreign and incompatible-queue databases are refused
-#     before vendor cleanup or swap; a failed migration and a failed
+#   - a corrupt database is refused before vendor cleanup or swap; a failed migration and a failed
 #     post-migration probe keep the journal and the backups, name the durable
 #     retry, and the retry completes once the fault is gone;
 #   - before a pending migration that drops tables, the database is copied with
@@ -325,9 +324,7 @@ fault_case() {
   no_evidence "$p"
 }
 fault_case corrupt corrupt "not a database"
-fault_case foreign "drop table queue_schema" "queue_schema_foreign"
-fault_case incompatible "insert into queue_schema (version, compat, description) select max(version) + 1, max(version) + 1, 'needs a newer binary' from queue_schema" "queue store is not usable"
-pass "unreadable, foreign and incompatible databases are refused before cleanup or swap"
+pass "an unreadable database is refused before cleanup or swap"
 fi
 
 if scen migfail; then

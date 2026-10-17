@@ -1,5 +1,4 @@
 # shellcheck shell=bash
-# shellcheck disable=SC2034  # QR_VERDICT and QR_DETAIL are read by the caller (db-probe.sh)
 #
 # queue-retire.sh -- install.sh's queue-upgrade steps, as sourceable functions
 # (plan 1089; tech spec 656, "Install and upgrade", decisions 1219-1229).
@@ -17,8 +16,8 @@
 # through the caller's log/warn helpers when it defines them, so the
 # installer's framing and warning count apply.
 #
-# _qr_classify_probe classifies `planar-agent queue status 1 --json` in shell,
-# so the database probe (db-probe.sh, plan 1122) needs no python3 (decision
+# _QR_JSON_AWK reads planar-watch's JSON answers in shell, so the database
+# probe and the live-queue warning (db-probe.sh) need no python3 (decision
 # 1333). The reader of the retired agent.db, scripts/install-lib/queue_retire.py,
 # runs with python3 on the source path only. Paths reach it only through argv.
 #
@@ -51,7 +50,7 @@ _qr_fail() {
   printf '\ninstall.sh: %s\n' "$*" >&2
 }
 
-# _QR_JSON_AWK -- a small JSON scanner for the probe's answer, read on stdin
+# _QR_JSON_AWK -- a small JSON scanner for a planar-watch answer, read on stdin
 # with the line breaks already turned into spaces. It prints
 # `<kind>|<has_error>|<tag>`:
 #   kind       bad (not exactly one complete JSON value), object, array or
@@ -144,52 +143,6 @@ END {
   printf "%s|%d|%s\n", kind, has_error, tag
 }
 '
-
-# _qr_classify_probe RC OUT -- classify one `planar-agent queue status 1
-# --json` answer from its exit status RC and its stdout OUT, with tr and awk
-# only. Sets QR_VERDICT (usable|behind|incompatible|foreign|failed) and
-# QR_DETAIL. The mapping is the probe table of tech spec 656, "Steps, in
-# order", step 3: exit 0 with a status object, or exit 1 with the error tag
-# not_found, is usable; exit 125 with schema_version_behind,
-# queue_schema_incompatible or queue_schema_foreign is behind, incompatible or
-# foreign; everything else, a known tag on the wrong exit status included, is
-# failed. The binary prints refusals as {"error":{"verb":..,"tag":"..",
-# "message":..}} on stdout.
-#
-# The answer is read by a small grammar-checking scanner (_QR_JSON_AWK), not
-# by patterns: the tag is the one in the first top-level "error" object, an
-# "error" key nested in a successful answer does not make it a refusal, and
-# output that is not exactly one JSON value (concatenated objects, trailing
-# text, a byte-order mark) is failed.
-_qr_classify_probe() {
-  local rc="$1" out="$2" flat parsed kind has_error tag shape
-  flat="$(printf '%s' "$out" | tr '\r\n' '  ')"
-  parsed="$(trap - ERR; printf '%s\n' "$flat" | LC_ALL=C awk "$_QR_JSON_AWK")" || parsed="bad|0|"
-  IFS='|' read -r kind has_error tag <<< "$parsed"
-
-  QR_VERDICT="failed"
-  if [[ "$rc" == 0 && "$kind" == object && "$has_error" == 0 ]]; then
-    QR_VERDICT="usable"; QR_DETAIL="exit 0 with a status object"; return 0
-  fi
-  if [[ "$rc" == 1 && "$tag" == "not_found" ]]; then
-    QR_VERDICT="usable"; QR_DETAIL="exit 1, tag not_found"; return 0
-  fi
-  if [[ "$rc" == 125 ]]; then
-    case "$tag" in
-      schema_version_behind)     QR_VERDICT="behind";       QR_DETAIL="exit 125, tag $tag"; return 0 ;;
-      queue_schema_incompatible) QR_VERDICT="incompatible"; QR_DETAIL="exit 125, tag $tag"; return 0 ;;
-      queue_schema_foreign)      QR_VERDICT="foreign";      QR_DETAIL="exit 125, tag $tag"; return 0 ;;
-    esac
-  fi
-  if [[ "$kind" == bad ]]; then
-    shape="output that is not JSON"
-  elif [[ -z "$tag" ]]; then
-    shape="JSON with no error tag"
-  else
-    shape="tag $tag"
-  fi
-  QR_DETAIL="exit $rc with $shape"
-}
 
 # The documented cost of overriding the guard (tech spec 656, "Override").
 _QR_OVERRIDE_COST="old submitters keep writing to the unlinked agent.db, their waiting commands still run when their turn comes in that orphaned queue, and those commands run outside the new queue's slot count until every old submitter drains"

@@ -420,30 +420,40 @@ qr_run planar_db_probe || fail "the probe failed on a prefix with no planar.db: 
 [[ ! -e "$QR_P/planar.db" ]] || fail "the probe created planar.db"
 qr_untouched
 
-# Current: the read-only handshake answers a JSON list, the queue store
-# answers usable. Both run from / against the prefix database; no init.
-for qr_usable in "0|{\"seq\":1,\"state\":\"ended\"}" "1|$(qr_json_error not_found)"; do
-  qr_setup "current_${qr_usable%%|*}"
+# Current: `planar-watch plans --json` answers a JSON list, whatever the list
+# holds. It runs from / against the prefix database, and the probe asks
+# planar-agent nothing: the queue tables are not read and no queue verb is run.
+qr_current_case=0
+for qr_list in '{"generated_at":"t","plans":[]}' '{"generated_at":"t","plans":[{"plan_id":1,"active_claims":0,"active_actions":0}]}'; do
+  qr_current_case=$((qr_current_case + 1))
+  qr_setup "current_$qr_current_case"
   printf 'db\n' > "$QR_P/planar.db"
-  qr_reply watch 1 0 '[]'
-  qr_reply agent 1 "${qr_usable%%|*}" "${qr_usable#*|}"
+  qr_reply watch 1 0 "$qr_list"
   qr_run planar_db_probe || fail "a current probe failed: $(cat "$QR_CASE/err")"
   [[ "$(qr_state)" == "current||" ]] || fail "a current database is not 'current': $(cat "$QR_CASE/out")"
-  [[ "$(cat "$QR_S/watch.calls")" == "/|$QR_P/planar.db|queue --json" ]] || fail "the handshake was not run from / against the prefix db: $(cat "$QR_S/watch.calls")"
-  [[ "$(cat "$QR_S/agent.calls")" == "/|$QR_P/planar.db|queue status 1 --json" ]] || fail "the queue probe was not run from /: $(cat "$QR_S/agent.calls")"
+  [[ "$(cat "$QR_S/watch.calls")" == "/|$QR_P/planar.db|plans --json" ]] || fail "the handshake was not run from / against the prefix db: $(cat "$QR_S/watch.calls")"
+  [[ "$(qr_calls agent)" == 0 ]] || fail "the probe asked planar-agent: $(cat "$QR_S/agent.calls")"
   [[ "$(qr_calls planar)" == 0 ]] || fail "a current planar.db was migrated"
   qr_untouched
 done
+# A queue store the probe never reads cannot change a current answer.
+qr_setup current_queue_unread
+printf 'db\n' > "$QR_P/planar.db"
+qr_reply watch 1 0 '{"generated_at":"t","plans":[]}'
+qr_reply agent 1 125 "$(qr_json_error queue_schema_foreign)"
+qr_run planar_db_probe || fail "the probe failed with a foreign queue store: $(cat "$QR_CASE/err")"
+[[ "$(qr_state)" == "current||" ]] || fail "a foreign queue store changed a current answer: $(cat "$QR_CASE/out")"
+[[ "$(qr_calls agent)" == 0 ]] || fail "the probe read the queue store"
+qr_untouched
 
-# Ahead: refused territory, whatever the queue store would say -- the queue
-# probe is not even asked (decision 1326).
+# Ahead: refused territory. planar-agent is not even asked: the queue tables
+# play no part in the main schema (decision 1326).
 qr_setup ahead
 printf 'db\n' > "$QR_P/planar.db"
 qr_reply watch 1 7 '' "$QR_AHEAD_ERR"
-qr_reply agent 1 0 '{"seq":1}'
 qr_run planar_db_probe || fail "the ahead probe failed: $(cat "$QR_CASE/err")"
 [[ "$(qr_state)" == "ahead|42|41" ]] || fail "an ahead database is not 'ahead|42|41': $(cat "$QR_CASE/out")"
-[[ "$(qr_calls agent)" == 0 ]] || fail "queue compatibility was consulted for an ahead database"
+[[ "$(qr_calls agent)" == 0 ]] || fail "planar-agent was consulted for an ahead database"
 qr_untouched
 
 # Behind: names both versions; a zero-byte file reads behind at 0 (SQLite treats
@@ -467,15 +477,17 @@ grep -Fq 'records no applied migration' "$QR_CASE/out" || fail "the version-0 fa
 qr_untouched
 
 # Faults keep the probe's own diagnostic: unreadable or corrupt (exit 1), an
-# exit-7 answer whose versions cannot be read, a JSON answer that is not a list,
-# and a same-version foreign or incompatible queue schema.
+# exit-7 answer whose versions cannot be read, and an answer that is not
+# exactly one JSON list.
 qr_fault_case=0
 for qr_fault in \
   "1||error: cannot read the database at /x/planar.db: file is not a database.|cannot read the database" \
   "7||error: schema version is strange
 error: SchemaVersionAhead|schema version is strange" \
-  "0|{\"seq\":1}||without a JSON list" \
-  "0|not json||without a JSON list"; do
+  "0|{\"seq\":1}||without a plans array" \
+  "0|not json||without one JSON object" \
+  "0|[] []||without one JSON object" \
+  "0|[]||without one JSON object"; do
   qr_fault_case=$((qr_fault_case + 1))
   qr_setup "fault_$qr_fault_case"
   printf 'db\n' > "$QR_P/planar.db"
@@ -484,16 +496,6 @@ error: SchemaVersionAhead|schema version is strange" \
   qr_run planar_db_probe || fail "fault probe $qr_fault_case failed itself"
   [[ "$(qr_state | cut -d'|' -f1)" == fault ]] || fail "fault case $qr_fault_case is not a fault: $(cat "$QR_CASE/out")"
   grep -Fq "$qr_want" "$QR_CASE/out" || fail "fault case $qr_fault_case lost its diagnostic '$qr_want': $(cat "$QR_CASE/out")"
-  qr_untouched
-done
-for qr_tag in queue_schema_foreign queue_schema_incompatible store_unreachable; do
-  qr_setup "queue_$qr_tag"
-  printf 'db\n' > "$QR_P/planar.db"
-  qr_reply watch 1 0 '[]'
-  qr_reply agent 1 125 "$(qr_json_error "$qr_tag")"
-  qr_run planar_db_probe || fail "the $qr_tag probe failed itself"
-  [[ "$(qr_state | cut -d'|' -f1)" == fault ]] || fail "a $qr_tag queue store at the current schema is not a fault: $(cat "$QR_CASE/out")"
-  grep -Fq "$qr_tag" "$QR_CASE/out" || fail "the $qr_tag fault does not name the tag"
   qr_untouched
 done
 
@@ -510,8 +512,7 @@ qr_run planar_db_migrate PLANAR_DB=elsewhere/r.db PLANAR_CONFIG_PATH="$QR_CASE/e
 # must answer current.
 qr_setup migrate_ok
 printf 'db\n' > "$QR_P/planar.db"
-qr_reply watch 1 0 '[]'
-qr_reply agent 1 1 "$(qr_json_error not_found)"
+qr_reply watch 1 0 '{"generated_at":"t","plans":[]}'
 qr_run planar_db_migrate || fail "a migration followed by a current probe failed: $(cat "$QR_CASE/err") $(cat "$QR_CASE/out")"
 [[ "$(cat "$QR_S/planar.calls")" == "/|$QR_P/planar.db|$QR_P/config.toml|init --skip-project --allow-no-repo" ]] \
   || fail "the migrate command was not the documented one: $(cat "$QR_S/planar.calls")"
@@ -552,6 +553,15 @@ printf 'db\n' > "$QR_P/planar.db"
 rm -f "$QR_P/bin/planar-watch"
 qr_run planar_queue_warning || fail "an absent planar-watch failed the warning step"
 [[ "$(grep -c 'could not be checked' "$QR_CASE/err")" == 1 ]] || fail "an absent planar-watch did not print exactly one skipped line: $(cat "$QR_CASE/err")"
+qr_untouched
+# A planar-watch with no queue verb (a release after the queue moved out) prints
+# one skipped line and never fails the install.
+qr_setup warn_no_queue_verb
+printf 'db\n' > "$QR_P/planar.db"
+qr_reply watch 1 1 '' "error: planar-watch: The following argument was not expected: queue"
+qr_run planar_queue_warning || fail "a planar-watch without a queue verb failed the warning step"
+[[ "$(grep -c 'could not be checked' "$QR_CASE/err")" == 1 ]] || fail "a planar-watch without a queue verb did not print exactly one skipped line: $(cat "$QR_CASE/err")"
+grep -Fq "The following argument was not expected: queue" "$QR_CASE/err" || fail "the skipped line does not carry the planar-watch's answer: $(cat "$QR_CASE/err")"
 qr_untouched
 
 # The call sites: install.sh sources the libraries, probes with the STAGED
@@ -974,8 +984,8 @@ grep -Fq 'old-queue-database retirement reader' "$TMP/prereqs.md" || fail "INSTA
 
 # install.sh runs under `set -eEuo pipefail` with an ERR trap (on_err), and
 # -E carries that trap into command substitutions. The seam's substitutions
-# that are EXPECTED to exit non-zero (the probe's `queue status 1`, which is
-# exit 1 not_found on almost every upgrade; init; the store reader's exit 3)
+# that are EXPECTED to exit non-zero (the probe's `plans --json`, which exits 7
+# behind or ahead; init; the store reader's exit 3)
 # must not fire it: on_err prints "install failed" even though the install
 # continues. These cases source the seam under a trap shaped like install.sh's.
 qr_trap_call() {

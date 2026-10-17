@@ -9,11 +9,13 @@
 # installer asks of them. In the table, D is the directory holding $PLANAR_DB:
 #   <bin> version                  the six-token version line
 #   <bin> version --json           the version object, with a full 40-digit sha
-#   planar-watch queue --json      D/watch.out and exit status D/watch.rc when
-#                                  they exist, else [] at exit 0 (the database
+#   planar-watch plans --json      D/plans.err on stderr, D/plans.out and exit status D/plans.rc when
+#                                  they exist, else the envelope with an empty plans array at exit 0 (the database
 #                                  probe reads this as the current schema)
-#   planar-agent queue ...         D/stub.out and exit status D/stub.rc when they
-#                                  exist, else {"seq":1} at exit 0
+#   planar-watch queue ...         exit 1 with CLI11's unexpected-argument line: this
+#                                  stub has no queue verb, so the live-queue
+#                                  warning reads it as "could not be checked"
+#   planar-agent ...               exit 0
 #   planar init ...                appends its arguments to D/init.calls when
 #                                  that file exists (a test creates it), exits
 #                                  with D/init.rc when it exists, else creates a
@@ -39,14 +41,16 @@ case "\${1:-}" in
       echo "$name $build 2026-10-06T00:00:00Z cxx Clang-23.1.2 $tag"
     fi
     exit 0 ;;
+  plans)
+    if [ "$name" = planar-watch ]; then
+      if [ -f "\$d/plans.err" ]; then cat "\$d/plans.err" >&2; fi
+      if [ -f "\$d/plans.out" ]; then cat "\$d/plans.out"; exit "\$(cat "\$d/plans.rc" 2>/dev/null || echo 0)"; fi
+      echo '{"generated_at":"2026-10-06T00:00:00.000Z","plans":[]}'; exit 0
+    fi
+    exit 0 ;;
   queue)
     if [ "$name" = planar-watch ]; then
-      if [ -f "\$d/watch.out" ]; then cat "\$d/watch.out"; exit "\$(cat "\$d/watch.rc" 2>/dev/null || echo 0)"; fi
-      echo '[]'; exit 0
-    fi
-    if [ "$name" = planar-agent ]; then
-      if [ -f "\$d/stub.out" ]; then cat "\$d/stub.out"; exit "\$(cat "\$d/stub.rc" 2>/dev/null || echo 0)"; fi
-      echo '{"seq":1}'; exit 0
+      echo "error: planar-watch: The following argument was not expected: queue" >&2; exit 1
     fi
     exit 0 ;;
   init)
