@@ -9,8 +9,10 @@
 #
 # The module is named `buildqueue` for its target and test label. The reader
 # (`planar.buildqueue.reader`) is the one module that imports `planar.db`, the
-# layer-1 SQLite wrapper: it opens the queue database read-only and checks
-# columns, not versions. DEPENDS db is the only edge the target takes.
+# layer-1 SQLite wrapper, and it decodes the stored argv with `planar.json_dom`,
+# the layer-1 JSON parser. It opens the queue database read-only and checks
+# columns, not versions. DEPENDS db and json_dom are the only edges the target
+# takes.
 planar_module(buildqueue
   INTERFACE
     path.cppm
@@ -18,4 +20,4 @@ planar_module(buildqueue
   SOURCES
     path.cpp
     reader.cpp
-  DEPENDS db)
+  DEPENDS db json_dom)

@@ -411,3 +411,18 @@ TEST_CASE("reader: a stored argv that is not a JSON array of strings is unreadab
   CHECK(runs.error().kind == reader_error_kind::unreadable);
   CHECK(runs.error().reason.find("argv") != std::string::npos);
 }
+
+TEST_CASE("reader: a stored argv with escaped characters decodes to the strings the engine's decoder yields",
+          "[buildqueue][reader]") {
+  scratch_dir scratch;
+  auto const  path = scratch.file("escapes.db");
+  {
+    auto conn = make_queue_db(path);
+    // A quote, a backslash, a solidus escape, a tab, a \u escape and literal UTF-8 (U+00E9 both ways).
+    insert_run(conn, 2000001, "T", R"(["a\"b","back\\slash","\/","x\ty","é","é"])", "exited", 0, 1);
+  }
+  auto const runs = read_tagged_runs(path, "T");
+  REQUIRE(runs.has_value());
+  REQUIRE(runs->runs.size() == 1);
+  CHECK(runs->runs[0].argv == std::vector<std::string>{"a\"b", "back\\slash", "/", "x\ty", "\xC3\xA9", "\xC3\xA9"});
+}

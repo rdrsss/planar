@@ -15,8 +15,9 @@
 /// row or the columns the reader reads is `incompatible`, and the reason names
 /// what is missing. Versions are not compared: a database behind or ahead of
 /// this build is read when its columns exist. Every failure is returned through
-/// `std::expected`, and nothing throws. Layer 1: this module imports only `std`
-/// and `planar.db`.
+/// `std::expected`, and nothing throws. Layer 1: the interface imports only `std`
+/// and `planar.db`; the implementation also imports `planar.json_dom` to decode
+/// the stored argv.
 module;
 
 export module planar.buildqueue.reader;
