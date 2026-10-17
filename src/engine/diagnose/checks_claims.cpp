@@ -16,8 +16,8 @@
 ///  - `task-doing-unclaimed`: a `doing` task with no `active` claim whose lease runs to now or later.
 ///  - `claim-closed-by-reconcile`: an event for a claim that ended `stale`, inside the window.
 ///  - `heartbeat-gap` (task 7375, decisions 1345 and 1381): the points of a claim are `claimed_at`,
-///    each `heartbeat` action row's `started_at` and `last_heartbeat_at` (a plain heartbeat or a
-///    `queue run --claim` renewal writes no row, only that column). A gap between consecutive points
+///    each `heartbeat` action row's `started_at` and `last_heartbeat_at` (a plain heartbeat writes
+///    no row, only that column). A gap between consecutive points
 ///    is `info` when strictly beyond half the claim's lease and never more: a recorded heartbeat is
 ///    only written while the lease is live, so a gap ending in one is not a lapse. A `warning` is
 ///    the trailing stretch from the last point to the release (a terminal claim) or the evaluation

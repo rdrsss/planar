@@ -20,7 +20,7 @@ auto queue_family() -> family {
                                .kind     = incident_model::check_kind::state,
                                .severity = incident_model::diagnostic_severity::warning,
                                .category = "queue_unobserved",
-                               .recovery = "planar-agent queue ack <seq> after reading the result",
+                               .recovery = "read the entry's result with planar-build-queue status <seq>",
                                .inputs   = {"queue_observation"},
                                .built    = false,
                                .evaluate = {}});
