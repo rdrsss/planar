@@ -1140,7 +1140,8 @@ TEST_CASE("update: the binary updates a bootstrap install end to end through the
   std::filesystem::remove_all(inst);
   std::string boot;
   auto const  boot_rc =
-      bash(std::format("cd {} && env -u PLANAR_QUEUE_SLOT HOME={} PLANAR_HOME={} PLANAR_DB={} PLANAR_CONFIG_PATH={} "
+      bash(std::format("cd {} && env -u PLANAR_QUEUE_SLOT -u PLANAR_BUILD_QUEUE_SLOT -u PLANAR_BUILD_QUEUE_DB HOME={} "
+                       "PLANAR_HOME={} PLANAR_DB={} PLANAR_CONFIG_PATH={} "
                        "PLANAR_VERSION=v1.0.0 PLANAR_RELEASE_URL={} sh {}",
                        shell_quote(work.string()), shell_quote((work / "fakehome").string()), shell_quote(inst.string()),
                        shell_quote((work / "planar.db").string()), shell_quote((work / "config.toml").string()),
@@ -1217,7 +1218,8 @@ TEST_CASE(
   // The real bootstrap, pinned to `tag`, under PATH `path`; stdout and stderr together.
   auto const bootstrap = [&](std::string const& tag, std::string const& path, std::string& out) {
     std::filesystem::remove_all(inst);
-    return bash(std::format("cd {} && env -u PLANAR_QUEUE_SLOT HOME={} PLANAR_HOME={} PLANAR_DB={} PLANAR_CONFIG_PATH={} "
+    return bash(std::format("cd {} && env -u PLANAR_QUEUE_SLOT -u PLANAR_BUILD_QUEUE_SLOT -u PLANAR_BUILD_QUEUE_DB HOME={} "
+                            "PLANAR_HOME={} PLANAR_DB={} PLANAR_CONFIG_PATH={} "
                             "PATH={} PLANAR_VERSION={} PLANAR_RELEASE_URL={} sh {} 2>&1",
                             shell_quote(work.string()), shell_quote(fhome.string()), shell_quote(inst.string()),
                             shell_quote((work / "planar.db").string()), shell_quote((work / "config.toml").string()),
