@@ -41,12 +41,12 @@ export constexpr std::string_view k_main_version_table = "schema_migrations";
 export auto current_version(connection& conn) -> std::expected<std::uint32_t, db_error>;
 
 /// @brief Which chain a database belongs to, by its identity tables. A
-/// `planar.db` (`main`) and a `planar-build-queue.db` (`build_queue`) share
+/// `planar.db` (`main`) and the build queue database (`build_queue`) share
 /// the `schema_migrations` contract but never a file, so the apply entry
 /// points refuse the chain that is not theirs.
 export enum class database_chain : std::uint8_t {
   main,        ///< The main chain (`migrations()`), for `planar.db`.
-  build_queue, ///< The build queue chain (`build_queue_migrations()`), for `planar-build-queue.db`.
+  build_queue, ///< The build queue chain (`build_queue_migrations()`), for the build queue database.
 };
 
 /// @brief Refuses to apply `chain` to a database that belongs to the other

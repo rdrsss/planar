@@ -92,7 +92,7 @@ auto require_chain_identity(connection& conn, database_chain chain) -> std::expe
   if (chain == database_chain::main && *is_build_queue) {
     return std::unexpected(db_error{
         .code_    = k_sqlite_misuse,
-        .message_ = "refusing to apply the main chain: this is a planar-build-queue database (it has queue_identity); "
+        .message_ = "refusing to apply the main chain: this is a build queue database (it has queue_identity); "
                     "the main chain belongs in planar.db",
     });
   }
@@ -100,7 +100,7 @@ auto require_chain_identity(connection& conn, database_chain chain) -> std::expe
     return std::unexpected(db_error{
         .code_    = k_sqlite_misuse,
         .message_ = "refusing to apply the build queue chain: this is a planar.db (it has schema_migrations and no "
-                    "queue_identity); the build queue chain belongs in planar-build-queue.db",
+                    "queue_identity); the build queue chain belongs in the build queue database",
     });
   }
   return {};

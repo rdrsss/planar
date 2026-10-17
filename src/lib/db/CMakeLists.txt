@@ -26,7 +26,7 @@ planar_generate_migrations(
   OUT_FILE "${_planar_db_migrations_generated}"
   MODULE_NAME "planar.db.migrations")
 
-# The build queue's chain (plan 1163) is a second stream in the same module,
+# The build queue's chain is a second stream in the same module,
 # with its own accessor and generated unit, so the two never share a name.
 set(_planar_db_build_queue_generated
     "${CMAKE_CURRENT_BINARY_DIR}/generated/build_queue_migrations.generated.cpp")

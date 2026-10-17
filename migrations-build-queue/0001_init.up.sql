@@ -1,4 +1,4 @@
--- 0001 init: the build queue's own database (plan 1163, decisions 1430,
+-- 0001 init: the build queue's own database (decisions 1430,
 -- 1432 and 1440; tech spec 705 § Schema Changes). The queue moves out of
 -- planar.db into planar-build-queue's database, with no data migration
 -- (decision 1430). The queue is generic: it stores an opaque `tag` and
@@ -99,7 +99,7 @@ create table queue_schema (
 );
 
 insert into queue_schema (version, compat, description)
-values (1, 1, 'queue_entries and queue_history in planar-build-queue.db');
+values (1, 1, 'queue_entries and queue_history in the build queue database');
 
 -- queue_identity: names the database as a build-queue database. The
 -- migration runner reads it to refuse the main chain against this file and

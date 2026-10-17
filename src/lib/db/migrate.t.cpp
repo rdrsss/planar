@@ -1900,7 +1900,7 @@ TEST_CASE("a database with no version table is still a fresh database at version
 }
 
 // ---------------------------------------------------------------------------
-// Plan 1163, task bq-migrations-chain: the build queue's own chain (decisions
+// The build queue's own chain (decisions
 // 1430, 1432 and 1440; tech spec 705 § Schema Changes). Its 0001_init creates
 // the queue tables in their final shape, and apply_build_queue refuses a
 // planar.db before any statement runs.

@@ -1,7 +1,7 @@
 # Build queue migrations
 
-SQL schema migrations for the build queue's own database,
-`planar-build-queue.db`. The `planar-build-queue` binary owns and migrates it.
+SQL schema migrations for the build queue database, `build-queue.db`.
+The `planar-build-queue` binary owns and migrates it.
 It holds the host-wide build and test queue and nothing else; planning state
 stays in `planar.db` and its chain under [`migrations/`](../migrations/README.md).
 

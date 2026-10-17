@@ -11,7 +11,7 @@
 # One call per migration stream. The stream's identity in the generated unit
 # is parameterized so a stream lands in its own module. src/lib/db/CMakeLists.txt
 # calls it twice: for `migrations/` (the main chain) and for
-# `migrations-build-queue/` (the build queue's chain, plan 1163), each with its
+# `migrations-build-queue/` (the build queue's chain), each with its
 # own ACCESSOR and OUT_FILE, both implementing `planar.db.migrations`:
 #
 #   MODULE_NAME     the module the unit implements (`planar.db.migrations`)
