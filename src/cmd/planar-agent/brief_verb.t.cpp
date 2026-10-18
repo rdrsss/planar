@@ -199,15 +199,19 @@ auto build_golden_fixture(planar::db::connection& conn) -> void {
 
 /// Every table row count the verb could conceivably touch.
 auto row_totals(planar::db::connection& conn) -> std::vector<std::int64_t> {
-  return {scalar(conn, "select count(*) from tasks"),
-          scalar(conn, "select count(*) from agent_work_claims"),
-          scalar(conn, "select count(*) from agent_actions"),
-          scalar(conn, "select count(*) from sessions"),
-          scalar(conn, "select count(*) from plans"),
-          scalar(conn, "select count(*) from audit_log"),
-          scalar(conn, "select count(*) from entity_links"),
-          scalar(conn, "select count(*) from queue_entries"),
-          scalar(conn, "select count(*) from schema_migrations")};
+  return {scalar(conn, "select count(*) from tasks"),         scalar(conn, "select count(*) from agent_work_claims"),
+          scalar(conn, "select count(*) from agent_actions"), scalar(conn, "select count(*) from sessions"),
+          scalar(conn, "select count(*) from plans"),         scalar(conn, "select count(*) from audit_log"),
+          scalar(conn, "select count(*) from entity_links"),  scalar(conn, "select count(*) from schema_migrations")};
+}
+
+/// The authored mandate file, read from the repository. A `use_queue` brief carries it on top of the 4 KB budget.
+auto mandate_source() -> std::string {
+  std::ifstream in(PLANAR_QUEUE_MANDATE_SOURCE, std::ios::binary);
+  REQUIRE(in.good());
+  std::ostringstream buf;
+  buf << in.rdbuf();
+  return buf.str();
 }
 
 auto parse(const std::string& text) -> jd::json_value {
@@ -308,8 +312,8 @@ TEST_CASE("brief shows queue templates only when use_queue is true", "[cmd][agen
     scratch.write_config("[policy]\nuse_queue = true\ntask_gate = [\"sh\", \"-c\", \"echo 'hi' $HOME\"]\n");
     auto const r = run_verb(scratch, {"brief", "2"});
     REQUIRE(r.code == 0);
-    CHECK(r.out.contains("  gate: planar-agent queue run --claim '<token>' -- 'sh' '-c' 'echo '\\''hi'\\'' $HOME'\n"));
-    CHECK(r.out.size() < 4096);
+    CHECK(r.out.contains("  gate: planar-build-queue run --tag '<token>' -- 'sh' '-c' 'echo '\\''hi'\\'' $HOME'\n"));
+    CHECK(r.out.size() < 4096 + mandate_source().size()); // the mandate is on top of the budget
 
     auto const json = run_verb(scratch, {"brief", "2", "--json"});
     REQUIRE(json.code == 0);
@@ -325,7 +329,130 @@ TEST_CASE("brief shows queue templates only when use_queue is true", "[cmd][agen
     scratch.write_config("[policy]\nuse_queue = true\n");
     auto const r = run_verb(scratch, {"brief", "2"});
     REQUIRE(r.code == 0);
-    CHECK(r.out.contains("  gate: planar-agent queue run --claim '<token>' -- '<command>'\n"));
+    CHECK(r.out.contains("  gate: planar-build-queue run --tag '<token>' -- '<command>'\n"));
+  }
+}
+
+/// @brief The `mandate` string of `brief --json`'s protocol, or nullopt when the key is absent.
+auto mandate_of(const jd::json_value& parsed) -> std::optional<std::string> {
+  auto const* protocol = parsed.find("protocol");
+  REQUIRE(protocol != nullptr);
+  auto const* mandate = protocol->find("mandate");
+  if (mandate == nullptr) {
+    return std::nullopt;
+  }
+  return mandate->string;
+}
+
+TEST_CASE("brief carries the queue mandate only under use_queue, in text and JSON", "[cmd][agent][brief][verb][mandate]") {
+  auto const mandate = mandate_source();
+  REQUIRE(mandate.starts_with("## Builds and tests go through the host queue\n"));
+
+  SECTION("the top-level policy sets use_queue: the mandate follows the gate template, byte for byte") {
+    scratch_dir scratch;
+    {
+      auto conn = create_db(scratch);
+      build_fixture(conn);
+    }
+    scratch.write_config("[policy]\nuse_queue = true\ntask_gate = [\"make\", \"test\"]\n");
+    auto const text = run_verb(scratch, {"brief", "2"});
+    INFO(text.out);
+    REQUIRE(text.code == 0);
+    CHECK(text.out.contains("  gate: planar-build-queue run --tag '<token>' -- 'make' 'test'\nmandate:\n"));
+    CHECK(text.out.ends_with("\nmandate:\n" + mandate));
+    CHECK(text.out.contains("\n## Builds and tests go through the host queue\n"));
+
+    auto const json = run_verb(scratch, {"brief", "2", "--json"});
+    REQUIRE(json.code == 0);
+    CHECK(mandate_of(parse(json.out)) == mandate);
+  }
+  SECTION("use_queue false, or only other policy keys: no mandate in text or JSON") {
+    scratch_dir scratch;
+    {
+      auto conn = create_db(scratch);
+      build_fixture(conn);
+    }
+    for (auto const* config : {"[policy]\nuse_queue = false\n", "[policy]\nreview_required = true\n"}) {
+      INFO(config);
+      scratch.write_config(config);
+      auto const text = run_verb(scratch, {"brief", "2"});
+      REQUIRE(text.code == 0);
+      CHECK_FALSE(text.out.contains("mandate:"));
+      CHECK_FALSE(text.out.contains("host queue"));
+      auto const json = run_verb(scratch, {"brief", "2", "--json"});
+      REQUIRE(json.code == 0);
+      CHECK_FALSE(mandate_of(parse(json.out)).has_value());
+    }
+  }
+  SECTION("an association table's use_queue follows the plan's association") {
+    auto const config = std::string{"[associations.\"acme\".policy]\nuse_queue = true\n"};
+    SECTION("a plan in that association gets the mandate") {
+      scratch_dir scratch;
+      {
+        auto conn = create_db(scratch);
+        build_fixture(conn);
+        exec(conn, "insert into associations (id, slug, name, kind) values (1, 'acme', 'Acme', 'org')");
+        exec(conn, "update plans set scope_kind = 'association', scope_id = 1 where id in (1, 2, 3)");
+      }
+      scratch.write_config(config);
+      auto const json = run_verb(scratch, {"brief", "2", "--json"});
+      REQUIRE(json.code == 0);
+      CHECK(mandate_of(parse(json.out)) == mandate);
+    }
+    SECTION("a plan in another association does not") {
+      scratch_dir scratch;
+      {
+        auto conn = create_db(scratch);
+        build_fixture(conn);
+        exec(conn, "insert into associations (id, slug, name, kind) values (1, 'acme', 'Acme', 'org'), (2, 'elsewhere', "
+                   "'Elsewhere', 'org')");
+        exec(conn, "update plans set scope_kind = 'association', scope_id = 2 where id in (1, 2, 3)");
+      }
+      scratch.write_config(config);
+      auto const json = run_verb(scratch, {"brief", "2", "--json"});
+      REQUIRE(json.code == 0);
+      CHECK_FALSE(mandate_of(parse(json.out)).has_value());
+    }
+  }
+  SECTION("an association's false overrides a top-level true, in that association only") {
+    auto const  config = std::string{"[policy]\nuse_queue = true\n\n[associations.\"acme\".policy]\nuse_queue = false\n"};
+    scratch_dir scratch;
+    {
+      auto conn = create_db(scratch);
+      build_fixture(conn);
+      exec(conn, "insert into associations (id, slug, name, kind) values (1, 'acme', 'Acme', 'org'), (2, 'elsewhere', "
+                 "'Elsewhere', 'org')");
+      exec(conn, "update plans set scope_kind = 'association', scope_id = 1 where id in (1, 2, 3)");
+    }
+    scratch.write_config(config);
+    auto const inside = run_verb(scratch, {"brief", "2", "--json"});
+    REQUIRE(inside.code == 0);
+    CHECK_FALSE(mandate_of(parse(inside.out)).has_value());
+
+    {
+      auto conn = create_db(scratch);
+      exec(conn, "update plans set scope_kind = 'association', scope_id = 2 where id in (1, 2, 3)");
+    }
+    auto const outside = run_verb(scratch, {"brief", "2", "--json"});
+    REQUIRE(outside.code == 0);
+    CHECK(mandate_of(parse(outside.out)) == mandate);
+  }
+  SECTION("a plan with no open task carries no mandate, as it carries no gate template") {
+    scratch_dir scratch;
+    {
+      auto conn = create_db(scratch);
+      build_fixture(conn);
+      exec(conn, "insert into plans (id, scope_kind, title, slug, status, parent_plan_id) values "
+                 "(9, 'global', 'Empty', 'empty', 'active', 1)");
+    }
+    scratch.write_config("[policy]\nuse_queue = true\n");
+    auto const text = run_verb(scratch, {"brief", "9"});
+    REQUIRE(text.code == 0);
+    CHECK(text.out.contains("protocol (lease 7200s, heartbeat every 1h):\n  none: no todo, doing or blocked task remains\n"));
+    CHECK_FALSE(text.out.contains("mandate:"));
+    auto const json = run_verb(scratch, {"brief", "9", "--json"});
+    REQUIRE(json.code == 0);
+    CHECK_FALSE(mandate_of(parse(json.out)).has_value());
   }
 }
 
@@ -736,7 +863,7 @@ TEST_CASE("brief shows the confirm_before verbs in text and JSON, and nothing wh
     auto const text = run_verb(scratch, {"brief", "2"});
     REQUIRE(text.code == 0);
     CHECK(text.out.contains("confirm with the operator before: task done; plan closeout; spec ingest; decision accept\n"));
-    CHECK(text.out.size() < 4096);
+    CHECK(text.out.size() < 4096 + mandate_source().size()); // use_queue adds the mandate
   }
 }
 
@@ -828,6 +955,15 @@ TEST_CASE("every brief template names a real verb with real flags and is safe to
     INFO("template " << name << ": " << command);
     auto const split = split_shell(command);
     CHECK_FALSE(split.unquoted_metachar); // every `<placeholder>` and `a|b` is single-quoted
+    if (name == "gate") {
+      // The gate names planar-build-queue, whose command tree this binary does not link: pin its shape instead.
+      REQUIRE(split.words.size() >= 5);
+      CHECK(split.words[0] == "planar-build-queue");
+      CHECK(split.words[1] == "run");
+      CHECK(split.words[2] == "--tag");
+      CHECK(split.words[4] == "--");
+      continue;
+    }
     REQUIRE(split.words.size() >= 3);
     REQUIRE(split.words[0] == "planar-agent");
 

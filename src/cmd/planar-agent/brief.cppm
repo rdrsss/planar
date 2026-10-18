@@ -142,6 +142,7 @@ export struct brief_protocol {
   std::int64_t                lease_ttl_secs       = 0; ///< The default lease TTL a claim gets.
   std::int64_t                heartbeat_every_secs = 0; ///< Half the TTL.
   std::vector<brief_template> templates;                ///< In print order.
+  std::string                 mandate;                  ///< The queue mandate text; empty unless `use_queue` is true.
 };
 
 /// @brief Everything one `brief` call returns.
@@ -162,8 +163,9 @@ export struct brief {
 
 /// @brief Build the protocol templates for a policy.
 ///
-/// Queue templates appear only when `use_queue` is true. With a `task_gate`, the
-/// gate template quotes each argv element; without one it names a generic command.
+/// Queue templates and the queue mandate appear only when `use_queue` is true. With a
+/// `task_gate`, the gate template quotes each argv element; without one it names a
+/// generic command.
 /// @param policy The effective policy values.
 /// @param lease_ttl_secs The TTL a claim without `--ttl` gets.
 /// @return The protocol.
