@@ -175,25 +175,6 @@ TEST_CASE("planar-agent resolves the database path PLANAR_DB-first, never PLANAR
   REQUIRE_FALSE(neither.has_value());
 }
 
-TEST_CASE("planar-agent resolves the main database path for every verb except the queue domain", "[cmd][agent][context]") {
-  // The exemption is unchanged by the queue moving into planar.db: the queue
-  // handlers resolve the path and open the store themselves (queue_store), so
-  // an unresolvable path is their own 125, not this pre-dispatch 1.
-  using planar::cmd::agent::uses_main_database;
-  auto const argv = [](std::vector<std::string> words) { return words; };
-  CHECK_FALSE(uses_main_database(argv({"planar-agent", "queue", "run", "--", "make"})));
-  CHECK_FALSE(uses_main_database(argv({"planar-agent", "queue", "status", "7", "--json"})));
-  CHECK_FALSE(uses_main_database(argv({"planar-agent", "queue"})));
-  CHECK(uses_main_database(argv({"planar-agent", "pull", "1"})));
-  CHECK(uses_main_database(argv({"planar-agent", "version"})));
-  CHECK(uses_main_database(argv({"planar-agent"})));
-  CHECK(uses_main_database(argv({})));
-  // Only the first argument names the domain; a later `queue` does not.
-  CHECK(uses_main_database(argv({"planar-agent", "claim", "queue"})));
-  CHECK(uses_main_database(argv({"planar-agent", "--bogus", "queue", "run"})));
-  CHECK(uses_main_database(argv({"planar-agent", "Queue", "run"})));
-}
-
 TEST_CASE("planar-agent's operator cwd is PWD-first", "[cmd][agent][context]") {
   // Canonicalising resolves macOS's /var -> /private/var symlink, which
   // would break cwd-derived scope against a projects.root_path recorded

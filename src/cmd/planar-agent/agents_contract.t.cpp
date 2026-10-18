@@ -9,23 +9,13 @@
 // `planar-<role>` so an operator who copies one into a vendor directory does
 // not collide with another tool's agent of the same role. This file holds the
 // sources to that contract, holds the doctrine documents to staying out of it,
-// checks that no authored text still dispatches an agent by its bare role name,
-// and checks that the bare role VALUE (`--role coder`) is still what
-// `planar-agent queue run` accepts.
+// and checks that no authored text still dispatches an agent by its bare role name.
 
 #include <catch2/catch_test_macros.hpp>
 
 import std;
-import planar.db;
-import planar.db.migrate;
-import planar.db.migrations;
-
-#include "parity_harness.hpp"
-#include "queue_test_store.hpp"
 
 namespace {
-
-namespace parity = planar::cmd::parity;
 
 /// @brief The role files still under agents/, by stem.
 constexpr std::array k_agent_stems{"planar-orchestrator", "planar-test-coder"};
@@ -306,15 +296,6 @@ TEST_CASE("no authored text dispatches an agent by its bare role name", "[cmd][a
   }
   INFO(joined(hits));
   CHECK(hits.empty());
-}
-
-TEST_CASE("queue run still accepts the bare role value", "[cmd][agent][agents-contract][queue]") {
-  auto arena = parity::make_arena("agents-contract-queue");
-  planar::cmd::qfix::head_store(arena.cpp_root / "planar.db");
-  std::vector<std::string> const args{"queue", "run", "--vendor", "claude", "--role", "coder", "--", "true"};
-  auto const got = parity::run_pinned(std::filesystem::path{PLANAR_CPP_BIN}, args, arena.cpp_root, "bare-role");
-  INFO("stdout:\n" << got.out << "stderr:\n" << got.err);
-  CHECK(got.code == 0);
 }
 
 TEST_CASE("the removed feedback-triager role has no file under agents/", "[cmd][agent][agents-contract]") {

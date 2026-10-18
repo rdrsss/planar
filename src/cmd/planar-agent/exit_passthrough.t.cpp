@@ -5,8 +5,7 @@
 //
 // These cases register a TEST handler over an existing leaf in a copy of the
 // real table and drive the real `run`, so the pass-through rules are pinned
-// independently of any verb (`queue run`, task 7008, is the real user; its
-// own cases are in queue_run.t.cpp). The leaf's own
+// independently of any verb. The leaf's own
 // parse rules still apply; only the handler behind it is replaced.
 //
 // The last case shells the built binary and requires its exit code to equal
@@ -121,8 +120,8 @@ TEST_CASE("planar-agent: a handler's exit status 7 is the process exit code", "[
 
 TEST_CASE("planar-agent: pass-through statuses that collide with this binary's own codes are returned verbatim",
           "[cmd][agent][exit][passthrough]") {
-  // 1 is this binary's parse-failure code, 2 its user-input code, 125 the
-  // queue's own failure code (decision 1188). A child may exit with any of
+  // 1 is this binary's parse-failure code, 2 its user-input code, 125 its
+  // internal-error code. A child may exit with any of
   // them; the process must too, and must not dress it up as a refusal.
   for (int const status : {0, 1, 2, 5, 64, 125, 127, 128 + 9, 255}) {
     INFO("status " << status);

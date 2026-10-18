@@ -84,8 +84,6 @@ doc="$(cd "$(dirname "$doc")" && pwd)/$(basename "$doc")"
 # Scratch DB *and* scratch HOME. `PLANAR_HOME` alone does NOT redirect the
 # database: without PLANAR_DB the runtime falls back to ~/.planar/planar.db
 # and auto-applies pending migrations, moving the operator's live schema.
-# The queue's tables now live in planar.db itself (plan 1089), so PLANAR_DB is
-# the only database the queue verbs open.
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 export PLANAR_DB="$tmp/db.sqlite" HOME="$tmp/home" PLANAR_WORKBENCH_ROOT="$tmp/wb"
@@ -107,23 +105,23 @@ mkdir -p "$HOME"
 workdir="$tmp/work"
 mkdir -p "$workdir"
 
-# The queue verbs open this database and never create it, so a failed init
-# would turn every queue case below into a 125 for the wrong reason. It is a
-# hard failure (plan 1089, task 7129).
+# The verbs below open this database and never create it, so a failed init
+# would turn every case into a refusal for the wrong reason. It is a hard
+# failure.
 if ! init_out="$(cd "$workdir" && "$bin_dir/planar" init --name contract 2>&1)"; then
   printf 'exit-code-contract: setup failed: planar init exited non-zero:\n%s\n' "$init_out" >&2
   exit 2
 fi
 [ -f "$PLANAR_DB" ] || { printf 'exit-code-contract: setup failed: planar init left no database at %s\n' "$PLANAR_DB" >&2; exit 2; }
 
-# The database fixtures the queue refusal cases need, built with python3 (the
+# The database fixtures the schema-version cases need, built with python3 (the
 # `sqlite3` CLI is not a dependency) from a copy of the freshly initialised
-# database, BEFORE any case writes a queue row into it. The backup API copies a
+# database, BEFORE any case writes into it. The backup API copies a
 # consistent image even if the source still has a WAL.
-command -v python3 >/dev/null 2>&1 || { printf 'exit-code-contract: python3 is required to build the queue fixtures\n' >&2; exit 2; }
+command -v python3 >/dev/null 2>&1 || { printf 'exit-code-contract: python3 is required to build the database fixtures\n' >&2; exit 2; }
 fixtures="$tmp/fixtures"
 mkdir -p "$fixtures"
-python3 - "$PLANAR_DB" "$fixtures" <<'PYEOF' || { printf 'exit-code-contract: setup failed: could not build the queue fixtures\n' >&2; exit 2; }
+python3 - "$PLANAR_DB" "$fixtures" <<'PYEOF' || { printf 'exit-code-contract: setup failed: could not build the database fixtures\n' >&2; exit 2; }
 import os, sqlite3, sys
 
 src_path, out = sys.argv[1], sys.argv[2]
@@ -142,16 +140,10 @@ def build(name, *statements):
 # Behind: only the highest schema_migrations row is deleted, so the version
 # reads head - 1 whichever migration is head.
 build("behind.db", "delete from schema_migrations where version = (select max(version) from schema_migrations)")
-# Ahead, and the queue tables need a newer build.
-build("incompatible.db", newer,
-      "insert into queue_schema (version, compat, description) values ((select max(version) + 1 from queue_schema), "
-      "(select max(version) + 1 from queue_schema), 'needs a newer binary')")
 # Ahead, and the queue marker still admits this binary.
 build("ahead.db", newer,
       "insert into queue_schema (version, compat, description) values ((select max(version) + 1 from queue_schema), "
       "1, 'compatible newer marker')")
-# Equal version, but two branches shipped different migrations under it.
-build("foreign.db", "drop table queue_schema")
 PYEOF
 
 failures=0
@@ -194,9 +186,7 @@ check_in() {
 
 # case: <expected> <label> <binary> <env args...> -- <argv...> — runs one verb
 # from `$workdir` under extra `env` arguments (a different PLANAR_DB, or
-# `-u VAR` to remove a variable). Used by the queue store cases below, whose
-# codes are checked against the queue tables (direction 2b/2c), not the general
-# table, so it does not record into `expected_codes`.
+# `-u VAR` to remove a variable). It does not record into `expected_codes`.
 fcheck() {
   local want="$1" label="$2" bin="$3"; shift 3
   local -a envargs=()
@@ -276,91 +266,9 @@ printf 'v1.0.0\n' > "$upd_rel/latest/download/VERSION"
 fcheck 0  "planar update --check: up to date"    planar HOME="$upd_home" PLANAR_RELEASE_URL="file://$upd_rel" -- update --check
 fcheck 1  "planar update --check: no release dir" planar HOME="$upd_home" PLANAR_RELEASE_URL="file://$tmp/no-such-release" -- update --check
 
-# --- `planar-agent queue run` (plan 1080, task 7013, decision 1188) ---------
-# The command's own status passes through, and the queue owns a handful of
-# codes. Each case runs the real binary in the scratch env above (its own
-# PLANAR_DB, HOME and cwd), so no case can reach the operator's
-# ~/.planar. `qcheck` records the code under the row of the QUEUE table it
-# belongs to, so direction 2 checks that table and not the general one.
-declare -a queue_rows=()
-qcheck() { # <expected> <table-row> <label> <env args...> -- <queue run argv...>
-  local want="$1" row="$2" label="$3"; shift 3
-  local -a envargs=()
-  while [ $# -gt 0 ] && [ "$1" != "--" ]; do envargs+=("$1"); shift; done
-  shift
-  (cd "$workdir" && env ${envargs[@]+"${envargs[@]}"} "$bin_dir/planar-agent" queue run "$@" >/dev/null 2>&1)
-  local got=$?
-  checked=$((checked + 1))
-  queue_rows+=("$row")
-  if [ "$got" -ne "$want" ]; then
-    printf 'MISMATCH  %-46s want %-3s got %s   (queue run %s)\n' "$label" "$want" "$got" "$*"
-    failures=$((failures + 1))
-  fi
-}
-noexec_file="$tmp/not-executable"
-: > "$noexec_file"
-chmod 644 "$noexec_file"
-qcheck 1   1   "queue run: no command (parse failure)"       --
-qcheck 1   1   "queue run: unknown flag (parse failure)"     -- --no-such-flag -- true
-qcheck 2   2   "queue run: model launcher refused by guard"  -- -- claude
-qcheck 2   2   "queue run: invalid --timeout duration"       -- --timeout 0 -- true
-qcheck 124 124 "queue run: --timeout overrun"                -- --timeout 1s -- sleep 30
-qcheck 126 126 "queue run: not executable"                   -- -- "$noexec_file"
-qcheck 127 127 "queue run: program not found"                -- -- exit-code-contract-no-such-program
-qcheck 143 128 "queue run: terminated by SIGTERM (128+N)"    -- -- sh -c 'kill -TERM $$'
-qcheck 7   own "queue run: pass-through status"              -- -- sh -c 'exit 7'
-
-# --- `planar-agent queue cancel` (plan 1080, task 7023) ----------------------
-# Only what needs no live process: the entries the cases above ended (1 is the
-# `--timeout` overrun, so its history row exists), a number nothing issued, a
-# bad number, and (below) an unreachable store. Cancelling a waiting or a
-# running entry needs a live submitter and is pinned by queue_cancel.t.cpp.
-declare -a cancel_rows=()
-ccheck() { # <expected> <table-row> <label> -- <queue cancel argv...>
-  local want="$1" row="$2" label="$3"; shift 3
-  shift # the --
-  (cd "$workdir" && "$bin_dir/planar-agent" queue cancel "$@" >/dev/null 2>&1)
-  local got=$?
-  checked=$((checked + 1))
-  cancel_rows+=("$row")
-  if [ "$got" -ne "$want" ]; then
-    printf 'MISMATCH  %-46s want %-3s got %s   (queue cancel %s)\n' "$label" "$want" "$got" "$*"
-    failures=$((failures + 1))
-  fi
-}
-# The first entry of a fresh planar.db is 1,000,001: the queue migration seeds
-# the sequence counter at 1,000,000. Case "--timeout overrun" above was it.
-first_seq=1000001
-ccheck 6 6 "queue cancel: entry already ended"               -- "$first_seq"
-ccheck 1 1 "queue cancel: no such entry"                     -- 999999
-ccheck 1 1 "queue cancel: no argument (parse failure)"       --
-ccheck 2 2 "queue cancel: not a positive integer"            -- abc
-ccheck 2 2 "queue cancel: zero"                              -- 0
-# --- the queue's store is planar.db: every refusal is 125 --------------------
-# Run last, because the cases above fill the real database. Each of the three
-# verbs runs against each fixture (built with python3 above); the fixtures are
-# separate files, so no case can change another's. `planar-watch queue` reads
-# the same file and exits 7 on a version mismatch in either direction.
-for verb in run cancel status; do
-  case "$verb" in
-    run)    argv=(-- true) ;;
-    cancel) argv=(1) ;;
-    status) argv=(1) ;;
-  esac
-  fcheck 125 "queue $verb: behind planar.db"                planar-agent PLANAR_DB="$fixtures/behind.db"       -- queue "$verb" "${argv[@]}"
-  fcheck 125 "queue $verb: incompatible ahead planar.db"    planar-agent PLANAR_DB="$fixtures/incompatible.db" -- queue "$verb" "${argv[@]}"
-  fcheck 125 "queue $verb: equal version, no queue tables"  planar-agent PLANAR_DB="$fixtures/foreign.db"      -- queue "$verb" "${argv[@]}"
-  fcheck 125 "queue $verb: neither PLANAR_DB nor HOME"      planar-agent -u PLANAR_DB -u HOME                  -- queue "$verb" "${argv[@]}"
-  mkdir "$tmp/store-dir"
-  fcheck 125 "queue $verb: PLANAR_DB is a directory"        planar-agent PLANAR_DB="$tmp/store-dir"            -- queue "$verb" "${argv[@]}"
-  rmdir "$tmp/store-dir"
-done
-# A compatible ahead database is used as it is.
-fcheck 0   "queue run: compatible ahead planar.db"          planar-agent PLANAR_DB="$fixtures/ahead.db"        -- queue run -- true
+# `planar-watch queue` reads planar.db and exits 7 on a version mismatch in either direction.
 fcheck 7   "planar-watch queue: ahead planar.db"            planar-watch PLANAR_DB="$fixtures/ahead.db"        -- queue
 fcheck 7   "planar-watch queue: behind planar.db"           planar-watch PLANAR_DB="$fixtures/behind.db"       -- queue
-# The 125 rows of the queue tables must name these reasons.
-store_reasons=(schema_version_behind queue_schema_incompatible queue_schema_foreign)
 
 printf 'exit-code-contract: %d behaviour cases checked\n' "$checked"
 
@@ -373,89 +281,6 @@ fi
 for want in $(printf '%s\n' "${expected_codes[@]}" | sort -u); do
   if ! printf '%s\n' "$doc_codes" | grep -qx "$want"; then
     printf 'UNDOCUMENTED  exit %s is returned by a checked case but is absent from %s\n' "$want" "$doc"
-    failures=$((failures + 1))
-  fi
-done
-
-# --- direction 2b: the `planar-agent queue run` table ------------------------
-# Its own section, so a code that is only documented in the general table
-# above does not satisfy it. The rows a case is filed under must all exist,
-# and each row must say what the code means (a swapped meaning fails).
-queue_section="$(sed -n '/^#### Queue run exit codes/,/^#\{1,4\} /p' "$doc")"
-if [ -z "$queue_section" ]; then
-  printf 'exit-code-contract: could not find the "Queue run exit codes" section in %s\n' "$doc" >&2
-  exit 1
-fi
-queue_meaning() { # <row> -> a grep -E pattern the row's line must match
-  case "$1" in
-    1)   printf 'parse failure' ;;
-    2)   printf 'refused|guard' ;;
-    124) printf 'run limit' ;;
-    125) printf 'queue failed' ;;
-    126) printf 'could not be executed' ;;
-    127) printf 'not found' ;;
-    128) printf 'terminated by signal' ;;
-    *)   printf '.' ;;
-  esac
-}
-for row in $(printf '%s\n' "${queue_rows[@]}" | sort -u); do
-  if [ "$row" = "own" ]; then
-    printf '%s\n' "$queue_section" | grep -qF "the command's own exit status" || {
-      printf 'UNDOCUMENTED  the queue run table does not say the command'"'"'s own exit status passes through\n'
-      failures=$((failures + 1)); }
-    continue
-  fi
-  line="$(printf '%s\n' "$queue_section" | grep -E "^\| \`$row\`" | head -n 1)"
-  if [ -z "$line" ]; then
-    printf 'UNDOCUMENTED  exit %s is returned by a checked queue run case but has no row in the queue run table of %s\n' "$row" "$doc"
-    failures=$((failures + 1))
-  elif ! printf '%s\n' "$line" | grep -qiE "$(queue_meaning "$row")"; then
-    printf 'MISDOCUMENTED  queue run row %s does not carry its meaning (%s): %s\n' "$row" "$(queue_meaning "$row")" "$line"
-    failures=$((failures + 1))
-  fi
-done
-if ! printf '%s\n' "$queue_section" | grep -qF 'outside 0..255'; then
-  printf 'UNDOCUMENTED  the queue run table does not say a status outside 0..255 exits 125\n'
-  failures=$((failures + 1))
-fi
-
-for reason in "${store_reasons[@]}"; do
-  if ! printf '%s\n' "$queue_section" | grep -E '^\| `125`' | grep -qF "$reason"; then
-    printf 'UNDOCUMENTED  the queue run table'"'"'s 125 row does not name %s\n' "$reason"
-    failures=$((failures + 1))
-  fi
-done
-
-# --- direction 2c: the `planar-agent queue cancel` table ---------------------
-cancel_section="$(sed -n '/^#### Queue cancel exit codes/,/^#\{1,4\} /p' "$doc")"
-if [ -z "$cancel_section" ]; then
-  printf 'exit-code-contract: could not find the "Queue cancel exit codes" section in %s\n' "$doc" >&2
-  exit 1
-fi
-cancel_meaning() { # <row> -> a grep -E pattern the row's line must match
-  case "$1" in
-    0)   printf 'cancelled' ;;
-    1)   printf 'no such entry' ;;
-    2)   printf 'refused input' ;;
-    6)   printf 'already ended' ;;
-    125) printf 'queue failed' ;;
-    *)   printf '.' ;;
-  esac
-}
-for row in 0 $(printf '%s\n' "${cancel_rows[@]}" | sort -u); do
-  line="$(printf '%s\n' "$cancel_section" | grep -E "^\| \`$row\`" | head -n 1)"
-  if [ -z "$line" ]; then
-    printf 'UNDOCUMENTED  exit %s is returned by a checked queue cancel case but has no row in the queue cancel table of %s\n' "$row" "$doc"
-    failures=$((failures + 1))
-  elif ! printf '%s\n' "$line" | grep -qiE "$(cancel_meaning "$row")"; then
-    printf 'MISDOCUMENTED  queue cancel row %s does not carry its meaning (%s): %s\n' "$row" "$(cancel_meaning "$row")" "$line"
-    failures=$((failures + 1))
-  fi
-done
-
-for reason in "${store_reasons[@]}"; do
-  if ! printf '%s\n' "$cancel_section" | grep -E '^\| `125`' | grep -qF "$reason"; then
-    printf 'UNDOCUMENTED  the queue cancel table'"'"'s 125 row does not name %s\n' "$reason"
     failures=$((failures + 1))
   fi
 done

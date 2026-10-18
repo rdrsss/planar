@@ -20,9 +20,6 @@ auto resolve_db_path(const env_lookup& env) -> std::expected<std::filesystem::pa
   }
   return *path;
 }
-auto uses_main_database(std::span<const std::string> args) -> bool {
-  return args.size() < 2 || args[1] != "queue";
-}
 auto operator_cwd(const env_lookup& env) -> std::filesystem::path {
   return internal::operator_cwd(env, internal::cwd_policy::pwd_first);
 }

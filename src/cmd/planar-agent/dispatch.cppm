@@ -52,7 +52,7 @@
 /// `--json` envelope when asked) and exits with its mapped code — or an
 /// `exit_status`, which `run` returns verbatim with nothing written. The
 /// second form exists for a verb whose exit code is another process's
-/// status (`queue run`, decision 1188), so a pass-through 1, 2 or 125 is
+/// status, so a pass-through 1, 2 or 125 is
 /// never mistaken for this binary's own refusal of the same number. A
 /// status outside 0..255 writes `error: <verb>: exit status <n> is outside
 /// 0..255` and exits `exit_internal_error` (125).

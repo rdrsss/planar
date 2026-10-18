@@ -59,8 +59,8 @@ auto root_app() -> std::unique_ptr<CLI::App> {
                                         "  This binary writes planning entities (plans, tasks, decisions,\n"
                                         "  questions, artifacts, annotations) and makes manual tasks.status\n"
                                         "  transitions. The agent-coordination tables (agent_actions,\n"
-                                        "  agent_work_claims, and the host-queue tables) are\n"
-                                        "  written by planar-agent; the external-link tables are written by\n"
+                                        "  agent_work_claims) are written by planar-agent;\n"
+                                        "  the external-link tables are written by\n"
                                         "  planar-ext.",
                                         "planar");
   // A bare `planar` must render root help rather than fail.
