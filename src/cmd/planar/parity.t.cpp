@@ -76,6 +76,8 @@ namespace {
 using ::planar::cmd::parity::arena;
 using ::planar::cmd::parity::capture;
 using ::planar::cmd::parity::make_arena;
+using ::planar::cmd::parity::pinned_env;
+using ::planar::cmd::parity::pinned_var;
 using ::planar::cmd::parity::read_all;
 using ::planar::cmd::parity::run_pinned;
 using ::planar::cmd::parity::shell_quote;
@@ -555,6 +557,97 @@ TEST_CASE("the three verbs removed at task 7468 exit 2 as unknown subcommands an
     CHECK_FALSE(catalog.out.contains(std::format(R"("command":"planar {} {}")", verb.group, verb.leaf)));
     CHECK_FALSE(catalog.out.contains(std::format(R"("path":["{}","{}"])", verb.group, verb.leaf)));
   }
+}
+
+TEST_CASE("a leftover [queue] table warns once and never changes config validate's exit",
+          "[cmd][parity][cli-surface][bq-config]") {
+  // The build queue's settings left planar's configuration (plan 1163). A
+  // config.toml that still carries the old table is validated as it would be
+  // without it: the exit is the same, and the only addition is one warning
+  // line on stderr that names the new home of the settings.
+  auto const space    = make_arena("queuewarn");
+  auto const validate = [&](std::string_view tag, std::string_view config_text) {
+    {
+      std::ofstream out{space.cpp_root / "config.toml", std::ios::trunc};
+      out << config_text;
+    }
+    return run_pinned(cpp_bin(), std::vector<std::string>{"config", "validate"}, space.cpp_root, tag);
+  };
+  auto const warning_lines = [](std::string_view err) {
+    int count = 0;
+    for (std::size_t at = err.find("warning:"); at != std::string_view::npos; at = err.find("warning:", at + 1)) {
+      ++count;
+    }
+    return count;
+  };
+  constexpr std::string_view k_clean  = "[policy]\nuse_queue = false\n";
+  constexpr std::string_view k_broken = "[policy]\nreview_required = \"yes\"\n";
+  constexpr std::string_view k_table  = "\n[queue]\nslots = 2\n";
+  constexpr std::string_view k_zero   = "\n[queue]\nslots = 0\n";
+
+  SECTION("a clean file with a [queue] table exits as the same file without it, with one warning") {
+    auto const without = validate("qclean", k_clean);
+    auto const with    = validate("qclean_t", std::string{k_clean} + std::string{k_table});
+    CHECK(without.code == 0);
+    CHECK(with.code == without.code);
+    CHECK(with.out == without.out);
+    CHECK(warning_lines(without.err) == 0);
+    CHECK(warning_lines(with.err) == 1);
+    CHECK(with.err.contains("planar-build-queue config set"));
+  }
+
+  SECTION("a file with an unrelated error exits as it does without the table, and the warning is added once") {
+    auto const without = validate("qbroken", k_broken);
+    auto const with    = validate("qbroken_t", std::string{k_broken} + std::string{k_table});
+    CHECK(without.code == 1);
+    CHECK(with.code == without.code);
+    CHECK(warning_lines(with.err) == 1);
+    CHECK(with.err.contains("planar-build-queue config set"));
+    CHECK(with.err.contains(without.err));
+  }
+
+  SECTION("a [queue] value that was out of range under the old rules still warns once and does not fail") {
+    auto const without = validate("qzero", k_clean);
+    auto const with    = validate("qzero_t", std::string{k_clean} + std::string{k_zero});
+    CHECK(with.code == 0);
+    CHECK(with.code == without.code);
+    CHECK(warning_lines(with.err) == 1);
+    CHECK(with.out == without.out);
+  }
+}
+
+TEST_CASE("config set is refused as an unknown verb and no build queue database is created",
+          "[cmd][parity][cli-surface][bq-config]") {
+  // The build queue's settings are written only by `planar-build-queue config
+  // set` (plan 1163). `planar config set` is an unknown verb, like any other
+  // word under `config`, and nothing under the arena's HOME or at the
+  // PLANAR_BUILD_QUEUE_DB pointed at it is created.
+  auto const space = make_arena("queuenoset");
+  auto const env   = [&] {
+    auto vars = pinned_env(space.cpp_root);
+    vars.push_back(pinned_var{.name = "PLANAR_BUILD_QUEUE_DB", .value = (space.cpp_root / "build-queue.db").string()});
+    return vars;
+  }();
+  auto const run = [&](std::vector<std::string> args, std::string_view tag) {
+    return run_pinned(cpp_bin(), args, space.cpp_root, tag, env);
+  };
+
+  auto const set     = run({"config", "set", "queue.slots", "2"}, "cset");
+  auto const unknown = run({"config", "nosuchverb"}, "cnone");
+  CHECK(unknown.code == 2);
+  CHECK(set.code == unknown.code);
+  CHECK(set.out.empty());
+  CHECK(unknown.out.empty());
+  CHECK(unknown.err == "error: config: The following argument was not expected: nosuchverb\n");
+  CHECK(set.err == "error: config: The following arguments were not expected: set queue.slots 2\n");
+
+  auto const catalog = run({"schema"}, "cschema");
+  REQUIRE(catalog.code == 0);
+  CHECK_FALSE(catalog.out.contains(R"("command":"planar config set")"));
+  CHECK_FALSE(catalog.out.contains(R"("path":["config","set"])"));
+
+  CHECK_FALSE(std::filesystem::exists(space.cpp_root / "fakehome" / ".planar" / "build-queue.db"));
+  CHECK_FALSE(std::filesystem::exists(space.cpp_root / "build-queue.db"));
 }
 
 TEST_CASE("the removed task facts group exits 2 as an unknown subcommand and the schema omits it", "[cmd][parity][cli-surface]") {

@@ -44,7 +44,6 @@ planar_module(engine_config
     templates_embed.cppm
     templates.cppm
     init.cppm
-    queue.cppm
     policy.cppm
     policy_scope.cppm
     config.cppm
@@ -53,7 +52,6 @@ planar_module(engine_config
     effective.cpp
     templates.cpp
     init.cpp
-    queue.cpp
     policy.cpp
     policy_scope.cpp
     "${_planar_engine_config_templates_generated}"

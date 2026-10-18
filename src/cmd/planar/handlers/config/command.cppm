@@ -129,10 +129,13 @@ export auto config_edit(context& ctx, const cliapp::parsed_args& args) -> handle
 /// returns IMMEDIATELY, so a file that is both unparseable and carries a
 /// literal secret reports only the parse error), then the line-oriented
 /// sensitive-literal scan, then the `external.github-issues.auth`
-/// cross-checks, then the `[queue]` checks and the refusal of removed tables
-/// and keys. Steps 2-5 ACCUMULATE: every finding is
-/// reported and the exit is 1 once, at the end. There is no work-type
-/// routing cross-check (removed with the models engine, plan 1142 task 7456).
+/// cross-checks, then the refusal of removed tables and keys. Steps 2-4
+/// ACCUMULATE: every finding is reported and the exit is 1 once, at the end.
+/// There is no work-type routing cross-check (removed with the models engine,
+/// plan 1142 task 7456).
+///
+/// A leftover `[queue]` table prints one stderr warning before step 1 and
+/// changes no exit: the queue's settings are not Planar's to validate.
 ///
 /// Every message goes to STDERR; the only stdout this verb ever writes is
 /// `config validate: ok`. See this module's header for the three named

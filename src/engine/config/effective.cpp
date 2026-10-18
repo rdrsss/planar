@@ -416,16 +416,6 @@ auto resolve(std::optional<std::string_view> file_content, const env_view& env, 
 
   const bool         introspection_cli_log        = pick_bool("introspection.cli_log", file_map, *def_map, eff, false);
   const std::int64_t introspection_retention_days = pick_int("introspection.retention_days", file_map, *def_map, eff, 90);
-  // `[queue]` (plan 1080, task hq-config). Recorded only in `eff`, so
-  // `config show --effective` reports the values and their provenance; the
-  // typed, range-checked view is `planar.engine.config.queue`, which the
-  // queue's loader reads straight from the file.
-  static_cast<void>(pick_int("queue.slots", file_map, *def_map, eff, 1));
-  static_cast<void>(pick_str("queue.poll_interval", "", env, std::nullopt, file_map, *def_map, eff));
-  static_cast<void>(pick_str("queue.stale_after", "", env, std::nullopt, file_map, *def_map, eff));
-  static_cast<void>(pick_str("queue.grace", "", env, std::nullopt, file_map, *def_map, eff));
-  static_cast<void>(pick_int("queue.history_days", file_map, *def_map, eff, 30));
-
   resolve_policy_rows(file_map, assoc_slug, eff);
 
   return resolved{
