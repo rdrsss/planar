@@ -266,10 +266,6 @@ printf 'v1.0.0\n' > "$upd_rel/latest/download/VERSION"
 fcheck 0  "planar update --check: up to date"    planar HOME="$upd_home" PLANAR_RELEASE_URL="file://$upd_rel" -- update --check
 fcheck 1  "planar update --check: no release dir" planar HOME="$upd_home" PLANAR_RELEASE_URL="file://$tmp/no-such-release" -- update --check
 
-# `planar-watch queue` reads planar.db and exits 7 on a version mismatch in either direction.
-fcheck 7   "planar-watch queue: ahead planar.db"            planar-watch PLANAR_DB="$fixtures/ahead.db"        -- queue
-fcheck 7   "planar-watch queue: behind planar.db"           planar-watch PLANAR_DB="$fixtures/behind.db"       -- queue
-
 printf 'exit-code-contract: %d behaviour cases checked\n' "$checked"
 
 # --- direction 2: every expected code must be DOCUMENTED -------------------

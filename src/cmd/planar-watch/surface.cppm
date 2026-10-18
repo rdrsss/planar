@@ -56,9 +56,8 @@ namespace planar::cmd::watch {
 
 /// @brief The oracle's one-line `summary` for each command path.
 ///
-/// Twelve of `planar-watch`'s fifteen nodes have a summary that differs
-/// from their long description — proportionally the densest of the three
-/// binaries, and ten of the twelve are leaves.
+/// Most of `planar-watch`'s nodes have a summary that differs from their
+/// long description — proportionally the densest of the three binaries.
 /// @return `(full command path, summary)` pairs.
 export auto surface_summaries() -> std::span<std::pair<std::string_view, std::string_view> const> {
   static constexpr std::pair<std::string_view, std::string_view> k_summaries[] = {
@@ -71,7 +70,6 @@ export auto surface_summaries() -> std::span<std::pair<std::string_view, std::st
       {"planar-watch log", "Per-entity / per-claim history (union of agent actions and claim transitions)."},
       {"planar-watch tree", "Render the orchestrator → sub-agent action forest."},
       {"planar-watch sync-events", "List sync_events rows with optional filters (read-only)."},
-      {"planar-watch queue", "List the host build and test queue: running and waiting entries, marking any that are not live."},
       {"planar-watch diagnose", "Evaluate recorded orchestration state against the documented orchestration rules (read-only)."},
       {"planar-watch version", "Print the planar-watch version, commit, and C++ toolchain."},
       {"planar-watch completion", "Generate the autocompletion script for the specified shell."},

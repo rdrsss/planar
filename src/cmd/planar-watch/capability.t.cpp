@@ -61,14 +61,15 @@ auto all_node_names(const CLI::App& root) -> std::set<std::string, std::less<>> 
   return names;
 }
 
-// ---- the queue signaller boundary (task 7096) ------------------------------
+// ---- the build queue signaller boundary (task 7096) -----------------------
 //
-// `planar-watch` links `engine_hostqueue`, whose `terminate` module can signal
-// a process group. No watch verb may reach it. The verb-set and read-only
-// handle checks above cannot see this: a handler that called
+// `planar-watch` links no build queue engine, and its `terminate` module can
+// signal a process group. No watch verb may reach it. The verb-set and
+// read-only handle checks above cannot see this: a handler that called
 // `hostqueue::begin_terminate` would register no write verb and touch no
 // SQLite write path. Two independent checks hold it, one at the source and one
-// at the link, and each has a positive control so it cannot pass vacuously.
+// at the link; the source check carries a positive control, so it cannot pass
+// vacuously.
 
 /// @brief The names that mean "send a signal to a process group", or reach the
 /// module that does. `kill(` covers a direct call; the rest are the exports of
@@ -210,8 +211,8 @@ TEST_CASE("planar-watch's declared verb set is exactly the oracle's", "[cmd][wat
   // workflow-run recording that is leaving this binary's surface. The set
   // below is the tree as it now stands; the case above would still fail if
   // `ingest`, `pull` or `capture` appeared here.
-  CHECK(names == std::set<std::string, std::less<>>{"actions", "claims", "completion", "feed", "log", "plans", "ps", "queue",
-                                                    "schema", "sync-events", "tree", "version", "history", "diagnose"});
+  CHECK(names == std::set<std::string, std::less<>>{"actions", "claims", "completion", "diagnose", "feed", "log", "plans", "ps",
+                                                    "schema", "sync-events", "tree", "version"});
 }
 
 TEST_CASE("every planar-watch verb is either implemented or refuses at 64", "[cmd][watch][capability]") {
@@ -234,19 +235,13 @@ TEST_CASE("every planar-watch verb is either implemented or refuses at 64", "[cm
   CHECK(unported.empty());
 
   auto const leaves = planar::cliapp::leaf_keys(*root);
-  // `queue` stopped being a leaf when `queue history` was added beneath it
-  // (task hq-watch-history): the leaf count is unchanged, its membership is not.
-  CHECK(leaves.size() == 13);
-  CHECK(std::ranges::find(leaves, "queue") == leaves.end());
-  CHECK(std::ranges::find(leaves, "queue history") != leaves.end());
-  // It is still a verb of its own: a group with a handler, deliberately.
-  CHECK(table.contains("queue"));
+  CHECK(leaves.size() == 12);
   for (auto const& leaf : leaves) {
     INFO("leaf: " << leaf);
     CHECK(table.contains(leaf));
   }
   for (auto const& implemented : {"feed", "ps", "claims", "actions", "plans", "log", "tree", "version", "schema", "completion",
-                                  "run list", "run show", "sync-events", "queue", "queue history", "diagnose"}) {
+                                  "run list", "run show", "sync-events", "diagnose"}) {
     INFO("implemented verb wrongly listed as unported: " << implemented);
     CHECK_FALSE(unported.contains(implemented));
   }
@@ -295,54 +290,54 @@ TEST_CASE("no planar-watch handler is unreachable from argv", "[cmd][watch][disp
 
 TEST_CASE("planar-watch applies the general dual-node rule: every node is reachable and only a handlerless group prints help",
           "[cmd][watch][dispatch][hq-watch-dispatch-general-rule]") {
-  auto const root  = planar::cmd::watch::root_app();
-  auto       table = planar::cmd::watch::handlers(*root);
-  REQUIRE(planar::cmd::watch::unreachable_handlers(*root, table).empty());
-
+  // The shipped tree has no group that also carries a handler, so the rule is
+  // pinned on a small tree of its own: one group, `widgets`, with one leaf, `list`.
+  auto const make_tree = [] {
+    auto tree = std::make_unique<CLI::App>("planar-watch");
+    tree->add_subcommand("widgets")->add_subcommand("list");
+    return tree;
+  };
   planar::cmd::watch::handler_fn const noop =
       [](planar::cmd::watch::context&, const planar::cliapp::parsed_args&) -> planar::cmd::watch::handler_result { return {}; };
+
+  planar::cmd::watch::handler_table leaf_only;
+  leaf_only.emplace("widgets list", noop);
+  CHECK(planar::cmd::watch::unreachable_handlers(*make_tree(), leaf_only).empty());
 
   // Every node counts as reachable, not only the childless ones: a handler
   // registered on ANY group is dual, the way `planar` treats `handoff`, so no
   // list of allowed groups exists to be edited when the next one appears.
-  // `queue` is the only group left with a handler in the shipped table
-  // (task 7458 removed `run`), so the handlerless copy is taken from it.
-  auto const handlerless = [&table] {
-    auto copy = table;
-    copy.erase("queue");
-    return copy;
-  }();
-  auto with_group = table;
-  with_group.insert_or_assign("queue", noop);
-  CHECK(planar::cmd::watch::unreachable_handlers(*root, with_group).empty());
+  auto with_group = leaf_only;
+  with_group.emplace("widgets", noop);
+  CHECK(planar::cmd::watch::unreachable_handlers(*make_tree(), with_group).empty());
 
   // A key that names no node at all is still dead, groups and leaves alike.
-  auto with_typo = table;
-  with_typo.emplace("queue histroy", noop);
+  auto with_typo = leaf_only;
+  with_typo.emplace("widgets lsit", noop);
   with_typo.emplace("verison", noop);
-  CHECK(planar::cmd::watch::unreachable_handlers(*root, with_typo) == std::vector<std::string>{"queue histroy", "verison"});
+  CHECK(planar::cmd::watch::unreachable_handlers(*make_tree(), with_typo) == std::vector<std::string>{"verison", "widgets lsit"});
 
-  // The group `queue` has no handler in `handlerless`, so naming it prints
+  // The group `widgets` has no handler in `leaf_only`, so naming it prints
   // help; giving it one makes it run that handler instead of help.
   auto const run_group = [&](const planar::cmd::watch::handler_table& t) {
     std::ostringstream          out;
     std::ostringstream          err;
-    planar::cmd::watch::context ctx{{"planar-watch", "queue"},
+    planar::cmd::watch::context ctx{{"planar-watch", "widgets"},
                                     planar::cmd::watch::map_env({}),
                                     std::filesystem::path{},
                                     std::make_shared<planar::cmd::watch::database>(std::filesystem::path{}, err),
                                     out,
                                     err};
-    auto const                  fresh = planar::cmd::watch::root_app();
-    auto const                  code  = planar::cmd::watch::run(ctx, *fresh, t);
+    auto const                  tree = make_tree();
+    auto const                  code = planar::cmd::watch::run(ctx, *tree, t);
     return std::pair{code, out.str()};
   };
-  auto const helped = run_group(handlerless);
+  auto const helped = run_group(leaf_only);
   CHECK(helped.first == 0);
-  CHECK(helped.second.contains("history"));
-  bool ran            = false;
-  with_group["queue"] = [&ran](planar::cmd::watch::context&,
-                               const planar::cliapp::parsed_args&) -> planar::cmd::watch::handler_result {
+  CHECK(helped.second.contains("list"));
+  bool ran              = false;
+  with_group["widgets"] = [&ran](planar::cmd::watch::context&,
+                                 const planar::cliapp::parsed_args&) -> planar::cmd::watch::handler_result {
     ran = true;
     return {};
   };
@@ -352,7 +347,7 @@ TEST_CASE("planar-watch applies the general dual-node rule: every node is reacha
   CHECK_FALSE(dual.second.contains("Subcommands"));
 }
 
-TEST_CASE("no planar-watch source names the queue group signaller or the terminate module",
+TEST_CASE("no planar-watch source names the build queue signaller or the terminate module",
           "[cmd][watch][capability][hq-watch-no-signaller]") {
   // The scanner is exercised before it is trusted.
   CHECK(signaller_hits("auto r = hq::signal_child_group(e, sig, host, probe, signaller);").size() == 1);
@@ -362,14 +357,14 @@ TEST_CASE("no planar-watch source names the queue group signaller or the termina
   CHECK(signaller_hits("// signal_child_group is never called here\n/// begin_terminate neither\n * cancel_waiting").empty());
   CHECK(signaller_hits("auto probe = hq::system_process_probe();").empty());
 
-  // Positive control on real code: the planar-agent handler DOES call it.
-  auto const agent_queue = watch_source_dir().parent_path() / "planar-agent" / "handlers" / "queue" / "queue.cpp";
-  CHECK_FALSE(signaller_hits(read_file(agent_queue)).empty());
+  // Positive control on real code: the engine's terminate module DOES name them.
+  auto const terminate_source = watch_source_dir().parent_path().parent_path() / "engine" / "hostqueue" / "terminate.cpp";
+  CHECK_FALSE(signaller_hits(read_file(terminate_source)).empty());
 
   auto const files = production_sources(watch_source_dir());
-  // Not vacuous: the whole binary's sources are here, the queue handlers included.
+  // Not vacuous: the whole binary's sources are here.
   REQUIRE(files.size() >= 20);
-  CHECK(std::ranges::any_of(files, [](const auto& f) { return f.filename() == "history.cpp"; }));
+  CHECK(std::ranges::any_of(files, [](const auto& f) { return f.filename() == "dispatch.cpp"; }));
   for (auto const& file : files) {
     auto const hits = signaller_hits(read_file(file));
     INFO("planar-watch must not reach the group signaller; " << file.string() << " has: " << (hits.empty() ? "" : hits.front()));
@@ -377,32 +372,21 @@ TEST_CASE("no planar-watch source names the queue group signaller or the termina
   }
 }
 
-TEST_CASE("the planar-watch binary does not link the queue terminate module", "[cmd][watch][capability][hq-watch-no-signaller]") {
-  // The link-level half. `engine_hostqueue` is a static archive, so a member
-  // object is linked only when something references it: if any handler (or
-  // anything it calls) used `terminate`, the object's symbols, whose mangled
-  // names carry these identifiers, would be in the binary. Read as bytes so no
-  // external tool (nm) has to exist on the machine that runs the suite.
-  //
-  // What CANNOT be locked this way: `planar::process::identity::signal_group`
-  // is in the binary, as dead code, because it shares an object with the
-  // liveness probes (`process_exists`, `group_has_members`) the queue view
-  // uses. Those send signal 0 only (`kill(pid, 0)`, `kill(-pgid, 0)`: existence
-  // checks that deliver nothing); `signal_group` is the only call in that
-  // module that sends anything else, and the source scan above and the case
-  // below are what stop a watch handler from reaching it.
+TEST_CASE("the planar-watch binary does not link the build queue terminate module",
+          "[cmd][watch][capability][hq-watch-no-signaller]") {
+  // The link-level half. This binary links no build queue engine, so a handler
+  // that reached the terminate module would have to link it in, and the
+  // module's symbols, whose mangled names carry these identifiers, would then
+  // be in the binary. Read as bytes so no external tool (nm) has to exist on the
+  // machine that runs the suite. No shipped binary links the module yet, so
+  // this check has no binary-level positive control; the source scan above
+  // carries the control, on the module's own source.
   constexpr std::array<std::string_view, 6> k_names{"signal_child_group",   "system_group_signaller", "begin_terminate",
                                                     "advance_terminations", "poll_and_stop",          "cancel_waiting"};
   auto const                                watch_bytes = read_file(std::filesystem::path{PLANAR_CPP_BIN});
-  auto const                                agent_bytes = read_file(std::filesystem::path{PLANAR_AGENT_CPP_BIN});
   REQUIRE(watch_bytes.size() > 100'000);
   for (auto const name : k_names) {
-    // Positive control: planar-agent DOES link the module, and this reading of
-    // a binary sees it. Were symbols stripped or renamed, the control would
-    // fail here rather than let the absence below mean nothing.
-    INFO("control: planar-agent must contain " << name << " for this check to mean anything");
-    CHECK(agent_bytes.contains(name));
-    INFO("planar-watch links the queue signaller: " << name);
+    INFO("planar-watch links the build queue signaller: " << name);
     CHECK_FALSE(watch_bytes.contains(name));
   }
 }
@@ -454,7 +438,8 @@ auto count_kills(std::string_view text) -> kill_census {
 
 } // namespace
 
-TEST_CASE("the liveness probe planar-watch uses sends signal 0 only", "[cmd][watch][capability][hq-watch-no-signaller]") {
+TEST_CASE("the liveness probes in planar.process.identity send signal 0 only",
+          "[cmd][watch][capability][hq-watch-no-signaller]") {
   // The census is exercised before it is trusted: qualified, unqualified and
   // `killpg` spellings all count, an identifier that merely ends in `kill` does not.
   CHECK(count_kills("rc = ::kill(pid, 0);").zero == 1);
@@ -477,20 +462,15 @@ TEST_CASE("the liveness probe planar-watch uses sends signal 0 only", "[cmd][wat
   CHECK(census.other.front().contains("sig)"));
 }
 
-// ---- the queue views and the main database (plan 1089, task qp-watch-queue) ----
+// ---- the main database handle (plan 1089) ----------------------------------
 //
-// Level 2 for the `queue` and `queue history` verbs. They no longer have a
-// store of their own: they read `planar.db` through the same lazily opened
-// read-only handle as every other viewer verb. Four things are pinned, each
-// by a case that runs the real verbs:
-//  - the handle they read through is the main database's, read-only;
-//  - nothing is written, created, or reaped;
-//  - no second database file is opened or created, whatever the environment
-//    still says about the retired agent database;
-//  - no first-party planar-watch source reaches the agent database again.
+// The viewer verbs that read `planar.db` read it through the same lazily opened
+// read-only handle. Nothing is written, created, or reaped, no second database
+// file is opened or created, and no first-party planar-watch source reaches the
+// retired agent database.
 
 /// @brief A scratch directory holding a `planar.db` at the head of the main
-/// chain with one dead waiting entry and one history row.
+/// chain.
 struct seeded_main_database {
   /// @brief The scratch directory, removed on destruction.
   std::filesystem::path dir;
@@ -500,21 +480,12 @@ struct seeded_main_database {
   /// @brief Creates the directory and seeds the database.
   seeded_main_database() {
     dir = std::filesystem::temp_directory_path() /
-          std::format("planar_watch_cap_queue_{}", std::chrono::steady_clock::now().time_since_epoch().count());
+          std::format("planar_watch_cap_main_{}", std::chrono::steady_clock::now().time_since_epoch().count());
     std::filesystem::create_directories(dir);
     db          = dir / "planar.db";
     auto seeded = planar::db::connection::open(db.string());
     REQUIRE(seeded.has_value());
     REQUIRE(planar::db::apply_all(*seeded).has_value());
-    // A waiting entry whose submitter cannot exist (pid far above any real one).
-    REQUIRE(seeded
-                ->execute("insert into queue_entries (state, host_id, pid, pid_started, cwd, argv, enqueued_at, refreshed_mono) "
-                          "values ('waiting', 'unknown', 2147483646, 1, '/w', '[\"make\"]', 1000, 5000)")
-                .has_value());
-    REQUIRE(seeded
-                ->execute("insert into queue_history (seq, outcome, exit_code, cwd, argv, enqueued_at, ended_at, waited_ms) "
-                          "values (3, 'exited', 0, '/w', '[\"make\"]', 1000, 2000, 5)")
-                .has_value());
   }
   /// @brief Not copyable: the fixture owns its directory.
   seeded_main_database(const seeded_main_database&) = delete;
@@ -549,60 +520,7 @@ struct seeded_main_database {
   }
 };
 
-TEST_CASE("planar-watch queue and queue history read planar.db through the read-only main handle and write nothing",
-          "[cmd][watch][capability][queue][qp-watch-queue]") {
-  seeded_main_database fixture;
-  auto const           before_bytes   = fixture.bytes();
-  auto const           before_time    = std::filesystem::last_write_time(fixture.db);
-  auto const           before_listing = fixture.listing();
-  // The retired agent database's variable still names a path. It must be
-  // neither read nor created.
-  auto const decoy = fixture.dir / "decoy" / "agent.db";
-
-  auto const tree  = planar::cmd::watch::root_app();
-  auto const table = planar::cmd::watch::handlers(*tree);
-  for (auto const& verb : std::vector<std::vector<std::string>>{{"planar-watch", "queue", "--json"},
-                                                                {"planar-watch", "queue"},
-                                                                {"planar-watch", "queue", "history", "--json"},
-                                                                {"planar-watch", "queue", "history"}}) {
-    std::ostringstream          out;
-    std::ostringstream          err;
-    planar::cmd::watch::context ctx{
-        verb,        planar::cmd::watch::map_env({{"PLANAR_AGENT_DB", decoy.string()}, {"PLANAR_DB", fixture.db.string()}}),
-        fixture.dir, std::make_shared<planar::cmd::watch::database>(fixture.db, err),
-        out,         err};
-    auto const fresh = planar::cmd::watch::root_app();
-    INFO("verb: " << verb.back());
-    REQUIRE(planar::cmd::watch::run(ctx, *fresh, table) == 0);
-    CHECK(err.str().empty());
-    // The handle the verb read through is the main database's own, opened
-    // read-only; a write through it is refused.
-    REQUIRE(ctx.db().opened());
-    auto conn = ctx.db().ensure_db();
-    REQUIRE(conn.has_value());
-    CHECK((*conn)->is_read_only());
-    CHECK_FALSE((*conn)->execute("delete from queue_entries").has_value());
-    CHECK_FALSE((*conn)->execute("delete from queue_history").has_value());
-    CHECK_FALSE((*conn)->execute("create table watch_cap_probe (id integer)").has_value());
-    CHECK(ctx.db().path() == fixture.db);
-  }
-
-  CHECK(fixture.bytes() == before_bytes);
-  CHECK((std::filesystem::last_write_time(fixture.db) == before_time));
-  CHECK(fixture.listing() == before_listing);
-  CHECK_FALSE(std::filesystem::exists(decoy.parent_path()));
-
-  // The dead waiting entry is still there: the view judges, it never reaps.
-  auto reopened = planar::db::connection::open_read_only(fixture.db.string());
-  REQUIRE(reopened.has_value());
-  auto count = reopened->prepare("select (select count(*) from queue_entries), (select count(*) from queue_history)");
-  REQUIRE(count.has_value());
-  REQUIRE(count->step().value() == planar::db::step_result::row);
-  CHECK(count->column_int64(0) == 1);
-  CHECK(count->column_int64(1) == 1);
-}
-
-TEST_CASE("no planar-watch source reaches the agent database", "[cmd][watch][capability][queue][qp-watch-queue]") {
+TEST_CASE("no planar-watch source reaches the agent database", "[cmd][watch][capability][main-db]") {
   // The scanner is exercised before it is trusted.
   CHECK(names_agent_database("import planar.db.agentdb;"));
   CHECK(names_agent_database("auto s = open_agent_store(env);"));
@@ -613,7 +531,7 @@ TEST_CASE("no planar-watch source reaches the agent database", "[cmd][watch][cap
 
   auto const files = production_sources(watch_source_dir());
   REQUIRE(files.size() >= 20);
-  CHECK(std::ranges::any_of(files, [](const auto& f) { return f.filename() == "history.cpp"; }));
+  CHECK(std::ranges::any_of(files, [](const auto& f) { return f.filename() == "dispatch.cpp"; }));
   for (auto const& file : files) {
     INFO("planar-watch must not name the agent database; " << file.string());
     CHECK_FALSE(names_agent_database(read_file(file)));
