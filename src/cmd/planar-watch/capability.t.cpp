@@ -378,13 +378,16 @@ TEST_CASE("the planar-watch binary does not link the build queue terminate modul
   // that reached the terminate module would have to link it in, and the
   // module's symbols, whose mangled names carry these identifiers, would then
   // be in the binary. Read as bytes so no external tool (nm) has to exist on the
-  // machine that runs the suite. No shipped binary links the module yet, so
-  // this check has no binary-level positive control; the source scan above
-  // carries the control, on the module's own source.
+  // machine that runs the suite. The positive control is a symbol this binary
+  // is known to link: if names stopped appearing in the binary's bytes
+  // (stripped, or mangled another way) the control fails and the absence
+  // checks below cannot pass vacuously.
   constexpr std::array<std::string_view, 6> k_names{"signal_child_group",   "system_group_signaller", "begin_terminate",
                                                     "advance_terminations", "poll_and_stop",          "cancel_waiting"};
   auto const                                watch_bytes = read_file(std::filesystem::path{PLANAR_CPP_BIN});
   REQUIRE(watch_bytes.size() > 100'000);
+  // Positive control: a symbol planar-watch's own dispatch module defines.
+  REQUIRE(watch_bytes.contains("unreachable_handlers"));
   for (auto const name : k_names) {
     INFO("planar-watch links the build queue signaller: " << name);
     CHECK_FALSE(watch_bytes.contains(name));

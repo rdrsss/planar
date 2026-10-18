@@ -28,7 +28,10 @@ export auto attach_conformance(CLI::App* health) -> CLI::App* {
       "only if it ended at or after the evidence horizon: the later of the build "
       "queue database's\n  creation and now minus its tagged-history days (with no such database, when migration 00044 was "
       "applied). "
-      "An earlier claim is\n  listed under queue_evidence_unavailable and not graded on rule 5.\n\n  Exit codes:\n    0  the "
+      "An earlier claim is\n  listed under queue_evidence_unavailable and not graded on rule 5. When planar.db has no record of "
+      "migration "
+      "44 and\n  the build queue database is absent, every gated claim is listed under queue_evidence_unavailable and none "
+      "fails.\n\n  Exit codes:\n    0  the "
       "trail broke no rule\n    1  at least one violation, or the plan, its policy or the build queue database could not be "
       "read");
   add_positional(*conformance, "plan-id", "Plan id");

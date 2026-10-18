@@ -405,8 +405,8 @@ TEST_CASE("config show lists every resolved key with no provenance", "[cmd][conf
   // the five `queue.*` keys and `introspection.transcript_scan_bytes`; 28
   // again after task 7459 removed `execute.engine`; 24 after task 7472 removed
   // the transcript budget and the three `*_enabled` keys; 30 after plan 1142
-  // task mo-policy-config added the six `policy.*` keys; 25 after plan 1163
-  // removed the five `queue.*` keys with the build queue's settings.)
+  // task mo-policy-config added the six `policy.*` keys; 25 after the
+  // five `queue.*` keys left with the build queue's settings.)
   CHECK(lines_of(r.out).size() == 25);
   CHECK(r.out.find("queue.") == std::string::npos);
   CHECK(line_for(r.out, "defaults.vendor") == "defaults.vendor = claude");
@@ -434,7 +434,7 @@ TEST_CASE("config show renders provenance under --effective", "[cmd][config][sho
 
 TEST_CASE("config show --effective lists no queue key, even with a leftover [queue] table in the file",
           "[cmd][config][show][effective][bq-config]") {
-  // The queue's settings left planar's configuration (plan 1163). A file
+  // The queue's settings left planar's configuration. A file
   // that still carries the old table gets no `queue.*` row, neither from the
   // file nor from the embedded defaults.
   auto const fx = make_fixture("showqueue");
@@ -607,7 +607,7 @@ TEST_CASE("config show --defaults prints the embedded file and beats every other
   // the embedded defaults.toml, which lost its 309-byte `[execute]` block to
   // plan 1142 task 7459, then gained the 988-byte `[policy]` table in task
   // mo-policy-config (3550 bytes before, 4538 after), and lost its `[queue]`
-  // table in plan 1163 (3757 after).
+  // table when the build queue's settings left (3757 after).
   CHECK(r.out.size() == 3757);
   CHECK_FALSE(r.out.contains("[queue]"));
   CHECK_FALSE(r.out.contains("[execute]"));

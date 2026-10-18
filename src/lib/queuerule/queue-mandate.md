@@ -30,8 +30,9 @@ other agent on the host.
 When a submit exits 125, or the queue cannot be used, the command must not be
 run directly. Do not look for another way to run the build. The operator
 decided that an unreachable queue is refused, not bypassed. An entry that ended
-`cancelled` or `wait_timeout` is an outcome of a ticket you hold, and the table
-of outcomes says what to do. The command is still never run directly.
+`cancelled` or `wait_timeout` is an outcome of a ticket you hold, and
+`planar-build-queue rule` prints the table of outcomes that says what to do.
+The command is still never run directly.
 
 ### Finding the queue binary
 

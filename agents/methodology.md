@@ -828,6 +828,10 @@ build and every test run on this machine goes through the host queue. Submit
 the command to the queue and collect its recorded outcome. Do not run it
 yourself.
 
+Submit a command with `planar-build-queue run --tag <your claim token> -- <command>`.
+Collect its result with `planar-build-queue wait <seq>` after a detached submit,
+or run it in the foreground and read its result there.
+
 ### What counts as a build or test command
 
 A command goes through the queue when it does any of these:
@@ -849,27 +853,17 @@ other agent on the host.
 When a submit exits 125, or the queue cannot be used, the command must not be
 run directly. Do not look for another way to run the build. The operator
 decided that an unreachable queue is refused, not bypassed. An entry that ended
-`cancelled` or `wait_timeout` is an outcome of a ticket you hold, and the table
-of outcomes says what to do. The command is still never run directly.
+`cancelled` or `wait_timeout` is an outcome of a ticket you hold, and
+`planar-build-queue rule` prints the table of outcomes that says what to do.
+The command is still never run directly.
 
-### If Planar has no queue: run directly and say so
+### Finding the queue binary
 
-Use this only after verifying the installed Planar lacks the `queue` verb.
-Nonzero `queue rule` alone does not establish absence. An older install with
-`queue` but without `wait` uses the finite compatibility path.
-
-Run the build or test command directly. Then tell the operator that Planar
-needs upgrading so that builds and tests can go through the queue.
-
-### Do not confuse the two
-
-| What you see | What it means | What to do |
-|---|---|---|
-| Installed catalog confirms no `queue` verb | No queue exists | Run the command directly and tell the operator Planar needs upgrading |
-| Queue exists but `wait` is unsupported | Older queue-capable install | Use foreground for short/script work or finite JSON status observation of a detached ticket |
-| Queue refuses or its store is unreadable | No valid gate result | Stop and report. Do not run the command directly |
-
-Discover the capability once; never treat a refused queue as an absent one.
+Run `planar-build-queue rule >/dev/null`; exit 0 means it is installed. Exit 127
+from the shell (command not found) means the install predates the split: use
+the installed `planar-agent queue run --claim <token>` instead, as that release
+documents. Any other non-zero exit from `planar-build-queue` is a refusal to
+report, never a reason to fall back.
 
 <!-- queue-lint-ignore-end -->
 

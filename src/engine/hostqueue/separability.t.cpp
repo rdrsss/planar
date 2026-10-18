@@ -495,21 +495,30 @@ TEST_CASE("every SQL literal under src/engine/hostqueue names only queue tables,
 TEST_CASE("no SQL literal outside hostqueue, the build queue reader, the migrations and the tests names a queue table",
           "[hostqueue][separability][qp-separability]") {
   auto const files = other_sources();
-  // Not vacuous: the whole tree is here, the planar-watch handler whose
-  // function is named `queue_history` and a planning module included.
+  // Not vacuous: the whole tree is here, and the scan reads real SQL. No file
+  // outside the exempt directories names a queue table any more, so the control
+  // is the SQL literals the scan walks past: the planning module that holds the
+  // claim store's SQL is read and its literals are classified as SQL, none of
+  // which names a queue table.
   REQUIRE(files.size() >= 300);
-  bool saw_watch_history = false;
+  bool        saw_claim_store = false;
+  std::size_t sql_literals    = 0;
   for (auto const& file : files) {
     auto const text = read_text(file);
-    if (file.filename() == "history.cpp" && file.parent_path().filename() == "queue" &&
-        text.contains("auto queue_history(context& ctx")) {
-      saw_watch_history = true;
+    if (file.filename() == "agentactivity.cpp" && file.parent_path().filename() == "runtime") {
+      saw_claim_store = true;
+    }
+    for (auto const& literal : string_literals(text)) {
+      if (is_sql(literal)) {
+        ++sql_literals;
+      }
     }
   }
   auto const report = violation_report(files, source_root(), queue_name_violations, k_remedy_outside);
   INFO(report);
   CHECK(report.empty());
-  CHECK(saw_watch_history);
+  CHECK(saw_claim_store);
+  CHECK(sql_literals >= 500);
 
   // Control: the same scan, pointed at the hostqueue directory it exempts,
   // does see queue tables. A scan that found nothing there would prove nothing

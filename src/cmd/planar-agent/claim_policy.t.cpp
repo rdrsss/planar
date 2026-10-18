@@ -146,7 +146,7 @@ TEST_CASE("the default policy admits a coder claim without --model and records t
   CHECK(fx.newest_digest() == defaults);
 
   // A config with no policy table is the same policy.
-  fx.write_config("[queue]\nslots = 1\n");
+  fx.write_config("[templates]\ndir = \"~/.planar/templates\"\n");
   CHECK(fx.claim("task:2", "coder", std::nullopt).code == 0);
   CHECK(fx.newest_digest() == defaults);
 
