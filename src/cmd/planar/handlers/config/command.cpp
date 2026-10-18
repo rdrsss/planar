@@ -473,7 +473,7 @@ auto config_validate(context& ctx, const cliapp::parsed_args& args) -> handler_r
 
   // ---- leftover `[queue]` table: one warning, no finding ------------------
   //
-  // The build queue's settings left planar's configuration (plan 1163). A
+  // The build queue's settings left planar's configuration. A
   // leftover table is never validated and never changes the exit, so it is
   // a stderr warning written here, before the steps below, and not a
   // `report` finding. Printed once whatever else the file contains.

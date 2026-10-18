@@ -561,7 +561,7 @@ TEST_CASE("the three verbs removed at task 7468 exit 2 as unknown subcommands an
 
 TEST_CASE("a leftover [queue] table warns once and never changes config validate's exit",
           "[cmd][parity][cli-surface][bq-config]") {
-  // The build queue's settings left planar's configuration (plan 1163). A
+  // The build queue's settings left planar's configuration. A
   // config.toml that still carries the old table is validated as it would be
   // without it: the exit is the same, and the only addition is one warning
   // line on stderr that names the new home of the settings.
@@ -619,7 +619,7 @@ TEST_CASE("a leftover [queue] table warns once and never changes config validate
 TEST_CASE("config set is refused as an unknown verb and no build queue database is created",
           "[cmd][parity][cli-surface][bq-config]") {
   // The build queue's settings are written only by `planar-build-queue config
-  // set` (plan 1163). `planar config set` is an unknown verb, like any other
+  // set`. `planar config set` is an unknown verb, like any other
   // word under `config`, and nothing under the arena's HOME or at the
   // PLANAR_BUILD_QUEUE_DB pointed at it is created.
   auto const space = make_arena("queuenoset");
