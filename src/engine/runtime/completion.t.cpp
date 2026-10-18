@@ -131,19 +131,28 @@ auto kinds(const std::vector<comp::unmet_requirement>& unmet) -> std::vector<com
 
 using rk = comp::requirement_kind;
 
-/// A lookup that returns `runs` and counts its calls and the tokens it was asked about.
+/// A lookup keyed by tag, as the queue's is: it returns `runs` for `runs_tag` and nothing for any other tag, counts its
+/// calls and records the tags it was asked about. When `failure` is set it fails with that reason instead.
 struct fake_lookup {
   std::vector<comp::gate_run> runs;
+  std::string                 runs_tag; ///< The tag `runs` are recorded under; empty matches the claim under test.
+  std::optional<std::string>  failure;
   int                         calls = 0;
-  std::vector<std::string>    tokens;
+  std::vector<std::string>    tags;
 
-  auto bind() -> comp::gate_run_lookup {
-    return
-        [this](planar::db::connection&, std::string_view token) -> std::expected<std::vector<comp::gate_run>, aa::agent_error> {
-          ++calls;
-          tokens.emplace_back(token);
-          return runs;
-        };
+  auto bind(std::string_view claim_token) -> comp::gate_run_lookup {
+    return [this,
+            claim = std::string{claim_token}](std::string_view tag) -> std::expected<std::vector<comp::gate_run>, std::string> {
+      ++calls;
+      tags.emplace_back(tag);
+      if (failure.has_value()) {
+        return std::unexpected(*failure);
+      }
+      if (tag != (runs_tag.empty() ? claim : runs_tag)) {
+        return std::vector<comp::gate_run>{};
+      }
+      return runs;
+    };
   }
 };
 
@@ -157,7 +166,8 @@ auto run(std::vector<std::string> argv, std::string cwd, bool passed = true) -> 
 
 auto unmet_for(world& w, const comp::completion_requirements& requirements, fake_lookup& lookup)
     -> std::vector<comp::unmet_requirement> {
-  auto const unmet = comp::unmet_completion_requirements(w.conn, w.claim.claim_token, requirements, lookup.bind());
+  auto const unmet =
+      comp::unmet_completion_requirements(w.conn, w.claim.claim_token, requirements, lookup.bind(w.claim.claim_token));
   REQUIRE(unmet.has_value());
   return *unmet;
 }
@@ -172,7 +182,7 @@ TEST_CASE("no policy key set reads nothing and asks nobody", "[completion][1142]
   CHECK(lookup.calls == 0);
   // Not even an unknown claim is looked up when there is nothing to check.
   auto const unknown = comp::unmet_completion_requirements(w.conn, "0123456789abcdef0123456789abcdef",
-                                                           comp::completion_requirements{}, lookup.bind());
+                                                           comp::completion_requirements{}, lookup.bind(""));
   REQUIRE(unknown.has_value());
   CHECK(unknown->empty());
   CHECK(lookup.calls == 0);
@@ -225,7 +235,7 @@ TEST_CASE("a gate is met only by a passing run with the exact argv in the claim'
 
   // No run at all.
   CHECK(kinds(unmet_for(w, gate, lookup)) == std::vector{rk::gate_missing});
-  CHECK(lookup.tokens.front() == w.claim.claim_token);
+  CHECK(lookup.tags.front() == w.claim.claim_token);
 
   // Near misses on argv: extra element, prefix, shell-wrapped, case, whitespace, order.
   lookup.runs = {run({"make", "test", "-j"}, "/work/repo"),
@@ -254,6 +264,29 @@ TEST_CASE("a gate is met only by a passing run with the exact argv in the claim'
   // So does the worktree path.
   lookup.runs = {run({"make", "test"}, "/work/wt")};
   CHECK(unmet_for(w, gate, lookup).empty());
+}
+
+TEST_CASE("a gate is looked up by the claim's own token as the tag, and another tag's runs do not count", "[completion][gate]") {
+  world       w{"claude:coder-1", "/work/repo", std::nullopt};
+  fake_lookup lookup;
+  lookup.runs     = {run({"make", "test"}, "/work/repo")};
+  lookup.runs_tag = "ffffffffffffffffffffffffffffffff";
+  CHECK(kinds(unmet_for(w, gate_make_test(), lookup)) == std::vector{rk::gate_missing});
+  REQUIRE(lookup.tags.size() == 1);
+  CHECK(lookup.tags.front() == w.claim.claim_token);
+  lookup.runs_tag = w.claim.claim_token;
+  CHECK(unmet_for(w, gate_make_test(), lookup).empty());
+}
+
+TEST_CASE("a lookup that fails is gate_unreadable with the reason, never gate_missing", "[completion][gate]") {
+  world       w{"claude:coder-1", "/work/repo", std::nullopt};
+  fake_lookup lookup;
+  lookup.runs      = {run({"make", "test"}, "/work/repo")};
+  lookup.failure   = "/q/build-queue.db: database is locked";
+  auto const unmet = unmet_for(w, gate_make_test(), lookup);
+  REQUIRE(unmet.size() == 1);
+  CHECK(unmet.front().kind == rk::gate_unreadable);
+  CHECK(unmet.front().text == "task_gate: the build queue database cannot be read: /q/build-queue.db: database is locked");
 }
 
 TEST_CASE("a claim that recorded no location can show no gate run", "[completion][gate][1142]") {

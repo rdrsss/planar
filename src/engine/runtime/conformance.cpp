@@ -23,6 +23,10 @@ constexpr std::string_view k_forced_done_summary = "done (--force)";
 constexpr std::string_view k_plan_tree = "with recursive plan_tree(id) as (select id from plans where id = ? union all "
                                          "select p.id from plans p join plan_tree pt on p.parent_plan_id = pt.id) ";
 
+/// @brief The `planar.db` migration that split the build queue out of Planar. Its `applied_at` is the evidence
+/// horizon when no build queue database exists.
+constexpr int k_build_queue_split_migration = 44;
+
 auto failed() -> check_error {
   return check_error{.kind = error_kind::query_failed, .detail = {}};
 }
@@ -40,6 +44,7 @@ struct claim_row {
   std::string                lease_expires_at;
   std::int64_t               plan_id           = 0;
   bool                       has_parent_action = false;
+  std::string                ended_at; ///< `released_at`, else `claimed_at` for a claim not yet released.
 };
 
 auto opt_text(const db::statement& stmt, int index) -> std::optional<std::string> {
@@ -99,10 +104,10 @@ auto load_claims(db::connection& conn, std::int64_t plan_id) -> std::expected<st
   auto stmt = conn.prepare(
       std::string{k_plan_tree} +
       "select id, claim_token, entity_kind, entity_id, status, role, model, policy_digest, lease_expires_at, plan_id, "
-      "has_parent\n"
+      "has_parent, ended_at\n"
       "from (\n"
       "  select c.id, c.claim_token, c.entity_kind, c.entity_id, c.status, c.role, c.model, c.policy_digest,\n"
-      "         c.lease_expires_at,\n"
+      "         c.lease_expires_at, coalesce(c.released_at, c.claimed_at) as ended_at,\n"
       "         case c.entity_kind\n"
       "           when 'plan' then c.entity_id\n"
       "           when 'task' then (select t.plan_id from tasks t where t.id = c.entity_id)\n"
@@ -139,7 +144,8 @@ auto load_claims(db::connection& conn, std::int64_t plan_id) -> std::expected<st
                              .digest            = opt_text(*stmt, 7),
                              .lease_expires_at  = stmt->column_text(8),
                              .plan_id           = stmt->column_int64(9),
-                             .has_parent_action = stmt->column_int64(10) != 0});
+                             .has_parent_action = stmt->column_int64(10) != 0,
+                             .ended_at          = stmt->column_text(11)});
   }
 }
 
@@ -238,6 +244,57 @@ auto claim_violation(rule broken, const claim_row& claim, std::string reason) ->
 
 auto short_token(const std::string& token) -> std::string {
   return token.substr(0, 8);
+}
+
+/// @brief What rule 5 needs to know about the build queue database, read once per check.
+struct evidence_horizon {
+  bool        known = false;            ///< A horizon exists; unset only with no database and no migration 44 record.
+  std::string at;                       ///< The horizon, `%Y-%m-%dT%H:%M:%fZ`; a claim that ended before it is not graded.
+  bool        database_present = false; ///< The build queue database exists.
+  std::string path;                     ///< Where the database is expected.
+};
+
+/// @brief Work out the evidence horizon: the later of the database's creation and the clock minus its tagged
+/// retention, or, with no database, when `planar.db` applied the split migration.
+/// @param conn The `planar.db` connection.
+/// @param header Reads the build queue database's header.
+/// @param now_text The clock, `%Y-%m-%dT%H:%M:%fZ`.
+/// @return The horizon, `queue_unreadable` when the database cannot be read, or `query_failed`.
+auto resolve_horizon(db::connection& conn, const queue_header_reader& header, std::string_view now_text)
+    -> std::expected<evidence_horizon, check_error> {
+  if (!header) {
+    return std::unexpected(failed());
+  }
+  auto const head = header();
+  if (!head) {
+    return std::unexpected(check_error{.kind   = error_kind::queue_unreadable,
+                                       .detail = std::format("the build queue database cannot be read: {}", head.error())});
+  }
+  evidence_horizon out{.known = false, .at = {}, .database_present = head->present, .path = head->path};
+  if (head->present) {
+    auto stmt = conn.prepare("select strftime('%Y-%m-%dT%H:%M:%fZ', ?1, ?2)");
+    if (!stmt || !stmt->bind_text(1, now_text) || !stmt->bind_text(2, std::format("-{} days", head->tagged_history_days))) {
+      return std::unexpected(failed());
+    }
+    auto stepped = stmt->step();
+    if (!stepped || *stepped != db::step_result::row || stmt->is_null(0)) {
+      return std::unexpected(failed());
+    }
+    auto const cutoff = stmt->column_text(0);
+    out.known         = true;
+    out.at            = std::max(cutoff, head->created_at.value_or(std::string{}));
+    return out;
+  }
+  auto const applied = scalar_text(
+      conn, std::format("select applied_at from schema_migrations where version = {}", k_build_queue_split_migration));
+  if (!applied) {
+    return std::unexpected(applied.error());
+  }
+  if (applied->has_value()) {
+    out.known = true;
+    out.at    = **applied;
+  }
+  return out;
 }
 
 } // namespace
@@ -339,8 +396,8 @@ auto resolve_floor(db::connection& conn, std::optional<std::int64_t> explicit_fl
   return floor_info{.claim_id = *next, .origin = floor_origin::digest, .cut_at = std::nullopt};
 }
 
-auto check(db::connection& conn, const options& opts, const policy_resolver& resolve, const completion::gate_run_lookup& lookup)
-    -> std::expected<report, check_error> {
+auto check(db::connection& conn, const options& opts, const policy_resolver& resolve, const completion::gate_run_lookup& lookup,
+           const queue_header_reader& header) -> std::expected<report, check_error> {
   auto const exists = scalar_int(conn, "select count(*) from plans where id = ?", opts.plan_id);
   if (!exists) {
     return std::unexpected(exists.error());
@@ -422,6 +479,8 @@ auto check(db::connection& conn, const options& opts, const policy_resolver& res
     return &policies.emplace(plan_id, std::move(*resolved)).first->second;
   };
 
+  std::optional<evidence_horizon> horizon;
+
   // A solo session (a coder that pulls its own work, with no orchestrator) leaves no parent action by design, so
   // rule 4 grades only a tree where some claim is an orchestrator's or carries a parent action.
   bool const orchestrated = std::ranges::any_of(*claims, [](const claim_row& claim) {
@@ -467,13 +526,32 @@ auto check(db::connection& conn, const options& opts, const policy_resolver& res
       continue;
     }
     if ((*policy)->use_queue && (*policy)->task_gate.has_value()) {
-      auto const unmet = comp::unmet_completion_requirements(
-          conn, claim.token, comp::completion_requirements{.review_required = false, .task_gate = (*policy)->task_gate}, lookup);
-      if (!unmet) {
-        return std::unexpected(failed());
+      if (!horizon.has_value()) {
+        auto resolved = resolve_horizon(conn, header, now_text);
+        if (!resolved) {
+          return std::unexpected(resolved.error());
+        }
+        horizon = std::move(*resolved);
       }
-      for (auto const& item : *unmet) {
-        out.violations.push_back(claim_violation(rule::queued_gate, claim, item.text));
+      if (!horizon->known || claim.ended_at < horizon->at) {
+        out.queue_evidence_unavailable.push_back(
+            queue_evidence_unavailable_claim{.claim_id = claim.id, .claim_token = claim.token});
+      } else {
+        auto const unmet = comp::unmet_completion_requirements(
+            conn, claim.token, comp::completion_requirements{.review_required = false, .task_gate = (*policy)->task_gate},
+            lookup);
+        if (!unmet) {
+          return std::unexpected(failed());
+        }
+        for (auto const& item : *unmet) {
+          if (item.kind == comp::requirement_kind::gate_unreadable) {
+            return std::unexpected(
+                check_error{.kind = error_kind::queue_unreadable, .detail = item.text.substr(item.text.find(' ') + 1)});
+          }
+          bool const no_database = item.kind == comp::requirement_kind::gate_missing && !horizon->database_present;
+          out.violations.push_back(claim_violation(
+              rule::queued_gate, claim, no_database ? std::format("no build queue database at {}", horizon->path) : item.text));
+        }
       }
     }
     if ((*policy)->review_required) {
@@ -530,6 +608,13 @@ auto render_text(const report& value) -> std::string {
       out += std::format("  claim {} [{}]\n", item.claim_id, short_token(item.claim_token));
     }
   }
+  if (!value.queue_evidence_unavailable.empty()) {
+    out += std::format("not graded on rule 5 (the claim ended before the build queue evidence horizon): {}\n",
+                       value.queue_evidence_unavailable.size());
+    for (auto const& item : value.queue_evidence_unavailable) {
+      out += std::format("  claim {} [{}]\n", item.claim_id, short_token(item.claim_token));
+    }
+  }
   out += std::format("before the floor: {} claims, {} done tasks\n", value.before.claims, value.before.done_tasks);
   return out;
 }
@@ -583,6 +668,15 @@ auto render_json(const report& value) -> std::string {
   out += "],\"policy_changed\":[";
   first = true;
   for (auto const& item : value.policy_changed) {
+    out += first ? "" : ",";
+    first = false;
+    out += std::format("{{\"claim_id\":{},\"claim_token\":", item.claim_id);
+    json_text::append_json_string(out, item.claim_token);
+    out += "}";
+  }
+  out += "],\"queue_evidence_unavailable\":[";
+  first = true;
+  for (auto const& item : value.queue_evidence_unavailable) {
     out += first ? "" : ",";
     first = false;
     out += std::format("{{\"claim_id\":{},\"claim_token\":", item.claim_id);

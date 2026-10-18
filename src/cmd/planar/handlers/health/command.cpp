@@ -5,14 +5,14 @@
 module planar.cmd.planar.handlers.health;
 
 import std;
+import planar.buildqueue.path;
+import planar.buildqueue.reader;
 import planar.cliapp.args;
 import planar.db;
 import planar.json_text;
 import planar.engine.config;
 import planar.engine.health;
-import planar.engine.hostqueue;
 import planar.engine.identity;
-import planar.engine.runtime.agentactivity;
 import planar.engine.runtime.completion;
 import planar.engine.runtime.conformance;
 import planar.installed_surface;
@@ -33,7 +33,7 @@ namespace is_  = installed_surface;
 namespace cf   = engine::runtime::conformance;
 namespace comp = engine::runtime::completion;
 namespace cfg  = engine::config;
-namespace hq   = engine::hostqueue;
+namespace bq   = buildqueue;
 
 namespace {
 
@@ -234,24 +234,45 @@ auto conformance_policy_resolver(cfg::toml_map doc) -> cf::policy_resolver {
   };
 }
 
-/// @brief The queued runs recorded for a claim, read from the host queue's history (read-only).
+/// @brief The runs tagged with a claim's token, read from the build queue database (read-only).
+/// @param path The database path, or the resolver's failure.
 /// @return A lookup for rule 5, equal in meaning to the one `planar-agent complete` uses.
-auto history_gate_lookup() -> comp::gate_run_lookup {
-  return [](db::connection& conn, std::string_view claim_token)
-             -> std::expected<std::vector<comp::gate_run>, engine::runtime::agentactivity::agent_error> {
-    auto const rows = hq::history_for_claim(conn, claim_token);
-    if (!rows) {
-      return std::unexpected(engine::runtime::agentactivity::agent_error::query_failed);
+auto history_gate_lookup(std::expected<std::filesystem::path, bq::error> path) -> comp::gate_run_lookup {
+  return [path = std::move(path)](std::string_view tag) -> std::expected<std::vector<comp::gate_run>, std::string> {
+    if (!path) {
+      return std::unexpected(bq::error_message(path.error()));
+    }
+    auto const read = bq::read_tagged_runs(*path, tag);
+    if (!read) {
+      return std::unexpected(read.error().reason);
     }
     std::vector<comp::gate_run> runs;
-    runs.reserve(rows->size());
-    for (auto const& row : *rows) {
-      runs.push_back(comp::gate_run{.argv   = row.argv,
-                                    .cwd    = row.cwd,
-                                    .passed = row.outcome == hq::history_outcome::exited && row.exit_code.has_value() &&
-                                              *row.exit_code == 0});
+    runs.reserve(read->runs.size());
+    for (auto const& run : read->runs) {
+      runs.push_back(comp::gate_run{.argv   = run.argv,
+                                    .cwd    = run.cwd,
+                                    .passed = run.outcome == "exited" && run.exit_code.has_value() && *run.exit_code == 0});
     }
     return runs;
+  };
+}
+
+/// @brief The build queue database's header for rule 5's evidence horizon (read-only).
+/// @param path The database path, or the resolver's failure.
+/// @return A reader that returns the header, or the reason the database cannot be read.
+auto queue_header_source(std::expected<std::filesystem::path, bq::error> path) -> cf::queue_header_reader {
+  return [path = std::move(path)]() -> std::expected<cf::queue_header, std::string> {
+    if (!path) {
+      return std::unexpected(bq::error_message(path.error()));
+    }
+    auto const facts = bq::read_queue_facts(*path);
+    if (!facts) {
+      return std::unexpected(facts.error().reason);
+    }
+    return cf::queue_header{.path                = path->string(),
+                            .present             = facts->state == bq::reader_state::present,
+                            .created_at          = facts->created_at,
+                            .tagged_history_days = facts->tagged_history_days};
   };
 }
 
@@ -362,13 +383,16 @@ auto health_conformance(context& ctx, const cliapp::parsed_args& args) -> handle
                                                        doc.error())));
   }
 
-  auto const graded = cf::check(**conn, cf::options{.plan_id = *plan_id, .floor_claim_id = floor, .now = std::nullopt},
-                                conformance_policy_resolver(std::move(*doc)), history_gate_lookup());
+  auto const queue_path = bq::resolve_queue_db_path(ctx.env());
+  auto const graded =
+      cf::check(**conn, cf::options{.plan_id = *plan_id, .floor_claim_id = floor, .now = std::nullopt},
+                conformance_policy_resolver(std::move(*doc)), history_gate_lookup(queue_path), queue_header_source(queue_path));
   if (!graded) {
     switch (graded.error().kind) {
     case cf::error_kind::plan_not_found:
       return std::unexpected(error_from_body(domain_error_kind::not_found, std::format("no plan with id {}", *plan_id)));
     case cf::error_kind::policy_unavailable:
+    case cf::error_kind::queue_unreadable:
       return std::unexpected(
           error_from_body(domain_error_kind::generic_failure, std::format("health conformance: {}", graded.error().detail)));
     case cf::error_kind::query_failed:

@@ -135,10 +135,11 @@ export struct task_policy {
   /// another process cannot slip between this read and the claim.
   std::function<std::expected<std::vector<std::string>, agent_error>(db::connection& conn, std::int64_t task_id)> unready_reasons;
 
-  /// @brief The policy check `complete` runs before it ends a task claim (plan 1142).
+  /// @brief The policy check `complete` runs before it ends a task claim.
   ///
-  /// Layer 3 binds this to the configured policy (`review_required`, `task_gate`) and the host queue's
-  /// history, neither of which this bucket may import. Called INSIDE the `complete` transaction, on
+  /// Layer 3 binds this to the configured policy (`review_required`, `task_gate`) and to the build queue
+  /// database's reader (a second, read-only connection to another file), neither of which this bucket
+  /// may import. Called INSIDE the `complete` transaction, on
   /// the connection that ends the claim, after the claim and the task's transition were checked and
   /// before anything is written; it returns `completion_unmet` to refuse, and the refusal rolls the
   /// transaction back so the claim stays active. Called for `complete` only, never for `fail`,

@@ -17,6 +17,7 @@ import std;
 import cli11;
 import planar.cliapp.args;
 import planar.db;
+import planar.db.migrate;
 import planar.cmd.planar.context;
 import planar.cmd.planar.dispatch;
 import planar.cmd.planar.main;
@@ -152,6 +153,45 @@ void seed(const fixture& fx) {
   sql(fx, "insert into agent_actions (session_id, action_kind, vendor) values (1, 'orchestrator', 'test')");
   add_claim(fx, 3, "stale");
   add_claim(fx, 4, "completed");
+}
+
+constexpr std::string_view k_gate_config = "[policy]\nuse_queue = true\ntask_gate = [\"make\", \"test\"]\n";
+
+/// Where the fixture's build queue database lives, and the variable that names it.
+auto queue_path(const fixture& fx) -> std::filesystem::path {
+  return fx.root / "build-queue.db";
+}
+
+/// Point `PLANAR_BUILD_QUEUE_DB` at `queue_path(fx)` and create that database, created long ago and keeping
+/// tagged runs for the maximum, so the horizon sits before every fixture claim unless a case moves it.
+void make_queue(fixture& fx) {
+  fx.vars["PLANAR_BUILD_QUEUE_DB"] = queue_path(fx).string();
+  auto conn                        = planar::db::connection::open(queue_path(fx).string());
+  REQUIRE(conn.has_value());
+  REQUIRE(planar::db::apply_build_queue(*conn).has_value());
+  REQUIRE(conn->execute("update queue_identity set created_at = '2020-01-01T00:00:00.000Z'").has_value());
+  REQUIRE(conn->execute("insert into queue_settings (key, value) values ('tagged_history_days', '36500')").has_value());
+}
+
+/// Record one ended queue run under `tag`.
+void queue_run(const fixture& fx, std::string_view tag, std::string_view argv_json, std::string_view cwd) {
+  auto conn = planar::db::connection::open(queue_path(fx).string());
+  REQUIRE(conn.has_value());
+  REQUIRE(conn->execute(std::format("insert into queue_history (seq, outcome, exit_code, cwd, argv, tag, enqueued_at, ended_at, "
+                                    "waited_ms) values (1, 'exited', 0, '{}', '{}', '{}', 0, 1759000001000, 0)",
+                                    cwd, argv_json, tag))
+              .has_value());
+}
+
+/// The token `add_claim` gives claim `id`.
+auto token_of(int id) -> std::string {
+  return std::format("{:032x}", id);
+}
+
+/// `seed`, then give claim 2 (the completed one, on plan 2's task 4) a repository root to match runs against.
+void seed_gated(const fixture& fx) {
+  seed(fx);
+  sql(fx, "update agent_work_claims set repo_root = '/work/repo' where id = 2");
 }
 
 } // namespace
@@ -375,4 +415,101 @@ TEST_CASE("the checker resolves a claim's policy scope as the claim did, for a t
   CHECK(broken.code == 1);
   CHECK(broken.out.contains("\"policy_changed\":[]"));
   CHECK(broken.out.contains("\"rule\":3,\"name\":\"coder-model\""));
+}
+
+TEST_CASE("health conformance rule 5 reads the build queue database named by PLANAR_BUILD_QUEUE_DB by tag",
+          "[cmd][planar][health][conformance][wiring][queue]") {
+  auto fx = make_fixture("queuetag", k_gate_config);
+  seed_gated(fx);
+  make_queue(fx);
+  auto const grade = [&] { return dispatch(fx, {"health", "conformance", "2", "--floor", "1", "--json"}); };
+
+  // A passing run of the gate in the claim's directory, tagged with another claim's token: no evidence.
+  queue_run(fx, token_of(1), R"(["make","test"])", "/work/repo");
+  auto const other = grade();
+  CHECK(other.code == 1);
+  CHECK(other.out.contains("\"rule\":5,\"name\":\"queued-gate\""));
+
+  // The same run tagged with the claim's own token passes.
+  {
+    auto conn = planar::db::connection::open(queue_path(fx).string());
+    REQUIRE(conn.has_value());
+    REQUIRE(conn->execute(std::format("update queue_history set tag = '{}'", token_of(2))).has_value());
+  }
+  auto const own = grade();
+  CHECK(own.code == 0);
+  CHECK(own.out.contains("\"violations\":[]"));
+  CHECK(own.out.contains("\"queue_evidence_unavailable\":[]"));
+}
+
+TEST_CASE("health conformance rule 5 applies the build queue's tagged_history_days to the evidence horizon",
+          "[cmd][planar][health][conformance][wiring][queue]") {
+  auto fx = make_fixture("queuehorizon", k_gate_config);
+  seed_gated(fx);
+  make_queue(fx);
+  // The claim ended on 2026-02-02. The database is older than that, but keeps tagged runs for one day.
+  {
+    auto conn = planar::db::connection::open(queue_path(fx).string());
+    REQUIRE(conn.has_value());
+    REQUIRE(conn->execute("update queue_settings set value = '1' where key = 'tagged_history_days'").has_value());
+  }
+  auto const run = dispatch(fx, {"health", "conformance", "2", "--floor", "1", "--json"});
+  CHECK(run.code == 0);
+  CHECK(run.out.contains("\"violations\":[]"));
+  CHECK(run.out.contains(std::format("\"queue_evidence_unavailable\":[{{\"claim_id\":2,\"claim_token\":\"{}\"}}]", token_of(2))));
+  CHECK(dispatch(fx, {"health", "conformance", "2", "--floor", "1"}).out.contains("not graded on rule 5"));
+}
+
+TEST_CASE(
+    "health conformance rule 5 with no build queue database and no record of the split lists the claims and creates nothing",
+    "[cmd][planar][health][conformance][wiring][queue]") {
+  auto fx = make_fixture("queueabsent", k_gate_config);
+  seed_gated(fx);
+  fx.vars["PLANAR_BUILD_QUEUE_DB"] = queue_path(fx).string();
+  auto const grade                 = [&] { return dispatch(fx, {"health", "conformance", "2", "--floor", "1"}); };
+
+  // No record of the split migration (a planar.db newer than this binary would be refused as ahead, so the version-44
+  // arm is pinned by the engine tests): nothing can be failed.
+  auto const unknown = grade();
+  CHECK(unknown.code == 0);
+  CHECK(unknown.out.contains("not graded on rule 5"));
+  CHECK(unknown.out.contains("violations: none"));
+
+  CHECK_FALSE(std::filesystem::exists(queue_path(fx)));
+}
+
+TEST_CASE("health conformance rule 5 refuses and grades nothing when the build queue database cannot be read",
+          "[cmd][planar][health][conformance][wiring][queue]") {
+  auto fx = make_fixture("queuebad", k_gate_config);
+  seed_gated(fx);
+
+  SECTION("a file that is not a database") {
+    fx.vars["PLANAR_BUILD_QUEUE_DB"] = queue_path(fx).string();
+    std::ofstream(queue_path(fx), std::ios::binary) << "this is not a sqlite database, just text padding the header out";
+    auto const run = dispatch(fx, {"health", "conformance", "2", "--floor", "1"});
+    CHECK(run.code == 1);
+    CHECK(run.out.empty());
+    CHECK(run.err.contains("health conformance: the build queue database cannot be read: "));
+  }
+  SECTION("neither PLANAR_BUILD_QUEUE_DB nor HOME") {
+    fx.vars.erase("PLANAR_BUILD_QUEUE_DB");
+    fx.vars.erase("HOME");
+    auto const run = dispatch(fx, {"health", "conformance", "2", "--floor", "1"});
+    CHECK(run.code == 1);
+    CHECK(run.out.empty());
+    CHECK(run.err.contains("the build queue database cannot be read: "));
+    CHECK(run.err.contains("PLANAR_BUILD_QUEUE_DB"));
+  }
+}
+
+TEST_CASE("health conformance: use_queue without a task_gate grades nothing and never opens the build queue database",
+          "[cmd][planar][health][conformance][wiring][queue]") {
+  auto fx = make_fixture("queuenogate", "[policy]\nuse_queue = true\n");
+  seed_gated(fx);
+  fx.vars["PLANAR_BUILD_QUEUE_DB"] = queue_path(fx).string();
+  std::ofstream(queue_path(fx), std::ios::binary) << "this is not a sqlite database, just text padding the header out";
+  auto const run = dispatch(fx, {"health", "conformance", "2", "--floor", "1"});
+  CHECK(run.code == 0);
+  CHECK(run.out.contains("violations: none"));
+  CHECK_FALSE(run.out.contains("not graded on rule 5"));
 }

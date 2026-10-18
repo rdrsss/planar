@@ -9,9 +9,10 @@
 // `~/.planar`. The arena holds one plan, one task and one claim minted by the
 // built `claim` verb under the session `claude:coder-1`, whose recorded
 // repository root is the arena's working directory (`proj`). Gate evidence is
-// either seeded as `queue_history` rows (to reach argv, outcome, token and
-// directory near misses a real run cannot produce cheaply) or recorded by a real
-// `queue run --claim` of a stub command.
+// seeded as `queue_history` rows in a build queue database of the arena's own
+// (`PLANAR_BUILD_QUEUE_DB`), built with `apply_build_queue` and plain inserts, to
+// reach the argv, outcome, tag and directory near misses a real run cannot produce
+// cheaply. There is no queue binary to record a run yet.
 //
 // A refusal exits 1, names the unmet requirement and the command that would
 // succeed, and writes nothing: the claim stays active and the task stays doing.
@@ -24,15 +25,53 @@ import planar.db.migrate;
 import planar.db.migrations;
 
 #include "parity_harness.hpp"
-#include "queue_test_store.hpp"
 
 namespace {
 
 namespace parity = planar::cmd::parity;
-namespace qfix   = planar::cmd::qfix;
 
 using parity::capture;
 using parity::pinned_var;
+
+/// @brief Run one statement on a database file, failing the test when it does not run.
+/// @param path The database file; it must exist.
+/// @param statement The SQL.
+void exec_on(const std::filesystem::path& path, std::string_view statement) {
+  auto conn = planar::db::connection::open_existing(path.string(), 5000);
+  REQUIRE(conn.has_value());
+  INFO(statement);
+  REQUIRE(conn->execute(statement).has_value());
+}
+
+/// @brief Create a build queue database at `path` if it is not there yet. The connection closes before this
+/// returns, so no `-wal` or `-shm` sidecar is left behind.
+/// @param path The database file.
+void ensure_queue_db(const std::filesystem::path& path) {
+  if (std::filesystem::exists(path)) {
+    return;
+  }
+  auto conn = planar::db::connection::open(path.string());
+  REQUIRE(conn.has_value());
+  REQUIRE(planar::db::apply_build_queue(*conn).has_value());
+}
+
+/// @brief Record one ended queue run in the build queue database at `path`, creating the database first.
+/// @param path The database file.
+/// @param seq The run's sequence number.
+/// @param argv_json The argv as the JSON array text the queue engine writes.
+/// @param outcome The `queue_history.outcome` text.
+/// @param exit_code The exit status, or nullopt for none.
+/// @param cwd The directory the run executed in.
+/// @param tag The run's tag, or nullopt for an untagged run.
+void record_run(const std::filesystem::path& path, std::int64_t seq, std::string_view argv_json, std::string_view outcome,
+                std::optional<int> exit_code, std::string_view cwd, std::optional<std::string_view> tag) {
+  ensure_queue_db(path);
+  exec_on(path,
+          std::format("insert into queue_history (seq, outcome, exit_code, cwd, argv, tag, enqueued_at, ended_at, waited_ms) "
+                      "values ({}, '{}', {}, '{}', '{}', {}, 1759000000000, 1759000001000, 0)",
+                      seq, outcome, exit_code.has_value() ? std::to_string(*exit_code) : std::string{"null"}, cwd, argv_json,
+                      tag.has_value() ? std::format("'{}'", *tag) : std::string{"null"}));
+}
 
 auto agent_bin() -> std::filesystem::path {
   return std::filesystem::path{PLANAR_CPP_BIN};
@@ -50,17 +89,24 @@ struct fixture {
   [[nodiscard]] auto proj() const -> std::filesystem::path {
     return arena.cpp_root / "proj";
   }
+  /// @brief The build queue database every `agent` call resolves, unless a case names another.
+  [[nodiscard]] auto queue_db() const -> std::filesystem::path {
+    return arena.cpp_root / "build-queue.db";
+  }
 
   auto agent(std::vector<std::string> args, std::vector<pinned_var> extra_env = {}) -> capture {
     auto env = parity::pinned_env(arena.cpp_root);
+    env.push_back(pinned_var{.name = "PLANAR_BUILD_QUEUE_DB", .value = queue_db().string()});
     for (auto& var : extra_env) {
+      // A case's variable replaces the pinned one of the same name, so a variable can be unset as well as moved.
+      std::erase_if(env, [&](const pinned_var& have) { return have.name == var.name; });
       env.push_back(std::move(var));
     }
     return parity::run_pinned(agent_bin(), args, arena.cpp_root, std::format("run{}", counter++), env);
   }
 
   void sql(std::string_view statement) const {
-    qfix::exec(db(), statement);
+    exec_on(db(), statement);
   }
 
   [[nodiscard]] auto scalar(std::string_view query) const -> std::string {
@@ -86,13 +132,10 @@ struct fixture {
                   "where ended_at is null)");
   }
 
-  /// @brief Record a `queue_history` row as `queue run --claim` would have.
+  /// @brief Record a `queue_history` row in the arena's build queue database, as a tagged queue run would.
   void history(std::int64_t seq, std::string_view argv_json, std::string_view outcome, std::optional<int> exit_code,
-               std::string_view cwd, std::string_view claim_token) const {
-    sql(std::format(
-        "insert into queue_history (seq, outcome, exit_code, cwd, argv, enqueued_at, ended_at, waited_ms, claim_token) "
-        "values ({}, '{}', {}, '{}', '{}', 1759000000000, 1759000001000, 0, '{}')",
-        seq, outcome, exit_code.has_value() ? std::to_string(*exit_code) : std::string{"null"}, cwd, argv_json, claim_token));
+               std::string_view cwd, std::optional<std::string_view> tag) const {
+    record_run(queue_db(), seq, argv_json, outcome, exit_code, cwd, tag);
   }
 
   /// @brief Complete the claim.
@@ -217,8 +260,10 @@ TEST_CASE("task_gate: only a passing run with the exact argv, this claim's token
   CHECK(none.code == 1);
   CHECK(none.err.starts_with(
       std::format("error: complete: claim {} cannot complete: task_gate: no passing queued run", fx.token.substr(0, 8))));
-  CHECK(none.err.contains(std::format("planar-agent queue run --claim '{}' -- 'make' 'test'", fx.token)));
+  CHECK(none.err.contains(std::format("planar-build-queue run --tag '{}' -- 'make' 'test'", fx.token)));
+  CHECK_FALSE(none.err.contains("planar-agent queue run"));
   CHECK(fx.state() == before);
+  CHECK_FALSE(std::filesystem::exists(fx.queue_db())); // the absent database is read, never created
 
   // Near misses, each one a row that would pass a looser matcher.
   std::int64_t seq = 5'000'001;
@@ -229,6 +274,7 @@ TEST_CASE("task_gate: only a passing run with the exact argv, this claim's token
   fx.history(seq++, R"(["make","test"])", "exited", 2, cwd, fx.token);              // failed
   fx.history(seq++, R"(["make","test"])", "signaled", std::nullopt, cwd, fx.token); // killed
   fx.history(seq++, R"(["make","test"])", "exited", 0, cwd, other);                 // another claim's run
+  fx.history(seq++, R"(["make","test"])", "exited", 0, cwd, std::nullopt);          // untagged
   fx.history(seq++, R"(["make","test"])", "exited", 0, "/somewhere/else", fx.token);
   fx.history(seq++, R"(["make","test"])", "exited", 0, cwd + "/sub", fx.token); // a subdirectory
   auto const near = fx.complete();
@@ -243,26 +289,151 @@ TEST_CASE("task_gate: only a passing run with the exact argv, this claim's token
   CHECK(done.out == k_ok);
 }
 
-TEST_CASE("task_gate: a real queue run under the claim satisfies it, and the same command without --claim does not",
-          "[cmd][agent][complete][policy][gate][1142]") {
-  auto fx = make_fixture("gatereal");
-  fx.write_config("[policy]\nuse_queue = true\ntask_gate = [\"sh\", \"-c\", \"exit 0\"]\n");
-
-  // Same argv, no claim recorded: not evidence for this claim.
-  auto const bare = fx.agent({"queue", "run", "--", "sh", "-c", "exit 0"});
-  REQUIRE(bare.code == 0);
-  CHECK(fx.complete().code == 1);
-
-  // A failing run under the claim, then the passing one.
-  auto const failing = fx.agent({"queue", "run", "--claim", fx.token, "--", "sh", "-c", "exit 3"});
-  CHECK(failing.code == 3);
-  CHECK(fx.complete().code == 1);
-
-  auto const passing = fx.agent({"queue", "run", "--claim", fx.token, "--", "sh", "-c", "exit 0"});
-  REQUIRE(passing.code == 0);
+TEST_CASE("task_gate: a passing run tagged with the claim token, recorded in a quiet database with no sidecars, satisfies it",
+          "[cmd][agent][complete][policy][gate]") {
+  auto fx = make_fixture("gatequiet");
+  fx.write_config("[policy]\nuse_queue = true\ntask_gate = [\"make\", \"test\"]\n");
+  fx.history(5'000'030, R"(["make","test"])", "exited", 0, fx.proj().string(), fx.token);
+  auto const wal = std::filesystem::path{fx.queue_db().string() + "-wal"};
+  auto const shm = std::filesystem::path{fx.queue_db().string() + "-shm"};
+  REQUIRE(std::filesystem::exists(fx.queue_db()));
+  REQUIRE_FALSE(std::filesystem::exists(wal));
+  REQUIRE_FALSE(std::filesystem::exists(shm));
   auto const done = fx.complete();
   CHECK(done.code == 0);
   CHECK(done.out == k_ok);
+  // The read-only open left no sidecar behind either.
+  CHECK_FALSE(std::filesystem::exists(wal));
+  CHECK_FALSE(std::filesystem::exists(shm));
+}
+
+TEST_CASE("task_gate: the build queue database is found through PLANAR_BUILD_QUEUE_DB", "[cmd][agent][complete][policy][gate]") {
+  auto fx = make_fixture("gatepath");
+  fx.write_config("[policy]\nuse_queue = true\ntask_gate = [\"make\", \"test\"]\n");
+  auto const elsewhere = fx.arena.cpp_root / "elsewhere" / "named.db";
+  std::filesystem::create_directories(elsewhere.parent_path());
+  record_run(elsewhere, 5'000'040, R"(["make","test"])", "exited", 0, fx.proj().string(), fx.token);
+  auto const before = fx.state();
+
+  // The default location has no database, so the variable is the only way to the passing run.
+  REQUIRE_FALSE(std::filesystem::exists(fx.queue_db()));
+  auto const refused = fx.complete();
+  CHECK(refused.code == 1);
+  CHECK(refused.err.contains("task_gate: no passing queued run"));
+  CHECK(fx.state() == before);
+
+  auto const done = fx.complete({pinned_var{.name = "PLANAR_BUILD_QUEUE_DB", .value = elsewhere.string()}});
+  CHECK(done.code == 0);
+  CHECK(done.out == k_ok);
+}
+
+TEST_CASE("task_gate: a variable that names a missing file in an empty directory is no evidence, and creates nothing",
+          "[cmd][agent][complete][policy][gate]") {
+  auto fx = make_fixture("gatemissing");
+  fx.write_config("[policy]\nuse_queue = true\ntask_gate = [\"make\", \"test\"]\n");
+  fx.history(5'000'050, R"(["make","test"])", "exited", 0, fx.proj().string(), fx.token); // the default has the run
+  auto const empty_dir = fx.arena.cpp_root / "empty";
+  std::filesystem::create_directories(empty_dir);
+  auto const before = fx.state();
+
+  auto const refused = fx.complete({pinned_var{.name = "PLANAR_BUILD_QUEUE_DB", .value = (empty_dir / "none.db").string()}});
+  CHECK(refused.code == 1);
+  CHECK(refused.err.contains("task_gate: no passing queued run of the gate argv is recorded for this claim"));
+  CHECK(refused.err.contains("planar-build-queue run --tag"));
+  CHECK(fx.state() == before);
+  CHECK(std::filesystem::is_empty(empty_dir));
+}
+
+TEST_CASE("task_gate: with neither PLANAR_BUILD_QUEUE_DB nor HOME the database cannot be located, which refuses as unreadable",
+          "[cmd][agent][complete][policy][gate]") {
+  auto fx = make_fixture("gatenoloc2");
+  fx.write_config("[policy]\nuse_queue = true\ntask_gate = [\"make\", \"test\"]\n");
+  fx.history(5'000'055, R"(["make","test"])", "exited", 0, fx.proj().string(), fx.token);
+  auto const before  = fx.state();
+  auto const refused = fx.complete({pinned_var{.name = "PLANAR_BUILD_QUEUE_DB", .value = "", .unset = true},
+                                    pinned_var{.name = "HOME", .value = "", .unset = true}});
+  CHECK(refused.code == 1);
+  CHECK(refused.err.contains("task_gate: the build queue database cannot be read: "));
+  CHECK(refused.err.contains("PLANAR_BUILD_QUEUE_DB"));
+  CHECK_FALSE(refused.err.contains("no passing queued run"));
+  CHECK(fx.state() == before);
+}
+
+TEST_CASE("task_gate: a database that cannot be read refuses with the reason and never as missing evidence",
+          "[cmd][agent][complete][policy][gate]") {
+  auto fx = make_fixture("gateunreadable");
+  fx.write_config("[policy]\nuse_queue = true\ntask_gate = [\"make\", \"test\"]\n");
+  auto const before = fx.state();
+  auto const prefix = std::string{"task_gate: the build queue database cannot be read: "};
+
+  SECTION("a file that is not a database") {
+    std::ofstream(fx.queue_db(), std::ios::binary) << "this is not a sqlite database, just text padding the header out";
+    auto const refused = fx.complete();
+    CHECK(refused.code == 1);
+    CHECK(refused.err.contains(prefix));
+    CHECK(refused.err.contains(fx.queue_db().string()));
+    CHECK_FALSE(refused.err.contains("no passing queued run"));
+    CHECK(fx.state() == before);
+  }
+  SECTION("a database without the build queue identity") {
+    {
+      auto conn = planar::db::connection::open(fx.queue_db().string());
+      REQUIRE(conn.has_value());
+      REQUIRE(conn->execute("create table unrelated (x integer)").has_value());
+    }
+    auto const refused = fx.complete();
+    CHECK(refused.code == 1);
+    CHECK(refused.err.contains(prefix));
+    CHECK_FALSE(refused.err.contains("no passing queued run"));
+    CHECK(fx.state() == before);
+  }
+  SECTION("a database held by another connection past the busy bound") {
+    fx.history(5'000'060, R"(["make","test"])", "exited", 0, fx.proj().string(), fx.token);
+    // Rollback journal, so an exclusive lock blocks readers as well as writers.
+    exec_on(fx.queue_db(), "pragma journal_mode = delete");
+    auto holder = planar::db::connection::open_existing(fx.queue_db().string(), 1000);
+    REQUIRE(holder.has_value());
+    REQUIRE(holder->execute("begin exclusive").has_value());
+    auto const refused = fx.complete();
+    REQUIRE(holder->execute("rollback").has_value());
+    CHECK(refused.code == 1);
+    CHECK(refused.err.contains(prefix));
+    CHECK_FALSE(refused.err.contains("no passing queued run"));
+    CHECK(fx.state() == before);
+    // Released, the same claim completes: the refusal wrote nothing.
+    CHECK(fx.complete().code == 0);
+  }
+  SECTION("the refusal is tagged PolicyUnmet in JSON") {
+    std::ofstream(fx.queue_db(), std::ios::binary) << "this is not a sqlite database, just text padding the header out";
+    auto const json = fx.agent({"complete", "--claim", fx.token, "--json"});
+    CHECK(json.code == 1);
+    CHECK(json.out.contains("PolicyUnmet"));
+    INFO("stdout:\n" << json.out << "\nstderr:\n" << json.err);
+    CHECK((json.out + json.err).contains("the build queue database cannot be read"));
+  }
+}
+
+TEST_CASE("task_gate without use_queue is a policy the file cannot apply, and complete refuses with that reason",
+          "[cmd][agent][complete][policy][gate]") {
+  auto       fx     = make_fixture("gatenoqueue");
+  auto const before = fx.state();
+  fx.history(5'000'070, R"(["make","test"])", "exited", 0, fx.proj().string(), fx.token);
+
+  SECTION("a top-level gate with use_queue unset") {
+    fx.write_config("[policy]\ntask_gate = [\"make\", \"test\"]\n");
+  }
+  SECTION("an association that inherits the gate and turns use_queue off") {
+    fx.sql("insert into associations (id, slug, name, kind) values (1, 'acme', 'Acme', 'org')");
+    fx.sql("update plans set scope_kind = 'association', scope_id = 1 where id = 1");
+    fx.write_config("[policy]\nuse_queue = true\ntask_gate = [\"make\", \"test\"]\n"
+                    "[associations.\"acme\".policy]\nuse_queue = false\n");
+  }
+  auto const refused = fx.complete();
+  CHECK(refused.code == 1);
+  CHECK(refused.err.contains("the policy in config.toml cannot be applied"));
+  CHECK(
+      refused.err.contains("policy.task_gate: gate evidence is a queued run, so use_queue = true is required in the same scope"));
+  CHECK(fx.state() == before);
 }
 
 TEST_CASE("a claim without a recorded location can show no gate run and the refusal says how to fix that",
