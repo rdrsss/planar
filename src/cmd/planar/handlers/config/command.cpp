@@ -427,11 +427,11 @@ auto has_table(std::string_view content, std::string_view table) -> bool {
 /// @brief Whether the file carries a leftover `[queue]` table, in any form.
 ///
 /// Lexical, like `has_table`: a `[queue]` or `[queue.<...>]` header, or a
-/// top-level dotted key `queue.<key> = <value>` that appears before the first
-/// table header. Planar no longer reads the queue's settings, so the table's
+/// top-level dotted key `queue.<key> = <value>` or inline table `queue = {
+/// <...> }` that appears before the first table header. Planar no longer reads the queue's settings, so the table's
 /// contents are never parsed here.
 /// @param content The whole configuration file.
-/// @return True when the file names the `queue` table in either form.
+/// @return True when the file names the `queue` table in any of these forms.
 auto has_queue_table(std::string_view content) -> bool {
   if (has_table(content, "queue")) {
     return true;
@@ -444,6 +444,8 @@ auto has_queue_table(std::string_view content) -> bool {
     if (text.starts_with('[')) {
       top_level = false;
     } else if (top_level && text.starts_with("queue.")) {
+      return true;
+    } else if (top_level && text.starts_with("queue") && trim_any(text.substr(5), " \t").starts_with('=')) {
       return true;
     }
     if (newline == std::string_view::npos) {

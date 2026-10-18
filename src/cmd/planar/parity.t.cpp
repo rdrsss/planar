@@ -596,6 +596,16 @@ TEST_CASE("a leftover [queue] table warns once and never changes config validate
     CHECK(with.err.contains("planar-build-queue config set"));
   }
 
+  SECTION("a top-level inline queue table warns once and does not change the exit") {
+    auto const without = validate("qinline", k_clean);
+    auto const with    = validate("qinline_t", std::string{"queue = { slots = 2 }\n"} + std::string{k_clean});
+    CHECK(with.code == 0);
+    CHECK(with.code == without.code);
+    CHECK(with.out == without.out);
+    CHECK(warning_lines(with.err) == 1);
+    CHECK(with.err.contains("planar-build-queue config set"));
+  }
+
   SECTION("a file with an unrelated error exits as it does without the table, and the warning is added once") {
     auto const without = validate("qbroken", k_broken);
     auto const with    = validate("qbroken_t", std::string{k_broken} + std::string{k_table});
