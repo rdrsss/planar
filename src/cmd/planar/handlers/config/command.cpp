@@ -10,7 +10,6 @@ import cli11;
 import planar.cliapp.args;
 import planar.engine.config.effective;
 import planar.engine.config.policy;
-import planar.engine.config.queue;
 import planar.engine.config.toml;
 import planar.json_text;
 import planar.cmd.planar.cli_log;
@@ -396,47 +395,6 @@ auto config_show(context& ctx, const cliapp::parsed_args& args) -> handler_resul
   return {};
 }
 
-/// @brief The dotted key on 1-based source line `line` when that line is a
-/// `key = value` entry inside the `[queue]` table, else empty.
-///
-/// Used only to name the key of a TOML rejection the parser reports by line
-/// alone. Lexical, like the sensitive-literal scan: it tracks `[table]`
-/// headers line by line and never interprets values.
-/// @param content The whole configuration file.
-/// @param line The 1-based source line a parse failure was reported on.
-/// @return `queue.<key>`, or empty when the line is not a `[queue]` entry.
-auto queue_key_at_line(std::string_view content, std::uint32_t line) -> std::string {
-  if (line == 0) {
-    return {};
-  }
-  std::string      table;
-  std::uint32_t    number = 0;
-  std::string_view rest{content};
-  while (true) {
-    ++number;
-    auto const newline = rest.find('\n');
-    auto const text    = trim_any(rest.substr(0, newline == std::string_view::npos ? rest.size() : newline), " \t\r");
-    if (!text.empty() && text.front() != '#') {
-      if (text.front() == '[') {
-        // A trailing `# comment` after the closing bracket is not part of the
-        // table name (task 7057).
-        auto const header = text.substr(0, std::min(text.size(), text.find('#')));
-        table             = std::string{trim_any(trim_any(header, " \t[]"), " \t")};
-      } else if (number == line) {
-        auto const eq = text.find('=');
-        if (table == "queue" && eq != std::string_view::npos) {
-          return std::format("queue.{}", trim_any(text.substr(0, eq), " \t"));
-        }
-        return {};
-      }
-    }
-    if (number >= line || newline == std::string_view::npos) {
-      return {};
-    }
-    rest = rest.substr(newline + 1);
-  }
-}
-
 /// @brief Whether the file opens the named table, or a table under it.
 ///
 /// Lexical, like the other line scans here, because a flattened map has no
@@ -466,6 +424,36 @@ auto has_table(std::string_view content, std::string_view table) -> bool {
   return false;
 }
 
+/// @brief Whether the file carries a leftover `[queue]` table, in any form.
+///
+/// Lexical, like `has_table`: a `[queue]` or `[queue.<...>]` header, or a
+/// top-level dotted key `queue.<key> = <value>` that appears before the first
+/// table header. Planar no longer reads the queue's settings, so the table's
+/// contents are never parsed here.
+/// @param content The whole configuration file.
+/// @return True when the file names the `queue` table in either form.
+auto has_queue_table(std::string_view content) -> bool {
+  if (has_table(content, "queue")) {
+    return true;
+  }
+  bool             top_level = true;
+  std::string_view rest{content};
+  while (!rest.empty()) {
+    auto const newline = rest.find('\n');
+    auto const text    = trim_any(rest.substr(0, newline == std::string_view::npos ? rest.size() : newline), " \t\r");
+    if (text.starts_with('[')) {
+      top_level = false;
+    } else if (top_level && text.starts_with("queue.")) {
+      return true;
+    }
+    if (newline == std::string_view::npos) {
+      break;
+    }
+    rest = rest.substr(newline + 1);
+  }
+  return false;
+}
+
 auto config_validate(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   static_cast<void>(args);
   auto const path = config_file_path(ctx);
@@ -483,6 +471,17 @@ auto config_validate(context& ctx, const cliapp::parsed_args& args) -> handler_r
     return std::unexpected(error_from_body(domain_error_kind::generic_failure, "reading config file: ReadFailed"));
   }
 
+  // ---- leftover `[queue]` table: one warning, no finding ------------------
+  //
+  // The build queue's settings left planar's configuration (plan 1163). A
+  // leftover table is never validated and never changes the exit, so it is
+  // a stderr warning written here, before the steps below, and not a
+  // `report` finding. Printed once whatever else the file contains.
+  if (has_queue_table(*content)) {
+    ctx.err() << "warning: config.toml has a [queue] table, which planar ignores; "
+                 "set queue settings with planar-build-queue config set\n";
+  }
+
   // ---- step 1: TOML parse. A failure returns IMMEDIATELY -----------------
   //
   // The FORMAT is the oracle's exactly; the line, column and message bytes
@@ -490,17 +489,12 @@ auto config_validate(context& ctx, const cliapp::parsed_args& args) -> handler_r
   auto const parsed = cfg::parse_toml(*content);
   if (!parsed.has_value()) {
     auto const& err = parsed.error();
-    // A rejected `[queue]` value (a float slot count, say) is named by its
-    // key as well as its line, so the operator is told what to fix (plan
-    // 1080, task hq-config). Other tables keep the pinned wording.
-    auto const queue_key = queue_key_at_line(*content, err.line);
     return std::unexpected(
         error_from_body(domain_error_kind::generic_failure,
-                        std::format("line {}: col {}: TOML parse error: {}{}", err.line, err.column, err.message,
-                                    queue_key.empty() ? std::string{} : std::format(" ({})", queue_key))));
+                        std::format("line {}: col {}: TOML parse error: {}", err.line, err.column, err.message)));
   }
 
-  // Steps 2-6 ACCUMULATE. Every finding is a stderr line; the exit is 1
+  // Steps 2-5 ACCUMULATE. Every finding is a stderr line; the exit is 1
   // once, at the end. `error_from_rendered` carries the whole payload so
   // this handler never writes to `ctx.err()` itself and the reporting site
   // stays the single place that turns a failure into bytes.
@@ -589,16 +583,7 @@ auto config_validate(context& ctx, const cliapp::parsed_args& args) -> handler_r
     }
   }
 
-  // ---- step 4: the `[queue]` table (plan 1080, task hq-config) -----------
-  //
-  // Read from the parsed FILE map, like step 3: a value inherited from the
-  // embedded defaults is not something the operator wrote. Every refused
-  // value is its own finding, named by its dotted key.
-  for (auto const& finding : cfg::validate_queue(*parsed)) {
-    report(std::format("{}: {}", finding.key, finding.message));
-  }
-
-  // ---- step 5: removed tables and keys ----------------------------------
+  // ---- step 4: removed tables and keys ----------------------------------
   //
   // planar-execute's selector and profiles left planar's configuration with
   // `[execute]` (plan 1142, task 7459), and the transcript capture settings
@@ -620,7 +605,7 @@ auto config_validate(context& ctx, const cliapp::parsed_args& args) -> handler_r
     report("introspection.transcript_scan_bytes: unknown key (the transcript read budget was removed)");
   }
 
-  // ---- step 6: the `[policy]` tables (plan 1142, task mo-policy-config) -----
+  // ---- step 5: the `[policy]` tables (plan 1142, task mo-policy-config) -----
   //
   // Policy keys are facts Planar can check at one verb. A workflow-shaped key
   // (`after_review`, `then`, `retry`, ...) is refused as an unknown key, by

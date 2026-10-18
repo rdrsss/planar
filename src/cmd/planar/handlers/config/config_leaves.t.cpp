@@ -405,13 +405,10 @@ TEST_CASE("config show lists every resolved key with no provenance", "[cmd][conf
   // the five `queue.*` keys and `introspection.transcript_scan_bytes`; 28
   // again after task 7459 removed `execute.engine`; 24 after task 7472 removed
   // the transcript budget and the three `*_enabled` keys; 30 after plan 1142
-  // task mo-policy-config added the six `policy.*` keys.)
-  CHECK(lines_of(r.out).size() == 30);
-  CHECK(line_for(r.out, "queue.slots") == "queue.slots = 1");
-  CHECK(line_for(r.out, "queue.poll_interval") == "queue.poll_interval = 1s");
-  CHECK(line_for(r.out, "queue.stale_after") == "queue.stale_after = 30s");
-  CHECK(line_for(r.out, "queue.grace") == "queue.grace = 10s");
-  CHECK(line_for(r.out, "queue.history_days") == "queue.history_days = 30");
+  // task mo-policy-config added the six `policy.*` keys; 25 after plan 1163
+  // removed the five `queue.*` keys with the build queue's settings.)
+  CHECK(lines_of(r.out).size() == 25);
+  CHECK(r.out.find("queue.") == std::string::npos);
   CHECK(line_for(r.out, "defaults.vendor") == "defaults.vendor = claude");
   CHECK(line_for(r.out, "workbench.root") == "workbench.root = ~/.planar/workbench");
   cleanup(fx);
@@ -435,22 +432,17 @@ TEST_CASE("config show renders provenance under --effective", "[cmd][config][sho
   cleanup(fx);
 }
 
-TEST_CASE("config show --effective labels queue keys set in the file [config file] and the rest [embedded default]",
-          "[cmd][config][show][effective][hq-config]") {
+TEST_CASE("config show --effective lists no queue key, even with a leftover [queue] table in the file",
+          "[cmd][config][show][effective][bq-config]") {
+  // The queue's settings left planar's configuration (plan 1163). A file
+  // that still carries the old table gets no `queue.*` row, neither from the
+  // file nor from the embedded defaults.
   auto const fx = make_fixture("showqueue");
   write_config(fx, "[queue]\nslots = 3\ngrace = \"20s\"\n");
   auto const r = dispatch(fx, {"config", "show", "--effective"});
   CHECK(r.code == 0);
-  CHECK(line_for(r.out, "queue.slots") == "queue.slots = 3  [config file]");
-  CHECK(line_for(r.out, "queue.grace") == "queue.grace = 20s  [config file]");
-  CHECK(line_for(r.out, "queue.poll_interval") == "queue.poll_interval = 1s  [embedded default]");
-  CHECK(line_for(r.out, "queue.stale_after") == "queue.stale_after = 30s  [embedded default]");
-  CHECK(line_for(r.out, "queue.history_days") == "queue.history_days = 30  [embedded default]");
-  // Known limitation (task 7058, inherited from `pick_int`): a key of the
-  // wrong type in the file (`slots = "3"`) still reports `[config file]` with
-  // the default's value, because pick_int records the fallback under the file's
-  // provenance. `config validate` is what refuses that value; this view is not
-  // the place a wrong type is caught.
+  CHECK(r.out.find("queue.") == std::string::npos);
+  CHECK(line_for(r.out, "defaults.vendor") == "defaults.vendor = claude  [embedded default]");
   cleanup(fx);
 }
 
@@ -614,9 +606,10 @@ TEST_CASE("config show --defaults prints the embedded file and beats every other
   // operator's (which is what `--raw` would have printed). The byte count is
   // the embedded defaults.toml, which lost its 309-byte `[execute]` block to
   // plan 1142 task 7459, then gained the 988-byte `[policy]` table in task
-  // mo-policy-config (3550 bytes before, 4538 after).
-  CHECK(r.out.size() == 4538);
-  CHECK(r.out.contains("[queue]\n"));
+  // mo-policy-config (3550 bytes before, 4538 after), and lost its `[queue]`
+  // table in plan 1163 (3757 after).
+  CHECK(r.out.size() == 3757);
+  CHECK_FALSE(r.out.contains("[queue]"));
   CHECK_FALSE(r.out.contains("[execute]"));
   CHECK(r.out.starts_with("# ~/.planar/config.toml"));
   CHECK_FALSE(r.out.contains("claude-fable-5"));
@@ -633,7 +626,7 @@ TEST_CASE("config show --defaults works with no HOME at all", "[cmd][config][sho
   fx.vars.erase("PLANAR_CONFIG_PATH");
   auto const r = dispatch(fx, {"config", "show", "--defaults"});
   CHECK(r.code == 0);
-  CHECK(r.out.size() == 4538);
+  CHECK(r.out.size() == 3757);
   cleanup(fx);
 }
 
