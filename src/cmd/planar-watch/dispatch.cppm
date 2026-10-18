@@ -96,8 +96,8 @@ export auto unregistered_leaves(const CLI::App& root, const handler_table& table
 /// misspelled or removed path is dead code that no argv can reach, and
 /// looks exactly like working coverage until someone tries the verb. EVERY
 /// node counts as reachable, not only the childless ones: a group that also
-/// carries a handler (`queue`) is dual and runs it when named alone, the rule
-/// `planar` applies to `handoff` and `resume` (task 7100).
+/// carries a handler is dual and runs it when named alone, the rule `planar`
+/// applies to `handoff` and `resume` (task 7100).
 /// @param root The command tree.
 /// @param table The handler table.
 /// @return The unreachable table keys, sorted.

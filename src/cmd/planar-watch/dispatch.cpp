@@ -18,8 +18,6 @@ import planar.cmd.planar_watch.handlers.diagnose;
 import planar.cmd.planar_watch.handlers.feed;
 import planar.cmd.planar_watch.handlers.ledger;
 import planar.cmd.planar_watch.handlers.live;
-import planar.cmd.planar_watch.handlers.queue;
-import planar.cmd.planar_watch.handlers.queue.history;
 import planar.cmd.planar_watch.handlers.schema;
 import planar.cmd.planar_watch.handlers.syncevents;
 import planar.cmd.planar_watch.handlers.version;
@@ -34,9 +32,8 @@ namespace {
 /// `CLI::App::get_subcommands()` returns the PARSED children at each
 /// level, so following `.front()` down walks exactly the chain argv
 /// selected. A node reached this way that still has children of its own
-/// means the operator named a group without naming a leaf under it —
-/// `queue` renders that node's help page, matching what the deleted parser
-/// did for a bare parent verb.
+/// means the operator named a group without naming a leaf under it, and the
+/// group renders its help page unless the handler table gives it a handler.
 /// @param root The parsed root app.
 /// @return The matched node and its root-relative path.
 auto matched_node(CLI::App& root) -> std::pair<CLI::App*, std::vector<std::string>> {
@@ -83,8 +80,6 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("log", handlers::log);
   table.emplace("tree", handlers::tree);
   table.emplace("sync-events", handlers::sync_events);
-  table.emplace("queue", handlers::queue);
-  table.emplace("queue history", handlers::queue_history);
   table.emplace("diagnose", handlers::diagnose);
   table.emplace("version", handlers::version);
   table.emplace("schema", [&root](context& ctx, const cliapp::parsed_args& args) -> handler_result {
@@ -114,8 +109,8 @@ auto unregistered_leaves(const CLI::App& root, const handler_table& table) -> st
 }
 
 auto unreachable_handlers(const CLI::App& root, const handler_table& table) -> std::vector<std::string> {
-  // EVERY node, not only childless ones: a dual group-and-leaf node (`queue`)
-  // carries a handler and is reachable through it. The same rule the operator
+  // EVERY node, not only childless ones: a dual group-and-leaf node that
+  // carries a handler is reachable through it. The same rule the operator
   // binary uses (task 7100).
   std::set<std::string, std::less<>> reachable;
   for (auto const& node : cliapp::all_nodes(root)) {
@@ -190,8 +185,8 @@ auto run(context& ctx, CLI::App& root, const handler_table& table) -> int {
   auto const [node, path] = matched_node(root);
   if (!cliapp::children(*node).empty() && !table.contains(cliapp::path_key(path))) {
     // A group named without a leaf beneath it AND with no handler of its own.
-    // A group that DOES have a handler is dual (`queue`) and falls through to
-    // it, the rule `planar` applies to `handoff` and `resume`; nothing here
+    // A group that DOES have a handler is dual and falls through to it, the
+    // rule `planar` applies to `handoff` and `resume`; nothing here
     // lists which groups may be dual, so the handler table is the one place
     // that says so (task 7100).
     ctx.out() << node->help();

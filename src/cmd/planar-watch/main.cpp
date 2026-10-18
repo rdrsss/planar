@@ -43,9 +43,8 @@ auto main(int argc, char** argv) -> int {
   auto const env = planar::cmd::watch::process_env();
 
   // The main database's path is resolved before dispatch and a failure is
-  // fatal, for every verb without exception: the queue views read `planar.db`
-  // too (plan 1089), so there is no domain that may go without it. The holder
-  // is lazy and opens nothing until a handler asks.
+  // fatal, for every verb without exception. The holder is lazy and opens
+  // nothing until a handler asks.
   auto db_path = planar::cmd::watch::resolve_db_path(env);
   if (!db_path) {
     planar::cmd::watch::report(db_path.error(), std::cerr);

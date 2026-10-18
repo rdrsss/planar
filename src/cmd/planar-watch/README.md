@@ -11,7 +11,6 @@ Each `handlers/<name>/` directory owns one root command family.
 | `plans/` | Plans with in-flight activity summaries. |
 | `log/`, `tree/` | Activity history and parent-action forest. |
 | `sync_events/` | Sync event history. |
-| `queue/` | The host build and test queue and its history. |
 | `diagnose/` | Checks over recorded claim and action state. |
 | `version/`, `completion/`, `schema/` | Version, shell completion and command catalog. |
 | `agents/` | Interactive agent view a bare invocation opens on a terminal (FTXUI); no root CLI app. |
