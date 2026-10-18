@@ -10,6 +10,7 @@ import planar.engine.config;
 import planar.engine.ingest.packet;
 import planar.engine.planning;
 import planar.engine.runtime.agentactivity;
+import planar.queuerule;
 
 namespace planar::cmd::agent {
 
@@ -156,7 +157,7 @@ auto build_protocol(const engine::config::policy_values& policy, std::int64_t le
                                            shell_quote("<reviewed-token>"), shell_quote("<approve|request-changes>"), text,
                                            shell_quote("<reviewer-token>"))});
   if (policy.use_queue) {
-    std::string gate = std::format("planar-agent queue run --claim {} -- ", token);
+    std::string gate = std::format("planar-build-queue run --tag {} -- ", token);
     if (policy.task_gate.has_value()) {
       bool first = true;
       for (auto const& word : *policy.task_gate) {
@@ -167,6 +168,7 @@ auto build_protocol(const engine::config::policy_values& policy, std::int64_t le
       gate += shell_quote("<command>");
     }
     out.templates.push_back(brief_template{"gate", std::move(gate)});
+    out.mandate = std::string{planar::queuerule::queue_mandate_text()};
   }
   return out;
 }
@@ -345,6 +347,7 @@ auto gather_brief(db::connection& conn, std::int64_t plan_id, const engine::conf
   out.protocol       = build_protocol(out.policy.resolved.values, aa::default_lease_secs);
   if (out.counts.todo + out.counts.doing + out.counts.blocked == 0) {
     out.protocol.templates.clear(); // nothing is left to claim, complete or review
+    out.protocol.mandate.clear();   // and nothing is left to build or test
   }
   return out;
 }
@@ -466,6 +469,10 @@ auto render_brief_text(const brief& value) -> std::string {
   }
   if (!value.confirm_before.empty()) {
     out += "  note: a confirm_before verb waits for the operator's confirmation; Planar does not enforce it\n";
+  }
+  if (!value.protocol.mandate.empty()) {
+    out += "mandate:\n";
+    out += value.protocol.mandate;
   }
   return out;
 }
@@ -675,7 +682,12 @@ auto render_brief_json(const brief& value) -> std::string {
     str(out, t.command);
     out += '}';
   }
-  out += "]}}\n";
+  out += ']';
+  if (!value.protocol.mandate.empty()) {
+    out += ",\"mandate\":";
+    str(out, value.protocol.mandate);
+  }
+  out += "}}\n";
   return out;
 }
 

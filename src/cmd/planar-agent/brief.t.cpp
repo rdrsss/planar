@@ -151,7 +151,7 @@ auto row_totals(planar::db::connection& conn) -> std::vector<std::int64_t> {
   return {scalar(conn, "select count(*) from tasks"),         scalar(conn, "select count(*) from agent_work_claims"),
           scalar(conn, "select count(*) from agent_actions"), scalar(conn, "select count(*) from sessions"),
           scalar(conn, "select count(*) from plans"),         scalar(conn, "select count(*) from audit_log"),
-          scalar(conn, "select count(*) from entity_links"),  scalar(conn, "select count(*) from queue_entries")};
+          scalar(conn, "select count(*) from entity_links")};
 }
 
 } // namespace
@@ -219,13 +219,13 @@ TEST_CASE("queue templates appear only under use_queue and quote each gate eleme
   CHECK_FALSE(gate_of(values).has_value()); // a gate with use_queue = false shows no queue template
 
   values.use_queue = true;
-  CHECK(gate_of(values) == "planar-agent queue run --claim '<token>' -- 'make' 'test'");
+  CHECK(gate_of(values) == "planar-build-queue run --tag '<token>' -- 'make' 'test'");
 
   values.task_gate = std::vector<std::string>{"sh", "-c", "echo 'hi' $HOME"};
-  CHECK(gate_of(values) == "planar-agent queue run --claim '<token>' -- 'sh' '-c' 'echo '\\''hi'\\'' $HOME'");
+  CHECK(gate_of(values) == "planar-build-queue run --tag '<token>' -- 'sh' '-c' 'echo '\\''hi'\\'' $HOME'");
 
   values.task_gate.reset();
-  CHECK(gate_of(values) == "planar-agent queue run --claim '<token>' -- '<command>'");
+  CHECK(gate_of(values) == "planar-build-queue run --tag '<token>' -- '<command>'");
 }
 
 TEST_CASE("the brief of a 20-task milestone is complete, read-only and under 4 KB", "[cmd][agent][brief][compose]") {
@@ -352,9 +352,9 @@ review_required = true
     CHECK(text.contains("scope 'acme' (association_scope)"));
     CHECK(text.contains("review_required=true [associations.\"acme\".policy]"));
     CHECK(text.contains("use_queue=true [policy]"));
-    CHECK(text.contains("planar-agent queue run --claim '<token>' -- 'make' 'test'"));
+    CHECK(text.contains("planar-build-queue run --tag '<token>' -- 'make' 'test'"));
     CHECK(text.contains("confirm with the operator before: task done\n"));
-    CHECK(text.size() < 4096);
+    CHECK(text.size() < 4096 + std::filesystem::file_size(PLANAR_QUEUE_MANDATE_SOURCE)); // use_queue adds the mandate
   }
   SECTION("without use_queue no queue template renders even when a gate is set, and the policy is invalid") {
     auto const config   = parse_config(R"([policy]
@@ -422,7 +422,7 @@ task_gate = ["sh", "-c", "echo 'x' \"y\""]
   for (auto const& t : parsed->find("protocol")->find("templates")->array) {
     if (t.find("name")->string == "gate") {
       saw_gate = true;
-      CHECK(t.find("command")->string == "planar-agent queue run --claim '<token>' -- 'sh' '-c' 'echo '\\''x'\\'' \"y\"'");
+      CHECK(t.find("command")->string == "planar-build-queue run --tag '<token>' -- 'sh' '-c' 'echo '\\''x'\\'' \"y\"'");
     }
   }
   CHECK(saw_gate);
