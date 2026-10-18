@@ -609,7 +609,7 @@ export auto heartbeat_claim(db::connection& conn, std::string_view claim_token, 
 ///
 /// Reads the row only; it neither refreshes nor refuses a terminal or lapsed
 /// claim, so a caller can size a renewal cadence before renewing. A caller that
-/// renews on a schedule (`queue run --claim`) uses half of this.
+/// heartbeats on a schedule uses half of this.
 /// @param conn An open, migrated connection.
 /// @param claim_token The token.
 /// @return The lease length, or `claim_not_found` / `query_failed`.

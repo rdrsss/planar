@@ -310,7 +310,7 @@ TEST_CASE("planar-agent help paths exit 0 and open no database", "[cmd][agent][h
   CHECK(explicit_help.out.contains("agent_actions"));
   CHECK(explicit_help.out.contains("agent_work_claims"));
   CHECK_FALSE(explicit_help.out.contains("routing_dispatch_"));
-  CHECK(explicit_help.out.contains("queue_entries"));
+  CHECK_FALSE(explicit_help.out.contains("queue_entries"));
   CHECK(explicit_help.out.contains("tasks.status"));
   // Matched as a LISTING LINE (`"\n  <verb>"`), not as a bare substring.
   // CLI11 indents a subcommand entry by exactly two spaces and wraps its

@@ -126,9 +126,9 @@ void require_db_pinned(std::string_view label, const std::vector<seen>& seen_row
 // Scenario: Happy path — the arena isolates with PLANAR_DB and HOME alone
 // ---------------------------------------------------------------------------
 
-TEST_CASE("arena: PLANAR_DB and HOME resolve inside the arena, no PLANAR_AGENT_DB is pinned, and a queue run leaves a HOME "
+TEST_CASE("arena: PLANAR_DB and HOME resolve inside the arena, no PLANAR_AGENT_DB is pinned, and an init leaves a HOME "
           "canary alone",
-          "[arena][queue]") {
+          "[arena]") {
   auto const arena = make_arena("pins_canary");
 
   // The map pins the database and HOME under the arena root and names no
@@ -163,10 +163,6 @@ TEST_CASE("arena: PLANAR_DB and HOME resolve inside the arena, no PLANAR_AGENT_D
                  arena.cpp_root, "init");
   INFO("init stderr:\n" << initialised.err);
   REQUIRE(initialised.code == 0);
-  auto const queued = run_pinned(std::filesystem::path{PLANAR_AGENT_CPP_BIN},
-                                 std::vector<std::string>{"queue", "run", "--", "/usr/bin/true"}, arena.cpp_root, "queue_true");
-  INFO("queue run stderr:\n" << queued.err);
-  REQUIRE(queued.code == 0);
 
   CHECK(read_all(canary) == "canary\n");
   CHECK_FALSE(std::filesystem::exists(arena.cpp_root / "agent.db"));
@@ -182,7 +178,7 @@ namespace {
 
 /// @brief Sets an environment variable for one scope and puts the previous
 /// state back, so a case that plants `PLANAR_QUEUE_SLOT` in this process (as a
-/// suite run under `queue run -- make test` inherits it) leaves nothing behind.
+/// suite run under the host queue inherits it) leaves nothing behind.
 struct scoped_env {
   std::string                name;
   std::optional<std::string> previous;
@@ -233,7 +229,7 @@ auto var_from_env_dump(const std::string& dump, std::string_view name) -> std::o
 } // namespace
 
 TEST_CASE("arena: run_pinned and launch_pinned_detached strip an inherited PLANAR_QUEUE_SLOT", "[arena][queue]") {
-  // A suite run under `planar-agent queue run -- make test` inherits the
+  // A suite run under the host queue inherits the
   // marker, and every arena submitter would then look nested.
   scoped_env const inherited{"PLANAR_QUEUE_SLOT", "424242"};
   REQUIRE(std::getenv("PLANAR_QUEUE_SLOT") != nullptr); // the plant took effect

@@ -53,18 +53,6 @@ constexpr std::array<std::string_view, 2> k_global_ok_flags{"--help", "-h"};
 /// the role agents Planar no longer installs, which still name its commands.
 constexpr std::array<std::string_view, 4> k_scan_dirs{"agents", "examples/agents", "skills", "docs"};
 
-/// Single authored files, outside those directories, that carry commands
-/// agents are told to run.
-constexpr std::array<std::string_view, 1> k_scan_files{"src/lib/queuerule/queue-rule.md"};
-
-/// The commands a bare flag span (`` `--wait-timeout` ``, `` `--timeout <duration>` ``)
-/// in one of `k_scan_files` is judged against: the rule text names flags in
-/// running prose without the command beside them, and they are the flags of
-/// the queue's submit and poll verbs. A span is valid when at least one of
-/// these commands has the flag. Spans in `k_scan_dirs` are not judged this
-/// way: there a bare flag belongs to whatever tool the sentence is about.
-constexpr std::array<std::string_view, 2> k_flag_span_homes{"planar-agent queue run", "planar-agent queue status"};
-
 // ---------------------------------------------------------------------------
 // Schema model.
 // ---------------------------------------------------------------------------
@@ -102,9 +90,6 @@ struct violation_t {
   std::string                command;
   std::string                flag;
   std::optional<std::string> suggestion;
-  /// True for a bare flag span judged against `k_flag_span_homes`; `command`
-  /// is then empty.
-  bool span = false;
 };
 
 // ---------------------------------------------------------------------------
@@ -455,7 +440,7 @@ auto scan_command(catalog_t& catalog, std::vector<std::string> const& bin_names,
 
   for (std::string const& t : rest) {
     // A bare `--` ends the resolved command's own flags: what follows is
-    // another program's command line (`planar-agent queue run -- make -j8`),
+    // another program's command line (`<binary> run -- make -j8`),
     // and its flags are not this catalog's to check.
     if (t == "--")
       break;
@@ -493,38 +478,9 @@ void scan_code_segment(catalog_t& catalog, std::vector<std::string> const& bin_n
   }
 }
 
-/// Judge a code span that begins with a flag against `k_flag_span_homes`.
-/// A span that does not begin with a flag, a placeholder flag, `--help` and a
-/// bare `--` are not judged.
-void check_flag_span(catalog_t& catalog, std::string const& file, std::size_t line_no, std::string_view span,
-                     std::vector<violation_t>& violations) {
-  auto const toks = tokenize_ws(span);
-  if (toks.empty())
-    return;
-  std::string_view const first = clean_token(toks[0]);
-  if (!is_flag(first))
-    return;
-  std::string_view const name = flag_name(first);
-  if (name.empty() || name == "--" || is_placeholder_flag(name) || is_global_ok(name))
-    return;
-  std::optional<std::string> suggestion;
-  for (auto const home : k_flag_span_homes) {
-    command_entry* entry = catalog.get(std::string{home});
-    if (entry == nullptr)
-      continue;
-    if (entry->flags.contains(std::string{name}))
-      return;
-    if (!suggestion.has_value())
-      suggestion = suggest(*entry, name);
-  }
-  violations.push_back(
-      {.file = file, .line = line_no, .command = {}, .flag = std::string{name}, .suggestion = suggestion, .span = true});
-}
-
-/// Extract `...` inline code spans from a prose line and scan each. With
-/// `flag_spans`, a span that begins with a flag is also judged on its own.
+/// Extract `...` inline code spans from a prose line and scan each.
 void scan_inline_spans(catalog_t& catalog, std::vector<std::string> const& bin_names, std::string const& file,
-                       std::size_t line_no, std::string_view line, std::vector<violation_t>& violations, bool flag_spans) {
+                       std::size_t line_no, std::string_view line, std::vector<violation_t>& violations) {
   std::size_t i = 0;
   while (i < line.size()) {
     if (line[i] != '`') {
@@ -538,14 +494,12 @@ void scan_inline_spans(catalog_t& catalog, std::vector<std::string> const& bin_n
     if (j >= line.size())
       break;
     scan_code_segment(catalog, bin_names, file, line_no, line.substr(start, j - start), violations);
-    if (flag_spans)
-      check_flag_span(catalog, file, line_no, line.substr(start, j - start), violations);
     i = j + 1;
   }
 }
 
 void scan_file(catalog_t& catalog, std::vector<std::string> const& bin_names, std::string const& file, std::string const& content,
-               std::vector<violation_t>& violations, bool flag_spans = false) {
+               std::vector<violation_t>& violations) {
   bool        in_fence = false;
   std::size_t line_no  = 0;
   std::size_t pos      = 0;
@@ -565,7 +519,7 @@ void scan_file(catalog_t& catalog, std::vector<std::string> const& bin_names, st
       if (in_fence) {
         scan_code_segment(catalog, bin_names, file, line_no, line, violations);
       } else {
-        scan_inline_spans(catalog, bin_names, file, line_no, line, violations, flag_spans);
+        scan_inline_spans(catalog, bin_names, file, line_no, line, violations);
       }
     }
 
@@ -688,20 +642,6 @@ auto main(int argc, char** argv) -> int {
     scan_file(catalog, bin_names, claude_md.string(), content, violations);
   }
 
-  // The queue rule (plan 1080, task hq-rule-text) is authored beside the code
-  // that embeds it, not under one of the directories above, and it shows
-  // `planar-agent queue` commands that agents copy. Each such file is scanned
-  // like CLAUDE.md is: as a single file with its own entry point.
-  for (auto const rel : k_scan_files) {
-    auto const path = fs::path{repo_root} / rel;
-    if (std::error_code ec; fs::exists(path, ec) && fs::is_regular_file(path, ec)) {
-      std::ifstream in(path, std::ios::binary);
-      std::string   content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-      ++files_scanned;
-      scan_file(catalog, bin_names, path.string(), content, violations, true);
-    }
-  }
-
   // Catalog mode: the examples the binaries themselves publish in `schema`.
   std::vector<std::string> catalog_problems;
   std::size_t const        examples_checked = check_catalog_examples(catalog, bin_names, violations, catalog_problems);
@@ -721,14 +661,7 @@ auto main(int argc, char** argv) -> int {
     return a.line < b.line;
   });
   for (auto const& v : violations) {
-    if (v.span) {
-      std::string const homes = std::format("`{}` nor `{}`", k_flag_span_homes[0], k_flag_span_homes[1]);
-      if (v.suggestion.has_value())
-        std::println("{}:{}: inline flag span `{}` is on neither {} (did you mean `{}`?)", v.file, v.line, v.flag, homes,
-                     *v.suggestion);
-      else
-        std::println("{}:{}: inline flag span `{}` is on neither {}", v.file, v.line, v.flag, homes);
-    } else if (v.suggestion.has_value()) {
+    if (v.suggestion.has_value()) {
       std::println("{}:{}: `{}` has no flag `{}` (did you mean `{}`?)", v.file, v.line, v.command, v.flag, *v.suggestion);
     } else {
       std::println("{}:{}: `{}` has no flag `{}`", v.file, v.line, v.command, v.flag);

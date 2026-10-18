@@ -125,7 +125,6 @@ planar_binary(planar_agent
     exit.cppm
     context.cppm
     database.cppm
-    queue_store.cppm
     handler.cppm
     args.cppm
     locality.cppm
@@ -151,7 +150,6 @@ planar_binary(planar_agent
     handlers/reconcile/command.cppm
     handlers/abort/command.cppm
     handlers/schema/command.cppm
-    handlers/queue/command.cppm
 
     surface.cppm
     docs.cppm
@@ -165,15 +163,10 @@ planar_binary(planar_agent
     handlers/review/review.cppm
     handlers/brief/brief.cppm
     handlers/ingest/ingest.cppm
-    handlers/queue/queue.cppm
-    handlers/queue/status.cppm
-    handlers/queue/wait.cppm
-    handlers/queue/rule.cppm
     dispatch.cppm
   SOURCES
     context.cpp
     database.cpp
-    queue_store.cpp
     locality.cpp
     policy.cpp
     completion_policy.cpp
@@ -188,10 +181,6 @@ planar_binary(planar_agent
     handlers/review/review.cpp
     handlers/brief/brief.cpp
     handlers/ingest/ingest.cpp
-    handlers/queue/queue.cpp
-    handlers/queue/status.cpp
-    handlers/queue/wait.cpp
-    handlers/queue/rule.cpp
     dispatch.cpp
   DEPENDS
     cmd_internal
@@ -204,7 +193,6 @@ planar_binary(planar_agent
     json_dom
     engine_planning
     engine_ingest
-    engine_hostqueue
     queuerule
     buildqueue
     engine_config
@@ -229,10 +217,8 @@ if(TARGET planar_cmd_planar_agent_tests)
   # path is needed now; nothing here shells a second implementation.
   target_compile_definitions(planar_cmd_planar_agent_tests PRIVATE
     "PLANAR_CPP_BIN=\"$<TARGET_FILE:planar_cmd_planar_agent>\""
-    # queue_rule.t.cpp holds the built binary to the authored rule file.
-    "PLANAR_QUEUE_RULE_SOURCE=\"${PROJECT_SOURCE_DIR}/src/lib/queuerule/queue-rule.md\""
     "PLANAR_QUEUE_MANDATE_SOURCE=\"${PROJECT_SOURCE_DIR}/src/lib/queuerule/queue-mandate.md\""
-    # queue_roles.t.cpp reads the authored role files and skill sources.
+    # brief tests hold the brief's mandate text to the authored file; agents_contract.t.cpp reads the authored role files.
     "PLANAR_REPO_ROOT=\"${PROJECT_SOURCE_DIR}\"")
   target_include_directories(planar_cmd_planar_agent_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
   add_dependencies(planar_cmd_planar_agent_tests planar_cmd_planar_agent)

@@ -24,22 +24,6 @@ export auto map_env(std::map<std::string, std::string, std::less<>> vars) -> env
 /// @param env Environment lookup.
 /// @return Database path or a command error.
 export auto resolve_db_path(const env_lookup& env) -> std::expected<std::filesystem::path, domain_error>;
-/// @brief Whether an invocation needs the MAIN database's path resolved
-/// before dispatch.
-///
-/// Every verb does, except the `queue` domain (plan 1080, task
-/// hq-store-unreachable-maindb; plan 1089, decision 1221). The queue's store is
-/// `planar.db` itself, but each queue handler resolves the path and opens it
-/// (`planar.cmd.planar_agent.queue_store`), so that every refusal is the
-/// queue's own: one `error: queue:` line at exit 125, never the pre-dispatch
-/// exit-1 refusal. A main database path that cannot be resolved (no
-/// `PLANAR_DB`, no `HOME`) must therefore not stop it here. The check is on the first argument after the program name:
-/// this binary declares no root-level options, so the domain is always there.
-/// Anything that is not that word, an empty vector included, keeps the
-/// resolution and its exit code.
-/// @param args The full argument vector, program name first.
-/// @return `false` only when the first argument is `queue`.
-export auto uses_main_database(std::span<const std::string> args) -> bool;
 /// @brief Resolve this binary's operator working directory.
 /// @param env Environment lookup.
 /// @return Working directory path.

@@ -17,12 +17,10 @@ import planar.db.migrate;
 import planar.engine.config;
 
 #include "parity_harness.hpp"
-#include "queue_test_store.hpp"
 
 namespace {
 
 namespace parity = planar::cmd::parity;
-namespace qfix   = planar::cmd::qfix;
 namespace cfg    = planar::engine::config;
 
 using parity::capture;
@@ -52,7 +50,10 @@ struct fixture {
   }
 
   void sql(std::string_view statement) const {
-    qfix::exec(db(), statement);
+    auto conn = planar::db::connection::open_existing(db().string(), 5000);
+    REQUIRE(conn.has_value());
+    auto ran = conn->execute(statement);
+    REQUIRE(ran.has_value());
   }
 
   [[nodiscard]] auto scalar(std::string_view query) const -> std::string {
