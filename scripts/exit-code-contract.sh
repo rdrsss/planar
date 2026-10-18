@@ -140,10 +140,7 @@ def build(name, *statements):
 # Behind: only the highest schema_migrations row is deleted, so the version
 # reads head - 1 whichever migration is head.
 build("behind.db", "delete from schema_migrations where version = (select max(version) from schema_migrations)")
-# Ahead, and the queue marker still admits this binary.
-build("ahead.db", newer,
-      "insert into queue_schema (version, compat, description) values ((select max(version) + 1 from queue_schema), "
-      "1, 'compatible newer marker')")
+build("ahead.db", newer)
 PYEOF
 
 failures=0
