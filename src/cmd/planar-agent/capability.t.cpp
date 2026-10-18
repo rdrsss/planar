@@ -68,6 +68,13 @@ auto all_node_names(const CLI::App& root) -> std::set<std::string, std::less<>> 
   return names;
 }
 
+/// @brief The whole file at `path`, as bytes.
+auto read_binary(const std::filesystem::path& path) -> std::string {
+  std::ifstream in(path, std::ios::binary);
+  REQUIRE(in.good());
+  return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+
 } // namespace
 
 TEST_CASE("planar-agent refuses every planning-entity verb, at any depth", "[cmd][agent][capability]") {
@@ -185,4 +192,23 @@ TEST_CASE("planar-agent path_key joins segments with single spaces", "[cmd][agen
   std::vector<std::string> const path{"action", "start"};
   CHECK(planar::cliapp::path_key(path) == "action start");
   CHECK(planar::cliapp::path_key(std::vector<std::string>{}).empty());
+}
+
+TEST_CASE("the planar-agent binary does not link the build queue engine", "[cmd][agent][capability][hq-agent-no-engine]") {
+  // The link-level half of "planar-agent does not own the host queue". The
+  // build queue engine's symbols, whose mangled names carry these
+  // identifiers, would be in this binary's bytes if any handler reached it.
+  // Read as bytes so no external tool (nm) has to exist on the machine that
+  // runs the suite. The positive control is a symbol this binary is known to
+  // link, so the absence checks cannot pass vacuously when names stop
+  // appearing in the bytes.
+  constexpr std::array<std::string_view, 6> k_names{"signal_child_group",   "system_group_signaller", "begin_terminate",
+                                                    "advance_terminations", "poll_and_stop",          "cancel_waiting"};
+  auto const                                agent_bytes = read_binary(std::filesystem::path{PLANAR_CPP_BIN});
+  REQUIRE(agent_bytes.size() > 100'000);
+  REQUIRE(agent_bytes.contains("unreachable_handlers"));
+  for (auto const name : k_names) {
+    INFO("planar-agent links the build queue engine: " << name);
+    CHECK_FALSE(agent_bytes.contains(name));
+  }
 }
