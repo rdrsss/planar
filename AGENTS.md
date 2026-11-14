@@ -20,8 +20,10 @@ binaries, migrations or Lua compile step into this repository.
   one.
 - Markdown specs are the source of truth. Skills and agents should cite the
   spec sections they implement.
-- Planar was a local tool, and `~/.planar` may hold a user's real data from
-  it. Never read, write or delete anything under `~/.planar`.
+- The plugin keeps each project's specs and task records under
+  `~/.planar/projects/<project>/`. This repository's own specs are at
+  `~/.planar/projects/planar/`. Work only inside the project directory you
+  were given, and never delete another project's directory.
 - Keep this repository free of machine-specific paths, credentials and
   personal details.
 
