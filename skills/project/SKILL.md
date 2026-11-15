@@ -1,17 +1,24 @@
 ---
 name: project
-description: "Planar plugin: start a Planar project. Resolves the settings, chooses and confirms the project name, checks for existing projects on the same repository and for a name already taken, then creates the project directory with project.yaml and context.md, and says what is next. Use when the operator asks for a new project, or to start work on something in a repository, as /planar:project."
+description: "Planar plugin: start a Planar project. Resolves the settings, chooses and confirms the project name, checks for existing projects on the same repository and for a name already taken, then creates the project directory with project.yaml and context.md, and says what is next. Also, for an existing project, reports the policy and profile in force and the next task. Use when the operator asks for a new project, to start work on something in a repository, or what is in force or what is next for a project, as /planar:project."
 ---
 
 # Create a project
 
-Provenance: implements PRD-R17, PRD-R21, PRD-R22 and PRD-R25; TS-3.1,
-TS-3.3, TS-3.4, TS-3.5, TS-4.1, TS-4.2 and TS-4.3; layout entry LAY-1.3.1.
+Provenance: implements PRD-R14, PRD-R17, PRD-R21, PRD-R22, PRD-R25 and
+PRD-R26; TS-3.1, TS-3.3, TS-3.4, TS-3.5, TS-4.1, TS-4.2, TS-4.3, TS-4.5,
+TS-4.6 and TS-6.3; layout entry LAY-1.3.1.
 The plugin's references are the definitions and are not repeated here: read
 the files named below in full and follow them exactly.
 
 Use only file reads and writes, shell commands and subagent dispatch. This
 skill needs no subagent.
+
+## Two uses
+
+Creating a project is steps 1 to 6 below. When the operator instead asks what
+is in force for an existing project, or what is next for it, follow "What is
+in force and what is next" at the end; it only reads and writes nothing.
 
 ## Rules
 
@@ -124,3 +131,34 @@ the directory in use when `<home>` is not the default, every setting problem
 reported in step 1 (name the key and the value), and what is next: the
 operator describes the work in detail and runs `/planar:draft` for this
 project to draft the specs. Do not start drafting.
+
+## What is in force and what is next
+
+For an existing project. Read only: create and change nothing, and do not
+edit the settings file. Resolve `<home>` and read the settings as in step 1,
+and report any unknown key or bad value as step 1 says (TS-4.3). Find the
+project directory (the project's `projects.<name>.path`, else
+`<projects_dir>/<name>`) and read its `project.yaml`.
+
+1. **Policy in force.** The project's own `policy`, else the top-level
+   `policy`, else `default` (TS-4.5). Read the rules from `policies` as
+   `${CLAUDE_PLUGIN_ROOT}/references/settings.md` ("Policies") defines them:
+   a named policy states only the rules it changes, and every rule it omits
+   takes its value from `default` (built in, unless the settings redefine
+   it). Name the policy and give the value of both rules, `commit` and
+   `worktree`, never assuming a value the policy does not give (PRD-R26).
+2. **Profile in force.** The project's own `profile`, else the top-level
+   `profile`, else `minimal`; a named profile is looked for in
+   `<home>/profiles/` first, then in the plugin's `profiles/` (TS-4.6). Name
+   it.
+3. **What is next.** Read the project's `tasks.md`, in the format of
+   `${CLAUDE_PLUGIN_ROOT}/references/tasks.md`. A task is ready when it is
+   unticked and all its `after` tasks are ticked; the next task is the first
+   ready task in file order (TS-6.3). Ticked boxes are the only state the
+   task list holds (PRD-R14). Name that task by ID and title. If no task is
+   ready, say whether every task is ticked or the unticked ones wait on
+   others. Take this from the file as it is now, not from earlier
+   conversation, so a new session gives the same answer.
+
+Reply with the policy and its two rules, the profile, the next task, and every
+setting problem found.
