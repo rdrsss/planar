@@ -14,3 +14,6 @@ stages:
 limits:
   revisions: none
   stall: 2
+spec_review:
+  reviewers:
+    - { agent: spec-reviewer, focus: all }
