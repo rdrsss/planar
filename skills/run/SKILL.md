@@ -5,10 +5,10 @@ description: "Planar plugin: execute an approved project's tasks. Checks the pro
 
 # Run a project's tasks
 
-Provenance: implements PRD-R16, PRD-R19, PRD-R26, PRD-R27 and PRD-R32;
+Provenance: implements PRD-R16, PRD-R19, PRD-R23, PRD-R26, PRD-R27 and PRD-R32;
 TS-3.2, TS-4.2, TS-4.5, TS-4.6, TS-6.3, TS-7.2, TS-7.3, TS-8.6 to TS-8.8,
 TS-8.10 to TS-8.12, TS-9.1, TS-9.5, TS-17.6, TS-17.7, TS-19.1, TS-19.2,
-TS-19.5 to TS-19.7, TS-20.1, TS-21.1, TS-21.2, TS-21.5 and TS-23; layout
+TS-11.4, TS-19.5 to TS-19.7, TS-20.1, TS-21.1, TS-21.2, TS-21.5 and TS-23; layout
 entry LAY-1.3.5.
 
 You are the session the operator is talking to. Do these steps in order.
@@ -123,8 +123,7 @@ of the run skill does not do it yet, and that nothing was run, when any of
 these holds:
 
 - the profile has `driver: orchestrator`;
-- the mode is `workflow`;
-- replication is enabled for the project.
+- the mode is `workflow`.
 
 ### Check 2. The approval gate
 
@@ -182,6 +181,10 @@ round", items 3 to 5, and the `worktree` rule in
    `worktree: none` a run starts only from a clean tree. Nothing was run."
    When `tasks/` exists, this is a restart: the loop reference, "At the
    start of every run", says what to do.
+5. If replication is enabled for the project, do the target check of
+   `${CLAUDE_PLUGIN_ROOT}/skills/replicate/SKILL.md`, "Check the target",
+   now, writing nothing. If it asks the operator a question, stop with that
+   question and run nothing (PRD-R23, TS-11.4).
 
 ## 4. Drive the loop
 

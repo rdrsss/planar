@@ -7,7 +7,7 @@ description: "Planar plugin: review a project's spec set and take the operator's
 
 Implements PRD-Q21 (amendments), PRD-R16 (spec review), PRD-R36 (focuses and lenses) and PRD-R38
 (gap analysis), with TS-3.2 (approval gate), TS-17.1 (shipped profiles),
-TS-21 (TS-21.1 digests, TS-21.3 amending, TS-21.4 status after a failed review), TS-22 (spec
+TS-11.4 (replicate step), PRD-R23 (replication), TS-21 (TS-21.1 digests, TS-21.3 amending, TS-21.4 status after a failed review), TS-22 (spec
 review) and TS-10; layout entry LAY-1.3.4. The formats are defined in the
 references named below, which you read and follow; they are not restated here.
 
@@ -99,7 +99,12 @@ change, leave the status at `reviewed` and say `draft` is next.
 3. Prepare the working tree as "Before the first round" in
    `${CLAUDE_PLUGIN_ROOT}/references/loop.md` says for the policy's `worktree`
    rule, asking the operator first when that reference says to.
-4. Tell the operator that `run` is next and that it refuses to start if a spec
+4. If replication is on for the project, replicate as
+   `${CLAUDE_PLUGIN_ROOT}/skills/replicate/SKILL.md` says (PRD-R23, TS-11.4),
+   after the working tree is prepared. The digests and status are already
+   written; the copy is committed on its own under the policy's `commit`
+   rule. If it asks the operator about the target, stop there.
+5. Tell the operator that `run` is next and that it refuses to start if a spec
    file no longer matches its digest (TS-3.2).
 
 ## 7. An approved set that has been amended
