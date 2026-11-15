@@ -1,0 +1,17 @@
+# The default projects directory is <home>/projects; PLANAR_HOME changes <home>.
+version: 1
+naming:
+  method: context
+orchestration:
+  mode: skill
+profile: minimal
+policy: default
+autonomy:
+  enabled: false
+  escalations: 3
+policies:
+  default:
+    commit: per-task
+    worktree: project
+# Replication is off by default for every project.
+projects: {}
