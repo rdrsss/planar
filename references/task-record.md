@@ -3,7 +3,7 @@
 The single definition of the task record: its format, its states, who writes
 it, and how to resume from it. Implements PRD-R19 (task record), PRD-R35 (run
 records), TS-7 (TS-7.1 to TS-7.4, with the comparison rule of TS-9.4 and the
-gap rule of TS-12) and layout entry LAY-1.5.6. Follow it whenever you create,
+gap rule of TS-12), TS-8.11 and TS-23 (TS-23.3 and TS-23.5) and layout entry LAY-1.5.6. Follow it whenever you create,
 update or read a record.
 
 ## Where it lives
@@ -23,7 +23,9 @@ The project reference gives their names and writers
   workflow. When a dispatched agent returns, the orchestrating actor appends
   that step's log line, with the model and effort it dispatched the agent
   with, and updates `state`. The record therefore has one writer even when
-  several tasks run at once.
+  several tasks run at once. The one exception is the `answered` line: the
+  session that asked the operator may append it, whoever the orchestrating
+  actor is (TS-23.3).
 - The task list holds only a done checkbox per task. The orchestrating actor
   ticks it when the task is approved, and writes no other state there
   (${CLAUDE_PLUGIN_ROOT}/references/tasks.md).
@@ -32,7 +34,9 @@ The project reference gives their names and writers
 
 `record.md` is a front matter block followed by a `## Log` section. Create it
 when the task is first picked up, with `state: pending`, `attempt: 1` and an
-empty log.
+empty log. A record made when the task is planned, before the task has
+entered a round, has no `base` yet; `base` is set when the task first enters
+a round.
 
 ```markdown
 ---
@@ -59,7 +63,7 @@ rung: 2
 - 2026-11-14 16:50 | review-packet-rendered | attempt 2 | orchestrator sonnet | skill | reviewer-packet-2.md
 - 2026-11-14 16:58 | reviewed | attempt 2 | reviewer opus | skill | review-2-spec-fit.md: approve
 - 2026-11-14 16:59 | reviewed | attempt 2 | reviewer opus | skill | review-2-correctness.md: approve
-- 2026-11-14 17:00 | approved | attempt 2 | orchestrator sonnet | skill | all reviewers approved
+- 2026-11-14 17:00 | approved | attempt 2 | orchestrator sonnet | skill | all reviewers approved, commit 9b3e5d2
 ```
 
 ### Front matter
@@ -69,7 +73,7 @@ rung: 2
 | `task` | The task ID. |
 | `state` | Where the task stands now; one of the states below. |
 | `attempt` | The number of the current attempt, from 1. |
-| `base` | The commit the current attempt started from. |
+| `base` | The commit the current attempt started from. Absent until the task first enters a round. |
 | `profile` | The name of the profile in force for this run. |
 | `rung` | The rung of the profile's worker ladder the current attempt uses, counted from 1. The profiles reference says how rungs are chosen and when they change (${CLAUDE_PLUGIN_ROOT}/references/profiles.md). |
 
@@ -81,7 +85,9 @@ Append one line per step, at the end of the log, as it completes. A line is
 six fields separated by ` | `, in this order:
 
 1. Time: date and 24-hour time, `YYYY-MM-DD HH:MM`.
-2. Step: the name of the state the step moved the task to (see States).
+2. Step: the name of the state the step moved the task to (see States), or
+   `answered`, `unattributed` or `checks-rerun` (see "Lines that are not
+   states").
 3. Attempt: `attempt <n>`.
 4. Actor: the agent or driver that did the step, then its model, then its
    effort after a `/` when one was set: `worker haiku/high`, `mapper sonnet`.
@@ -90,13 +96,29 @@ six fields separated by ` | `, in this order:
 6. Result: the file the step wrote, if any, and after `: ` a short outcome.
    Checks: the counts of passed and failed. A review: the reviewer's verdict
    as its file gives it. `changes-requested`, `question` and `blocked`: why,
-   and for a question the question itself. `approved`: that all reviewers
-   approved.
+   and for a question the question itself. A `changes-requested` line for a
+   failed check names the checks file and each failed check, and marks a
+   check that also failed on the previous attempt as a repeat, with
+   `(repeats attempt <m>)` after it (TS-8.11). `approved`: that all reviewers
+   approved, then `commit <short hash>` when the task's change was committed,
+   or `not committed` when the policy commits nothing.
 
-Two runs are compared by their log lines without the time and mode fields, so
-keep those four fields exact and put nothing run-specific in them. Together
+Two runs are compared by their log lines without the time and mode fields.
+The comparison also leaves out the actor of a bookkeeping step and of a check
+step, which differs with the mode, and the commit hash in an `approved` line
+(TS-9.4, TS-23.5). Keep the rest of the other four fields exact and put
+nothing else run-specific in them. Together
 with `profile`, the lines show the model and effort at each step, the number of
 attempts and every verdict.
+
+### Lines that are not states
+
+Besides the steps in the table under "States", the log has three lines that
+do not move the task: `answered`, `unattributed` and `checks-rerun`
+(TS-23.5). Each is a six-field line like any other. Leave `state` as it is
+when you append one. The loop reference says when each is appended, by whom,
+and what its result field holds
+(${CLAUDE_PLUGIN_ROOT}/references/loop.md, "Log lines this file adds").
 
 ## States
 
@@ -110,13 +132,16 @@ instead. Never log a skipped state.
 | --- | --- | --- |
 | (none) | `pending` | The orchestrating actor creates the record. |
 | `pending` | `planned` | The planner finished: `plan.md` is complete. |
+| `planned` | `planned` | The planner planned the task again or refreshed its plan. The attempt number does not change. |
+| `planned` | `question` | The plan ends `status: question`, or still ends `status: not-ready` although the task is ready. Nothing is dispatched for the task. |
+| `question` | `planned` | A planner's question was answered and the planner planned the task again. The attempt number does not change. |
 | `planned` | `mapped` | The mapper finished: `map-<n>.md` is complete. |
 | `mapped` | `packet-rendered` | The orchestrating actor wrote `worker-packet-<n>.md`. |
 | `packet-rendered` | `worker-done` | The worker returned: `worker-report-<n>.md` is complete. |
 | `worker-done` | `mapped` | The worker's report ends `status: map-wrong`. A new attempt starts and the mapper runs again. |
 | `worker-done` | `checks-done` | The task's checks were run independently of the worker and `checks-<n>.md` is complete. The state is `checks-done` whether the checks passed or failed. |
 | `checks-done` | `review-packet-rendered` | Every check passed and `reviewer-packet-<n>.md` was written. |
-| `checks-done` | `changes-requested` | A check failed. No reviewer is dispatched. |
+| `checks-done` | `changes-requested` | A check failed (in a parallel round, failed again on its second run). No reviewer is dispatched. A check that also failed on the previous attempt is marked as a repeat in the log line. |
 | `review-packet-rendered` | `reviewed` | Every reviewer of the attempt returned a complete review. |
 | `reviewed` | `approved` | Every reviewer approved. Tick the task's checkbox. `approved` is the end state. |
 | `reviewed` | `changes-requested` | Any reviewer asked for changes. |
@@ -124,7 +149,7 @@ instead. Never log a skipped state.
 | `changes-requested` | `mapped` | The next attempt begins. |
 | `changes-requested` | `blocked` | A profile limit was reached, or the loop stalled on the same finding. |
 | `worker-done` | `blocked` | The cap on map-wrong restarts was reached. |
-| `question` | `mapped` | The question was answered. |
+| `question` | `mapped` | A reviewer's question was answered. |
 | `blocked` | `mapped` | A decision was made on how to go on. |
 
 Rules that apply to the table:

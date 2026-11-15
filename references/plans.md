@@ -2,7 +2,8 @@
 
 The single definition of the two files that constrain a worker: the plan
 (`plan.md`) and the symbol map (`map-<n>.md`). Implements PRD-R29 and PRD-R30,
-TS-18 (TS-18.1 to TS-18.4) and the reference layout entry LAY-1.5.10. Follow it
+TS-18 (TS-18.1 to TS-18.4), TS-23.11 and the reference layout entry
+LAY-1.5.10. Follow it
 whenever you write, refresh or read a plan or a map.
 
 Both files live in the task's own directory, `tasks/<task-id>/`, in the project
@@ -14,8 +15,10 @@ against them.
 ## Plan
 
 The planner writes `tasks/<task-id>/plan.md` for each task. It runs only when
-the profile has a `plan` stage, once, after the spec set is approved and before
-any worker. Plan every task you can, as far ahead as is useful. A task you
+the profile has a `plan` stage, after the spec set is approved and before
+any worker, and only for the tasks that have no `plan.md` (TS-23.11); the
+loop reference says when a task that has a plan is planned again
+(${CLAUDE_PLUGIN_ROOT}/references/loop.md, "Step 2"). Plan every task you can, as far ahead as is useful. A task you
 cannot plan yet gets a plan that says why (see the status line below), and you
 plan it again when it becomes ready.
 
@@ -61,7 +64,10 @@ file with no such last line is incomplete
   `## Steps` in place of steps. The task is not dispatched, and the question
   goes to the operator or the decider as the escalation reference describes
   (${CLAUDE_PLUGIN_ROOT}/references/escalation.md). Do not answer it yourself
-  and do not write code. Raise it before any coding starts.
+  and do not write code. Raise it before any coding starts. After the
+  question is answered you plan the task again, in the refresh form below,
+  and are given the answer. A plan written again that is still a question,
+  or still not ready although the task is ready, is escalated again.
 
 ### Refresh
 
@@ -75,12 +81,16 @@ in the output, leave the plan as it is. If any does, refresh it:
   steps, files and symbols, and starting rung (as `Rung <n>: <reason>`), only
   for what is now different.
 - Update the `commit:` line to the current commit.
-- Keep all earlier text. Never edit or delete it.
+- Keep all earlier text. Never edit or delete it. The `commit:` line and the
+  status line are the two exceptions: a refresh updates them in place.
 - If the refresh shows the task can no longer be implemented as specified, set
   the status line to `status: question` as above. Otherwise leave it as it was,
   or set it to `status: ready`.
 
-Refresh only at the first start of the task, not on each attempt.
+Refresh only at the first start of the task, not on each attempt. A plan
+written again after an answered question takes the same form: a
+`## Refresh <YYYY-MM-DD>` section and the new status line, with all earlier
+text kept.
 
 ### Example
 
@@ -115,7 +125,8 @@ status: ready
 ## Symbol map
 
 The mapper writes `tasks/<task-id>/map-<n>.md`. It runs only when the profile
-has a `map` stage, at the start of each round, once for each task in the round.
+has a `map` stage, once for each attempt of a task, before that attempt's
+worker packet is written. There is one map per attempt, not one per round.
 `<n>` is the number of the attempt the map is for. The task record reference
 defines how attempts are numbered.
 

@@ -3,23 +3,32 @@
 This reference is the single definition of when the operator is needed, how
 autonomy changes that, what the decider agent may and may not decide, and the
 format of `decisions.md`. It implements PRD-R28 (orchestrator stops and
-restarts) and PRD-R33 (autonomy), and TS-20 (escalation and autonomy) and the
-reference layout entry LAY-1.5.11.
+restarts) and PRD-R33 (autonomy), and TS-20 (escalation and autonomy), TS-19.5
+and TS-23 (TS-23.3 and TS-23.11), and the reference layout entry LAY-1.5.11.
 
 ## When a decision is the operator's
 
 A decision is the operator's when any of these happens:
 
 - A reviewer raises an open question.
-- A planner raises a question.
+- A planner raises a question, or the plan of a ready task is still
+  `status: not-ready` after it was planned again. A plan still not ready is
+  escalated as a question, and the reason the plan gives is the question.
 - A task is `blocked`.
-- A change appears that no task accounts for and that cannot be explained.
+- An unattributed change cannot be removed. An unattributed change is
+  escalated only then: the orchestrating actor first deletes or restores it
+  (${CLAUDE_PLUGIN_ROOT}/references/loop.md, "Step 12"), and only when that
+  fails are the round's tasks set to `blocked`. This decision always goes to
+  the operator, never to the decider, whatever the autonomy setting
+  (TS-19.5).
 
 By default the operator is asked every time. Autonomy is off by default.
 
 ## Autonomy off (default)
 
-The actor that hit the decision stops. If that actor is the `orchestrator`
+The round's other tasks finish their steps first: one task that needs the
+operator does not interrupt them. Then the actor that hit the decision
+stops. If that actor is the `orchestrator`
 agent or a workflow, it must first write the pending question to the task
 record, with the task's `state` set to `question` or `blocked`, and then
 return to the session with the task ID. It keeps no other state: the task
@@ -28,7 +37,14 @@ records are enough to resume.
 The session then:
 
 1. Asks the operator the question.
-2. Records the answer.
+2. Records the answer: it appends an `answered` line to the task record,
+   with the question and the answer, or the decision on a `blocked` task
+   (${CLAUDE_PLUGIN_ROOT}/references/task-record.md). It writes nothing to a
+   spec. When the orchestrating actor next runs, it writes an answer that
+   cites a spec section into the owning spec and seals it
+   (${CLAUDE_PLUGIN_ROOT}/references/project.md, "Amending an approved spec
+   set"); any other answer or decision stays in the task record only
+   (TS-23.3).
 3. Starts the driver (orchestrator or workflow) again. It resumes from the
    task records.
 
@@ -94,6 +110,7 @@ The decider never does any of these:
 - Approve a spec set.
 - Push or merge.
 - Change a policy, a profile or settings.
+- Decide on an unattributed change that could not be removed.
 
 A decision that would need one of these goes to the operator, whatever
 the allowance. Autonomy does not widen what the decider may do.

@@ -144,10 +144,11 @@ the operator's checkout is left alone. Which stages run depends on the
 project's **profile**. The steps below are the ones every profile has; the
 basic profiles add two before them:
 
-- **Plan.** Once, after approval, a planner writes an implementation plan
-  for every task it can. A plan is refreshed later if the files it names
+- **Plan.** After approval, a planner writes an implementation plan for
+  every task that has none. A plan is refreshed later if the files it names
   have changed. If the planner finds a task cannot be done as specified, it
-  says so before any coding starts.
+  says so before any coding starts. Once the question is answered, the task
+  is planned again and the planner is given the answer.
 - **Map.** Before a task is coded, a mapper writes its symbol map: what to
   change, where new code goes and what to imitate. The worker may change
   only what the map names.
@@ -170,11 +171,15 @@ and does not approve its own work.
 ### 3. The checks are run independently
 
 The checks named in the testing spec for this task are run by someone other
-than the worker: the orchestrator in skill mode, a check-runner agent in
-workflow mode. The worker's own report of the results is not used.
+than the worker: whoever drives the loop in skill mode, a check-runner agent
+in workflow mode. The worker's own report of the results is not used. When
+the last task is approved, the same runner runs every task's command checks
+once more on the finished work.
 
 If a check fails, no reviewer is dispatched at all: the task goes straight
-back to a worker with the check output.
+back to a worker with the check output. In a parallel round a failed check is
+first run once more when the other tasks of the round have settled, because a
+sibling's unfinished change can make it fail; only a second failure counts.
 
 ### 4. Render the reviewer packet
 
@@ -191,7 +196,7 @@ them asks for changes, the task goes back.
 | --- | --- |
 | Approve | The task's checkbox is ticked in the task list and, under the default policy, the change is committed. |
 | Request changes | The task goes back to a worker with the findings, on a stronger model if the profile has one. There is no limit on rounds by default, but if the same finding is raised on two attempts running, the loop stops and escalates. |
-| Open question | The operator is asked (or the decider, in an autonomous run), the answer is recorded in the spec, and the task continues. |
+| Open question | The operator is asked (or the decider, in an autonomous run), the answer is recorded in the task record (and in the spec too, when it settles a point a spec section covers), and the task continues. |
 
 ### Recording as you go
 

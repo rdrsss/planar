@@ -3,7 +3,8 @@
 The single definition of the profile format: what a profile file holds, how a
 profile name is resolved to a file, how the file is validated, and what each
 key means. Implements PRD-R27, PRD-R31 and PRD-R32, TS-17 (TS-17.1 to
-TS-17.8) and TS-4.6, and the reference layout entry LAY-1.5.9. Follow it
+TS-17.8), TS-4.6 and TS-23 (TS-23.8 and TS-23.13), and the reference layout
+entry LAY-1.5.9. Follow it
 whenever you read, write or check a profile.
 
 ## What a profile is
@@ -176,7 +177,12 @@ task and must mark any finding that restates an earlier one, whichever
 reviewer raised it. When one finding has been raised on `stall` consecutive
 attempts, dispatch no further attempt. With the default of 2, a finding
 raised on attempt 1 and repeated on attempt 2 stops the loop before attempt
-3. The loop reference defines how reviews are shown and findings marked.
+3. The packets reference defines how reviews are shown and the `repeats:`
+mark (`${CLAUDE_PLUGIN_ROOT}/references/packets.md`, "Review"). A note-level
+finding asks for no change, carries no `repeats:` mark and is ignored by the
+stall guard (TS-23.13). An attempt
+that ended in a map-wrong restart is ignored when counting consecutive
+attempts: it neither adds to the chain nor breaks it (TS-23.8).
 
 A task also has at most two map-wrong restarts. That number is fixed, not a
 profile key; the loop reference defines a map-wrong restart.

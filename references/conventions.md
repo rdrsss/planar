@@ -1,9 +1,10 @@
 # Spec conventions
 
 Implements PRD-R3 (stable section IDs), PRD-R4 (evidence), PRD-R6 (open
-questions) and TS-5 (spec conventions, except traceability). This file is the
-single definition of ID prefixes, citation forms, assumptions, question
-sections and the ID index. Follow it whenever you write, edit or check a spec.
+questions), TS-5 (spec conventions, except traceability) and TS-23.12. This
+file is the single definition of ID prefixes, citation forms, assumptions,
+question sections and the ID index. Follow it whenever you write, edit or check
+a spec.
 The traceability rules (every requirement is built and tested, every task
 cites something) are defined in the spec review reference, not here.
 
@@ -51,13 +52,14 @@ changed or vanished: an ID in the index that is missing from its file and not
 
 ```
 # IDs issued
+Date: 2026-11-14. Report: `reviews/spec-check-1.md`.
 
 PRD-R3 | prd.md | live
 T-004 | tasks.md | withdrawn
 ```
 
-(In the real file the second line is the date and report line described
-above, not blank; copy its form from the existing `ids.md`.)
+The second line has the form ``Date: <date>. Report: `<report path>`.``, with
+the report path in backticks.
 
 When you add a section, add its line to `ids.md` as `live`. When you remove
 one, change its line to `withdrawn`; never delete a line.

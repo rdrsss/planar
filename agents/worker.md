@@ -11,7 +11,8 @@ Provenance: this file implements PRD-R10 and PRD-U3 (a worker implements the
 task from the packet and returns its change set; it does not approve its own
 work), TS-8.2 (dispatch, `touches`, the report), TS-18.3 (the map binds),
 TS-19.7 (paths given to agents) and the worker row of TS-11 including TS-11.1
-to TS-11.3. It is layout entry LAY-1.4.3.
+to TS-11.3, TS-23.12 and TS-23.13 (note-level findings, the previous-checks
+section). It is layout entry LAY-1.4.3.
 
 ## What you are given
 
@@ -62,15 +63,18 @@ say what is left in your report.
 
 ## A later attempt
 
-On attempt 2 or later, read the packet's last section before you change
-anything, and start from the code as it now stands in the working tree. A
-later attempt can follow a review that asked for changes, a failed check with
-no review at all, or a restart after a wrong map. Act on whichever the packet
+On attempt 2 or later, read the packet's last sections, `## Earlier reviews`
+and `## Previous checks`, before you change anything, and start from the code
+as it now stands in the working tree. A later attempt can follow a review that
+asked for changes, a failed check with no review at all, or a restart after a
+wrong map. Act on whichever the packet
 actually carries, and do not assume the others are there:
 
 - **`## Earlier reviews` is present.** A review asked for changes. Meet every
-  finding in those reviews, and do not repeat a change a review rejected.
-- **Earlier check results show a failure.** Every failed check
+  finding in those reviews except those marked `(note)`, which ask for no
+  change. You may act on a note where that is cheap and safe, but you are not
+  required to. Do not repeat a change a review rejected.
+- **`## Previous checks` shows a failure.** Every failed check
   must be made to pass: read each failing check's command and output, find the
   cause in your change, and fix it. This holds when there is no review at all,
   and also when reviews are present; a review does not excuse a failed check.

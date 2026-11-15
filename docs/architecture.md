@@ -261,7 +261,7 @@ context is a sign the packet, or the specs behind it, are incomplete.
 | Mapper | Before a task is coded, writes its symbol map: what to change, where new code goes, what to imitate. | Write code. |
 | Decider | In an autonomous run, takes a decision that would otherwise go to the operator and records its reasoning. | Approve specs, push, merge, or change settings. |
 | Worker | Implements one task from its packet and returns the change. | Approve its own work. |
-| Check runner | Runs a task's checks in workflow mode and records the full output. | Change anything. |
+| Check runner | Runs a task's checks, and the final check after the last task, in workflow mode and records the full output. | Change anything. |
 | Reviewer | Judges one task's result against the cited spec sections. Returns approve, request changes, or open question. | Implement fixes. |
 
 The session the operator is talking to runs the skills and reports back.
@@ -290,9 +290,11 @@ afterwards.
 The execution loop can be driven in two ways:
 
 - **Skill mode.** Planar's own orchestration skill drives the loop using only
-  skills and subagents.
+  skills and subagents. Whoever drives the loop runs the checks, including
+  the final check after the last task.
 - **Workflow mode.** A Claude Code dynamic workflow drives the same loop. A
-  workflow can only dispatch agents, so the check runner runs the checks.
+  workflow can only dispatch agents, so the check runner runs the checks,
+  the final check included.
 
 Skill mode is complete by itself, because some organizations do not allow
 workflows and some harnesses do not have them. Both modes use the same

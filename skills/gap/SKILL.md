@@ -33,7 +33,8 @@ create it.
 `gaps.md` is in the project directory. Find the highest `G-<n>` among its
 `### G-` headings and use the next number, zero-padded to three digits
 (`G-001`, `G-014`). If the file does not exist or has no entries, use `G-001`.
-Take the number from `gaps.md` alone. Prefix rules are in
+Take the number from `gaps.md` alone. A `G-` number is not added to
+`ids.md`. Prefix rules are in
 `${CLAUDE_PLUGIN_ROOT}/references/conventions.md`.
 
 ## 3. Write the entry
@@ -54,17 +55,39 @@ Then append, after a blank line, exactly this form:
 - `date` is today, from `date +%Y-%m-%d`.
 - `step` is the step the gap arose in: a spec section ID (`TS-7.2`), a check
   or scenario ID, or a task ID, as the operator or caller gave it. If none
-  was given, write `unspecified`.
+  was given, write `not stated`.
 - `what happened` is what occurred, in the operator's words as far as
   possible, with the evidence: file, command or ID.
-- `cost` is what it cost, such as time, redone work or a wrong result.
+- `cost` is what it cost, such as time, redone work or a wrong result, as the
+  operator or caller stated it. If none was stated, write `not stated`.
 - `what would have helped` is the capability that was missing, stated as a
-  need and not a design. Infer it only where the evidence directly implies
-  it. Otherwise write `not stated`.
-- Give every field a value. Write `not stated` for one you cannot fill; do
-  not ask for it.
+  need and not a design, as the operator or caller stated it. If none was
+  stated, write `not stated`.
+- Give every field a value. A field the operator or caller did not state is
+  written `not stated`. Never infer or invent a value for any field, `cost`
+  and `what would have helped` included; do not ask for it.
 
-Append with a shell redirect (`>>`). Entries are appended and never edited:
+Append with a shell redirect (`>>`) from a quoted heredoc
+(`<<'PLANAR_GAP_ENTRY'`), so that backticks and `$` in the entry are written
+as they are and not run by the shell. Use a delimiter such as
+`PLANAR_GAP_ENTRY`, and pick another if that exact line occurs in the entry
+text, because it would end the heredoc early. The blank line after the first
+line keeps the entry apart from the one before it:
+
+```sh
+cat >> "<project directory>/gaps.md" <<'PLANAR_GAP_ENTRY'
+
+### G-<n> <title>
+- date: <YYYY-MM-DD>
+- step: <step>
+- what happened: <text>
+- cost: <text>
+- what would have helped: <text>
+PLANAR_GAP_ENTRY
+```
+
+Never use an unquoted heredoc (`<<PLANAR_GAP_ENTRY`) or `echo` with double quotes for the
+entry. Entries are appended and never edited:
 do not change, reorder or delete an existing entry, even a wrong one. Record
 a correction as a new entry.
 

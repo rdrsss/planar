@@ -3,8 +3,9 @@
 The single definition of the five files that pass work between agents in the
 execution loop: the worker packet, the worker report, the checks file, the
 reviewer packet and the review. Implements PRD-R9 to PRD-R13, TS-8 (TS-8.1 to
-TS-8.5 and TS-8.7), TS-19.7 and layout entry LAY-1.5.7. Follow it whenever you
-write or read one of these files. Where the files live, who writes each and the
+TS-8.5, TS-8.7, TS-8.8, TS-8.11 and TS-8.12), TS-19.5, TS-19.7, TS-19.8, TS-23
+and layout entry LAY-1.5.7. Follow it whenever you write or read one of these
+files. Where the files live, who writes each and the
 task record are in the project and task record references
 (${CLAUDE_PLUGIN_ROOT}/references/project.md,
 ${CLAUDE_PLUGIN_ROOT}/references/task-record.md).
@@ -14,7 +15,9 @@ ${CLAUDE_PLUGIN_ROOT}/references/task-record.md).
 - Each is a file in `tasks/<task-id>/` in the project directory, named
   `worker-packet-<n>.md`, `worker-report-<n>.md`, `checks-<n>.md`,
   `reviewer-packet-<n>.md` or `review-<n>-<focus>.md`, where `<n>` is the
-  attempt number. The task record reference says how they are kept
+  attempt number. The second run of a failed check is a second checks file,
+  `checks-<n>-rerun.md` (see "Checks file"). The task record reference says
+  how they are kept
   (${CLAUDE_PLUGIN_ROOT}/references/task-record.md).
 - Each ends with the line(s) shown for it below, and nothing follows them. A
   file without them is incomplete.
@@ -22,8 +25,10 @@ ${CLAUDE_PLUGIN_ROOT}/references/task-record.md).
   relative to the root of the working tree. This holds for text you copy in as
   well: in copied text, and in check output, write `<working tree>` wherever
   the absolute path of the working tree root appears and `~` wherever the
-  user's home directory appears. That substitution is the only edit allowed to
-  copied text.
+  user's home directory appears. Make the two substitutions in that order,
+  the working tree first and then the home directory, because the working
+  tree may lie under the home directory. That substitution is the only edit
+  allowed to copied text.
 - A packet is the complete input for one agent. The agent must not need to open
   any file to understand its task, so quote what it needs in full, never
   summarise it, and never say "see" a file.
@@ -39,6 +44,11 @@ Give the agent exactly this, and no other detail of the task:
 - for a reviewer, its focus (`spec-fit`, `correctness` or `all`; the profiles
   reference says what each judges,
   ${CLAUDE_PLUGIN_ROOT}/references/profiles.md).
+
+The planner, the mapper and the check-runner are given the path of the working
+tree in the same way. What else each of them is given is in the loop reference
+(${CLAUDE_PLUGIN_ROOT}/references/loop.md, "What each agent is given")
+(TS-23.4).
 
 Example: "Work in the working tree at `<working tree path>`. Your packet is
 `<packet path>`. Read it first and follow it." Neither path is ever written
@@ -70,7 +80,11 @@ order:
    `Question answered:` and the answer, if one was recorded. When a question
    was answered, the answer is carried in full in every later worker packet
    and reviewer packet (TS-8.7). Omit the section on attempt 1.
-8. The last line: `status: complete`.
+8. Only when the previous attempt ended on a failed check,
+   `## Previous checks`: that attempt's `checks-<n>.md`, whole, in a tilde
+   fence, then its `checks-<n>-rerun.md` in a second tilde fence if there is
+   one (TS-8.11). Omit the section otherwise.
+9. The last line: `status: complete`.
 
 Embed a diff or another Markdown file inside a fence of four tildes (`~~~~`),
 which a three-backtick fence inside the content cannot close; use a longer run
@@ -161,8 +175,10 @@ status: complete
 
 The worker implements the task from its packet and does nothing else.
 
-- Change only the `touches` paths, and within the map when there is one. Do not
-  commit, stage or tick anything. Do not approve your own work.
+- Change only the `touches` paths, and within the map when there is one. An
+  edit outside `touches` is not part of the task's change: it appears to the
+  reviewers as an unattributed change (see "Reviewer packet") and is removed.
+  Do not commit, stage or tick anything. Do not approve your own work.
 - If the map is wrong or incomplete, stop, make no further change and do not
   explore; write the problem in the report and end it `status: map-wrong`
   (${CLAUDE_PLUGIN_ROOT}/references/plans.md).
@@ -208,8 +224,15 @@ status: done
 
 Written by the orchestrating actor, or by the `check-runner` agent in workflow
 mode, as `checks-<n>.md`, after the worker is done and before any reviewer is
-dispatched. Run every check of the task, the common ones included. Take nothing
-from the worker's report.
+dispatched. Run the checks of the task, the common ones included: the command
+checks on every attempt, and the scenario checks the loop reference says run
+on this attempt (${CLAUDE_PLUGIN_ROOT}/references/loop.md, "Step 7. Run the
+checks") (TS-8.12). Take nothing from the worker's report.
+
+In a parallel round a failed check is run a second time, as the loop reference
+says ("Step 16"). That run is written to `checks-<n>-rerun.md`, in the format
+below, holding only the checks run again; `checks-<n>.md` is not changed
+(TS-19.8).
 
 - A command check: run it from the root of the working tree. Record its
   command exactly as run, its exit code and its full output, unsummarised.
@@ -260,7 +283,7 @@ status: complete
 ## Reviewer packet
 
 Written by the orchestrating actor as `reviewer-packet-<n>.md`, only when every
-check of the attempt passed. One packet serves every reviewer of the attempt.
+check of the attempt passed, at its first run or at its second. One packet serves every reviewer of the attempt.
 Sections, in this order:
 
 1. `# Reviewer packet: <task-id>, attempt <n>`.
@@ -272,18 +295,32 @@ Sections, in this order:
    `git add --intent-to-add <new files under the touches paths>`, so that a
    new file shows in the diff, then `git diff <base commit> -- <touches
    paths>`.
-4. `## Unattributed changes`: every path that differs from the round's base
-   commit and belongs to no task in the round (a round may hold several tasks
-   coded at once, and each task's change is its own), by path with its diff.
-   The same list goes in every reviewer packet of the round. Write "None." if
+4. `## Unattributed changes`: every unattributed change in the working tree,
+   by path with its diff. A changed path is attributed when it lies under the
+   `touches` of any task that has uncommitted work in the tree, whether or
+   not that task is in the round, or when the replicate step wrote it; every
+   other changed path is an unattributed change (TS-19.5). The loop reference
+   holds the definition in full and says how the list is made
+   (${CLAUDE_PLUGIN_ROOT}/references/loop.md, "Uncommitted work and
+   attribution" and "Step 8"). A worker's edit outside its task's `touches`
+   is not in `## Change`; it appears here. The same list goes in every
+   reviewer packet of the round. Write "None." if there is none.
+5. `## Earlier uncommitted tasks`: the paths of tasks that have uncommitted
+   work and are not in the round, one bullet per path with the task it
+   belongs to. These paths are attributed and are never deleted or restored
+   (TS-8.8). Where such a task's `touches` overlap this task's, add the
+   `## Change` section of that task's latest reviewer packet, in a tilde
+   fence, so that the reviewer can tell the hunks apart. Write "None." if
    there is none.
-5. When the profile has a map stage, `## Map`: the whole file in a tilde
+6. When the profile has a map stage, `## Map`: the whole file in a tilde
    fence, as in the worker packet.
-6. `## Checks`: the whole `checks-<n>.md` in a tilde fence, then any `Question for
-   the reviewer` rows of the task's checks, copied in full.
-7. From attempt 2 only, `## Earlier reviews`: exactly as in the worker packet,
+7. `## Checks`: the whole `checks-<n>.md` in a tilde fence, then, after a
+   second run, the whole `checks-<n>-rerun.md` in a tilde fence of its own,
+   then any `Question for the reviewer` rows of the task's checks, copied in
+   full.
+8. From attempt 2 only, `## Earlier reviews`: exactly as in the worker packet,
    so that a repeated finding can be recognised.
-8. The last line: `status: complete`.
+9. The last line: `status: complete`.
 
 Example (attempt 2, with a map):
 
@@ -327,6 +364,10 @@ Base commit: 4f2a9c1
 ~~~~
 
 ## Unattributed changes
+
+None.
+
+## Earlier uncommitted tasks
 
 None.
 
@@ -400,7 +441,11 @@ does not fix what it finds.
 - Check the change against the cited sections and, where the packet has a map,
   against the map.
 - A change outside `touches`, a change outside the map or a failed check
-  cannot be approved. Judge the task's own change (`## Change`) only.
+  cannot be approved. Judge the task's own change (`## Change`) only. A
+  worker's edit outside `touches` is not in `## Change`: it is listed under
+  `## Unattributed changes` and handled as the next rule says. The paths
+  under `## Earlier uncommitted tasks` belong to other tasks; do not judge
+  them.
 - List every path in `## Unattributed changes` in your review, under its own
   heading (below), and do not withhold approval of an otherwise correct task
   because of one. The orchestrating actor withholds approval of every task in
@@ -418,31 +463,42 @@ does not fix what it finds.
 Sections, in this order:
 
 1. `# Review: <task-id>, attempt <n>, <focus>`.
-2. `## Findings`: one bullet per finding, or "None." Each finding is
+2. `## Answers to the question rows`, only when the packet's `## Checks`
+   carries `Question for the reviewer` rows: one bullet per row, with the
+   row's ID, `yes` or `no`, and a line of reason, for example
+   `- TEST-I3: yes. Both docs describe the new row format.` The section is
+   not a finding and does not affect the verdict; a row the change fails is
+   also raised as a finding below.
+3. `## Findings`: one bullet per finding, or "None." Each finding is
    `- **F<k>** cites: <ID>. <what is wrong, and what must change>`. IDs run
    `F1`, `F2`, ... within the review. Every finding cites a spec section ID or,
    for a map breach, the map (`cites: map`). Number the findings from most
    serious to least: a failed check, then a change outside `touches` or the
-   map, then a spec requirement not met, then the rest.
-3. If a finding restates one in an earlier review, whichever reviewer raised
+   map, then a spec requirement not met, then the rest. A finding that asks
+   for no change is a note: write `(note)` after its ID, as in
+   `- **F2** (note) cites: TS-4.1. <what you observed>`, and number the notes
+   last. A note does not affect the verdict.
+4. If a finding restates one in an earlier review, whichever reviewer raised
    it, end it with `repeats: <attempt>/<focus>/<finding>`, naming the attempt,
    the reviewer's focus and the finding, for example `repeats: 1/all/F2`. The
    focus is part of the mark because each reviewer numbers from F1. A finding
-   that restates none carries no mark. Marks are what stop a loop
+   that restates none carries no mark, and neither does a note: a note asks
+   for no change, so it carries no `repeats:` mark and the stall guard ignores
+   it (TS-23.13). Marks are what stop a loop
    that keeps meeting the same finding
    (${CLAUDE_PLUGIN_ROOT}/references/profiles.md).
-4. `## Unattributed changes`, only when the packet lists any: one bullet per
+5. `## Unattributed changes`, only when the packet lists any: one bullet per
    path. They are reported here and are not findings, so they do not affect
    the verdict.
-5. `## Question`, only when you raise one: the question, citing the section it
+6. `## Question`, only when you raise one: the question, citing the section it
    is about, as `cites: <ID>`. It goes to the operator or the decider
    (${CLAUDE_PLUGIN_ROOT}/references/escalation.md), and a new attempt starts
    once it is answered.
 
 The last two lines are the verdict and the status line, in that order:
 
-- `verdict: approve`: nothing needs to change. No finding.
-- `verdict: request-changes`: at least one finding.
+- `verdict: approve`: nothing needs to change. No finding, or notes only.
+- `verdict: request-changes`: at least one finding that is not a note.
 - `verdict: open-question`: a `## Question` section.
 
 then `status: complete`.

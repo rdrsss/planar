@@ -2,7 +2,8 @@
 
 Implements PRD-R17 (spec location) and PRD-R25 (name collisions), TS-3
 (project directory, `project.yaml`, approval gate, `context.md`, naming,
-collisions) and TS-21 (approval digests and amendments), and the reference
+collisions), TS-21 (approval digests and amendments) and TS-23 (TS-23.3,
+TS-23.6 and TS-23.10), and the reference
 layout entry LAY-1.5.3 and the project directory layout LAY-3. This file is
 the single definition of what a project directory holds, who writes each
 file, the `project.yaml` format, the approval gate, the digest commands and
@@ -48,6 +49,7 @@ resolve it as the settings reference
 │       ├── worker-packet-<n>.md
 │       ├── worker-report-<n>.md
 │       ├── checks-<n>.md
+│       ├── checks-<n>-rerun.md   when a failed check was run a second time
 │       ├── reviewer-packet-<n>.md
 │       └── review-<n>-<focus>.md
 └── worktree/             the project's git worktree, by default
@@ -69,13 +71,13 @@ Write each file only if you are its writer:
 | `decisions.md` | `run`, `decider` |
 | `reviews/spec-check-<n>.md` | `spec-checker` |
 | `reviews/spec-review-<n>-<focus>.md` | `spec-reviewer` |
-| `reviews/final-checks.md` | the orchestrating actor |
-| `tasks/<task-id>/record.md` | the orchestrating actor only |
+| `reviews/final-checks.md` | the orchestrating actor in skill mode, `check-runner` in workflow mode |
+| `tasks/<task-id>/record.md` | the orchestrating actor; the session that asked the operator, for `answered` lines only |
 | `tasks/<task-id>/plan.md` | `planner` |
 | `tasks/<task-id>/map-<n>.md` | `mapper` |
 | `tasks/<task-id>/worker-packet-<n>.md`, `reviewer-packet-<n>.md` | the orchestrating actor |
 | `tasks/<task-id>/worker-report-<n>.md` | `worker` |
-| `tasks/<task-id>/checks-<n>.md` | the orchestrating actor or `check-runner` |
+| `tasks/<task-id>/checks-<n>.md`, `checks-<n>-rerun.md` | the orchestrating actor in skill mode, `check-runner` in workflow mode |
 | `tasks/<task-id>/review-<n>-<focus>.md` | `reviewer` |
 | `worktree/` | `review` at approval, or `run` |
 
@@ -245,11 +247,16 @@ Two cases are sealed without the ID check or a choice:
 - **An answer given during a run.** When the operator answers a question
   raised during a run, the answer is itself the sign-off. A question cites the
   section it is about, and the spec that defines that section owns it. The
-  orchestrating actor writes the question and answer to the task record,
+  session that asked writes the question and answer to the task record, as
+  an `answered` line. The orchestrating actor, when it next runs,
   records them under "Answered questions" in the owning spec (format in the
   spec conventions reference, `${CLAUDE_PLUGIN_ROOT}/references/conventions.md`),
   adds an amendment entry with `who: operator`, and rewrites the digests. An
-  entry in "Answered questions" adds no ID, so no check is run.
+  entry in "Answered questions" adds no ID, so no check is run. Only an
+  answer that cites a spec section is an amendment: an operator's decision
+  on a `blocked` task, or an answer that concerns no spec section, stays in
+  the task record only, and nothing is written to a spec or sealed for it
+  (TS-23.3).
 - **A decider amendment.** In an autonomous run the decider may answer a
   question and may amend a task entry in `tasks.md` (its title, `cites`,
   `touches`, `checks` or `after`). It may not change any other spec text. The
