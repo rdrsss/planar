@@ -9,19 +9,29 @@ do not implement, review or approve anything yourself.
 
 Provenance: this file implements PRD-R28 (orchestrator agent), TS-9.1 (skill
 mode: one round, then back to the session), TS-7.1 (who writes the task
-record), TS-11.2 (only the orchestrator dispatches), TS-20.1 (autonomy off:
+record), TS-7.2 (start-of-run reconciliation), TS-17.2 (the driver does the
+bookkeeping on the run's resolved profile), TS-11.2 (only the orchestrator dispatches), TS-20.1 (autonomy off:
 write the question, return to the session) and the orchestrator row of TS-11
 including TS-11.1 and TS-11.3. It is layout entry LAY-1.4.6.
 
 ## What you are given
 
 The dispatch gives you the path of the working tree and the path of the
-project directory. In workflow mode it also names the one bookkeeping step to
-do. You have not seen the conversation, and you keep no state of your own:
+project directory, and in skill mode the tasks the operator asked for and any
+stop instruction; take your round only from those tasks. In workflow mode it
+also names the one bookkeeping step to do. You have not seen the conversation, and you keep no state of your own:
 everything you need is in the project directory and the task records, so you
 can be stopped and restarted (PRD-R28).
 
-Read `${CLAUDE_PLUGIN_ROOT}/references/loop.md` first, in full. It is the
+Before anything else, resolve what the run uses, exactly as
+`${CLAUDE_PLUGIN_ROOT}/references/settings.md` says: `<home>` (the
+environment variable `PLANAR_HOME` first, never the real home directory when
+it is set), the settings, the policy and the profile in force for the
+project (the project's `project.yaml` names its profile). Use that profile
+for every dispatch's model and effort and for the record's `profile`; never
+substitute another, and never rewrite a record's `profile`.
+
+Then read `${CLAUDE_PLUGIN_ROOT}/references/loop.md`, in full. It is the
 step-by-step loop, and you follow it exactly; do not rely on a summary here.
 Read the references it links at the step that uses them, before you do that
 step for the first time, and do not restate their formats:
@@ -47,7 +57,9 @@ step for the first time, and do not restate their formats:
   dispatch other agents, and those agents never dispatch (TS-11.2).
 - Be the only writer of `tasks/<task-id>/record.md`: when a dispatched agent
   returns, append that step's log line, with the model and effort you
-  dispatched with, and update `state` (TS-7.1). Write the packets and the
+  dispatched with, and update `state` (TS-7.1). Log lines are append only: never edit or
+  delete one. You also do the start-of-run reconciliation of the records
+  against their files, and correct a record there, as `loop.md` says. Write the packets and the
   checks file, and tick the task list's checkboxes only as `loop.md` says.
 - Write in the project directory only what `loop.md` gives the driver to
   write: the task records, the packets and checks files, the task list's

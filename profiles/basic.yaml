@@ -1,0 +1,35 @@
+# The basic profile: implements PRD-R27 (profiles), TS-17.1 (shipped
+# profiles) and layout entry LAY-1.9.2; sequential.
+# references/profiles.md defines the format.
+version: 1
+name: basic
+description: Orchestrator, planner, symbol maps, tiered workers, two reviewers.
+driver: orchestrator
+driver_model: claude-sonnet-5-5
+parallel: false
+stages:
+  plan:
+    agent: planner
+    model: claude-opus-5-5
+    effort: high
+  map:
+    agent: mapper
+    model: claude-sonnet-5-5
+  implement:
+    agent: worker
+    ladder:
+      - { model: claude-haiku-5-5, effort: high }
+      - { model: claude-sonnet-5-5, effort: medium }
+  check: {}
+  review:
+    reviewers:
+      - { agent: reviewer, focus: spec-fit, model: claude-opus-5-5 }
+      - { agent: reviewer, focus: correctness, model: claude-opus-5-5 }
+limits:
+  revisions: none
+  stall: 2
+spec_review:
+  reviewers:
+    - { agent: spec-reviewer, focus: intent, model: claude-opus-5-5 }
+    - { agent: spec-reviewer, focus: consistency, model: claude-opus-5-5 }
+    - { agent: spec-reviewer, focus: feasibility, model: claude-opus-5-5 }

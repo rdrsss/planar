@@ -59,6 +59,7 @@ work there (TS-19.7). Besides that path, give:
 
 | Agent | Also given |
 | --- | --- |
+| orchestrator | the path of the project directory; the tasks the operator asked for and any stop instruction |
 | planner | the path of the project directory |
 | mapper | the path of the project directory, the task ID and the attempt number |
 | worker | the path of its worker packet |

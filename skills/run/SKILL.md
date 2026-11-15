@@ -5,9 +5,9 @@ description: "Planar plugin: execute an approved project's tasks. Checks the pro
 
 # Run a project's tasks
 
-Provenance: implements PRD-R16, PRD-R19, PRD-R23, PRD-R26, PRD-R27 and PRD-R32;
+Provenance: implements PRD-R16, PRD-R19, PRD-R23, PRD-R26, PRD-R27, PRD-R28 and PRD-R32;
 TS-3.2, TS-4.2, TS-4.5, TS-4.6, TS-6.3, TS-7.2, TS-7.3, TS-8.6 to TS-8.8,
-TS-8.10 to TS-8.12, TS-9.1, TS-9.5, TS-17.6, TS-17.7, TS-19.1, TS-19.2,
+TS-8.10 to TS-8.12, TS-9.1, TS-9.5, TS-17.2, TS-17.6, TS-17.7, TS-19.1, TS-19.2,
 TS-11.4, TS-19.5 to TS-19.7, TS-20.1, TS-21.1, TS-21.2, TS-21.5 and TS-23; layout
 entry LAY-1.3.5.
 
@@ -119,11 +119,8 @@ required key and stage, and every `agent`.
   not repair the file, substitute another profile, or run with part of it.
 
 Then, with a valid profile, stop with a plain statement that this version
-of the run skill does not do it yet, and that nothing was run, when any of
-these holds:
-
-- the profile has `driver: orchestrator`;
-- the mode is `workflow`.
+of the run skill does not do it yet, and that nothing was run, when the
+mode is `workflow`.
 
 ### Check 2. The approval gate
 
@@ -188,8 +185,11 @@ round", items 3 to 5, and the `worktree` rule in
 
 ## 4. Drive the loop
 
-The profile has `driver: session`, so you are the driver: the
-"orchestrating actor" of every reference.
+When the profile has `driver: session`, you are the driver: the
+"orchestrating actor" of every reference. When it has
+`driver: orchestrator`, the orchestrator agent is the driver for each round
+and you are the session around it (item 9); items 1 to 8 still describe
+what the driver does, and the orchestrator does them.
 
 1. **Read once.** Read `${CLAUDE_PLUGIN_ROOT}/references/loop.md` in full,
    and the references it needs for the bookkeeping:
@@ -203,7 +203,9 @@ The profile has `driver: session`, so you are the driver: the
    `${CLAUDE_PLUGIN_ROOT}/references/escalation.md`,
    `${CLAUDE_PLUGIN_ROOT}/references/plans.md`,
    `${CLAUDE_PLUGIN_ROOT}/references/conventions.md`.
-2. **Reconcile first.** On every start, before any step of the loop
+2. **Reconcile first.** (Under `driver: orchestrator` the orchestrator does
+   this and every correction of a record; the session only reads the
+   records, as item 9 says.) On every start, before any step of the loop
    reference, when the project has a `tasks/` directory: for each task
    directory there, confirm the record against the files beside it, as
    the task record reference says under "Files are the truth" and
@@ -261,6 +263,29 @@ The profile has `driver: session`, so you are the driver: the
    | A task in flight, or an interrupted approval | task record reference, "Resume"; loop reference, "At the start of every run" and step 2 |
    | A stop instruction | loop reference, "Stop point" |
    | The last asked task is ticked | loop reference, step 1 once more: when every task of the project is ticked it leads to "After the last task", the final check |
+9. **Under `driver: orchestrator`.** Do not reconcile or correct any record
+   yourself: only the orchestrator writes `record.md`, apart from the
+   `answered` line of section 5. Read the task records only to find asked
+   tasks in `question` or `blocked` with no `answered` line after it, and if
+   there is one go to section 5 first. Otherwise dispatch the
+   subagent type `planar:orchestrator` on the profile's `driver_model`
+   (and its effort, if the profile gives one), with the prompt the loop
+   reference gives under "What each agent is given": the absolute paths of
+   the working tree and of the project directory, the tasks the operator
+   asked for and any stop instruction from step 1, and nothing else. It
+   drives one round and returns the task IDs finished and any task
+   waiting for the operator (TS-9.1). Then:
+   - if a task waits for the operator, go to section 5;
+   - otherwise, if asked tasks remain unticked and the stop instruction
+     does not end the run, dispatch a fresh orchestrator the same way, as
+     the loop reference's "Who acts" says; nothing passes from one to the
+     next but the task records;
+   - otherwise the run has ended: go to section 6.
+
+   Dispatch the orchestrator and nothing else yourself; it dispatches the
+   planner, mapper, worker and reviewers. A log line of a step the
+   orchestrator does names it as the actor, with `driver_model` and the
+   effort it was dispatched with.
 
 ## 5. When the run needs the operator, or reaches a stop point
 
@@ -295,10 +320,12 @@ the round has finished its steps. Then:
    review file and its question, `plan.md`, or the `blocked` line), the
    answer or decision in the operator's words, and where it is recorded
    (the spec that owns the cited section, or this record only). Then go on
-   in the same reply: return to the loop reference's "At the start of
-   every run", which seals an answer that cites a spec section before the
-   digests are compared again, and continue the rounds from step 1. Write
-   to a spec only there. If the decision is to leave a task blocked, drive
+   in the same reply. Under `driver: session`, return to the loop
+   reference's "At the start of every run", which seals an answer that
+   cites a spec section before the digests are compared again, and
+   continue the rounds from step 1; write to a spec only there. Under
+   `driver: orchestrator`, go to item 9 of section 4 and dispatch a fresh
+   orchestrator, which does that sealing and the rounds. If the decision is to leave a task blocked, drive
    the other asked tasks and report this one as pending. If the operator
    allows one more attempt, it runs on the next rung of the ladder when
    there is one, and otherwise on the same rung.
