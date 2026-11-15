@@ -1,0 +1,10 @@
+{
+  "name": "planar",
+  "version": "0.1.0",
+  "description": "Spec-driven development for long-running agent work: skills, agents and Markdown specs, with no engine.",
+  "author": {
+    "name": "rdrsss"
+  },
+  "repository": "https://github.com/rdrsss/planar",
+  "license": "MIT"
+}

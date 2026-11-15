@@ -1,0 +1,14 @@
+{
+  "name": "planar",
+  "owner": {
+    "name": "rdrsss"
+  },
+  "description": "The Planar plugin for Claude Code.",
+  "plugins": [
+    {
+      "name": "planar",
+      "source": "./",
+      "description": "Spec-driven development for long-running agent work: skills, agents and Markdown specs, with no engine."
+    }
+  ]
+}
