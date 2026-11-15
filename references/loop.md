@@ -4,8 +4,8 @@ The single step-by-step description of the execution loop: how approved
 tasks are taken in rounds through mapping, coding, checks, review and
 approval, and what is written at each step. Every driver follows it, in both
 orchestration modes. Implements PRD-R18 and PRD-R34, TS-8 (TS-8.1 to
-TS-8.12), TS-9.4, TS-17.4 to TS-17.6, TS-19 (TS-19.1 to TS-19.8) and the
-reference layout entry LAY-1.5.8.
+TS-8.12), TS-9.4, TS-17.4 to TS-17.6, TS-19 (TS-19.1 to TS-19.8), TS-23.14
+and the reference layout entry LAY-1.5.8.
 
 This file gives the order of the steps and the rules that belong to the loop
 itself. Formats and rules defined elsewhere are linked at the step that uses
@@ -79,7 +79,7 @@ do not move the task: leave `state` as it is when you append one.
 | `answered` | the session after asking the operator; the driver after a decider's decision (step 15) | what was asked (the review file and finding or question, or `plan.md`) and where the answer is recorded |
 | `unattributed` | the driver (step 12) | the path, and `deleted` or `restored` |
 | `checks-rerun` | the driver (step 16) | as for `checks-done`, with the file `checks-<n>-rerun.md` |
-| `approved` | the driver (step 13) | `all reviewers approved`, then `commit <short hash>` under `per-task` or `not committed` under `none` |
+| `approved` | the driver (step 13) | `all reviewers approved`, then `commit <short hash>` under `per-task`, `not committed` under `none`, or `no change, not committed` when the task's change is empty |
 
 ## Uncommitted work and attribution
 
@@ -91,7 +91,8 @@ tasks can have a change in the tree that no commit holds yet.
 A **task with uncommitted work** is any of these. Read which from the
 records:
 
-- a task in the current round;
+- a task in the current round, or one whose attempt is unfinished because
+  a run was interrupted or stopped at a stop point;
 - an approved task that was not committed: every approved task under the
   policy rule `commit: none`, and under `per-task` one whose commit was
   interrupted (its record has no `approved` line yet);
@@ -160,15 +161,23 @@ Do these, in this order, each time the driver starts, before step 1:
 1. **Finish an interrupted approval.** For each task whose checkbox is
    ticked or whose `state` is `approved`, but whose log has no `approved`
    line: finish step 13 from its first part not yet done. Under `per-task`,
-   if `git status --porcelain -- <touches>` prints nothing, the commit was
-   already made; take its hash from `git log -1 --format=%h -- <touches>`
-   and append the line.
+   if `git status --porcelain -- <touches>` prints nothing, there is
+   nothing left to commit. If `git diff --quiet <base> HEAD -- <touches>`
+   then exits 0, the task's change was empty: look for no commit, and
+   append the line with `no change, not committed` (TS-23.14). Otherwise
+   the commit was already made; take its hash from
+   `git log -1 --format=%h -- <touches>` and append the line.
 2. **Seal recorded answers.** Only an answer to a question that cites a
    spec section goes into a spec. For each `answered` line of that kind
    whose answer is not yet in the spec the question cites, write it there
    and seal it as `${CLAUDE_PLUGIN_ROOT}/references/project.md`, "Amending
    an approved spec set", says: "An answer given during a run" for the
-   operator's answer, "A decider amendment" for a decider's. An operator's
+   operator's answer, "A decider amendment" for a decider's. An entry for
+   an answer given during a run adds no ID. Write it under "Answered
+   questions" of the spec that defines the cited section, in place of a
+   "None." there, as `- <task-id>, attempt <n>, on <cited ID>: <the
+   question>` and, on the next line, indented two spaces,
+   `Answered <YYYY-MM-DD>: <the answer>`. An operator's
    decision on a `blocked` task, and any answer that concerns no spec
    section, stays in the task record only: write nothing to a spec and seal
    nothing for it. This comes before step 1 because sealing rewrites the
@@ -192,7 +201,9 @@ it holds; under `parallel: false` a round is sequential.
 2. Read the task list and find the ready tasks. A task whose record is in
    `question` or `blocked` with no `answered` line after it is not taken.
 3. Choose the round's tasks:
-   - `parallel: false`: the first ready task in file order, alone.
+   - `parallel: false`: one task, alone: the first in file order that has
+     an unfinished attempt, if there is one; otherwise the first ready task
+     in file order.
    - `parallel: true`: first every task with an unfinished attempt. If one
      of them is waiting for a second run of a failed check (step 16), add
      no other task. Otherwise go through the remaining ready tasks in file
@@ -482,12 +493,17 @@ For a task whose result is `approve`, in this order:
      follows the target repository's own rules: before the first commit of
      the run, read that repository's `AGENTS.md`, `CLAUDE.md` or
      contributing guide for its message format and sign-off, and follow
-     them.
+     them. Where the repository states none, follow the style of its
+     existing history (`git log`) and add nothing the history does not
+     use, such as a trailer (TS-23.14). If the task's change is empty,
+     that is, `git status --porcelain -- <touches>` prints nothing, make
+     no commit.
    - `none`: commit nothing; the change stays in the working tree as
      uncommitted work. This is weaker than a clean base; expect it to
      produce gap entries.
 5. Record: append `approved`, naming the commit's short hash under
-   `per-task`, or `not committed` under `none`.
+   `per-task`, or `not committed` under `none`. For a task whose change
+   is empty the line says `no change, not committed`, under either rule.
 
 The line comes last so that a record with `state: approved` and no
 `approved` line marks an approval that was interrupted. "At the start of

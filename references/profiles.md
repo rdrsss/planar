@@ -59,35 +59,35 @@ version: 1
 name: basic
 description: Orchestrator, planner, symbol maps, tiered workers, two reviewers.
 driver: orchestrator
-driver_model: sonnet
+driver_model: claude-sonnet-5-5
 parallel: false
 stages:
   plan:
     agent: planner
-    model: opus
+    model: claude-opus-5-5
     effort: high
   map:
     agent: mapper
-    model: sonnet
+    model: claude-sonnet-5-5
   implement:
     agent: worker
     ladder:
-      - { model: haiku, effort: high }
-      - { model: sonnet, effort: medium }
+      - { model: claude-haiku-5-5, effort: high }
+      - { model: claude-sonnet-5-5, effort: medium }
   check: {}
   review:
     reviewers:
-      - { agent: reviewer, focus: spec-fit, model: opus }
-      - { agent: reviewer, focus: correctness, model: opus }
+      - { agent: reviewer, focus: spec-fit, model: claude-opus-5-5 }
+      - { agent: reviewer, focus: correctness, model: claude-opus-5-5 }
 limits:
   revisions: none
   stall: 2
-decider: { agent: decider, model: opus, effort: high }
+decider: { agent: decider, model: claude-opus-5-5, effort: high }
 spec_review:
   reviewers:
-    - { agent: spec-reviewer, focus: intent, model: opus }
-    - { agent: spec-reviewer, focus: consistency, model: opus }
-    - { agent: spec-reviewer, focus: feasibility, model: opus }
+    - { agent: spec-reviewer, focus: intent, model: claude-opus-5-5 }
+    - { agent: spec-reviewer, focus: consistency, model: claude-opus-5-5 }
+    - { agent: spec-reviewer, focus: feasibility, model: claude-opus-5-5 }
 ```
 
 ## Keys
@@ -100,7 +100,7 @@ spec_review:
 | `name` | string | a profile name | required | The profile's name; use the file's name without `.yaml`. A file is found by its file name, so a `name` that differs is not refused; it is still the name written to each task record. |
 | `description` | string | any text | none | One line saying what the profile does. |
 | `driver` | string | `session`, `orchestrator` | required | Who does the loop's bookkeeping; see "Driver". |
-| `driver_model` | string | a model | the dispatcher's model | The model the `orchestrator` agent is dispatched on. Used only when `driver` is `orchestrator`. |
+| `driver_model` | string | a full model ID | the dispatcher's model | The model the `orchestrator` agent is dispatched on. Used only when `driver` is `orchestrator`. |
 | `parallel` | boolean | `true`, `false` | `false` | `false`: one task at a time. `true`: every ready task that touches different files is coded at the same time, then checked and reviewed. The loop reference defines how the tasks are chosen and run. |
 | `stages` | map | the stages below | required | The stages of the loop; see "Stages". |
 | `limits` | map | `revisions`, `stall` | `revisions: none`, `stall: 2` | The caps that stop the loop; see "Limits". A missing key in it takes its default. |
@@ -126,7 +126,7 @@ reviewer, rung and the decider:
 | Key | Type | Allowed values | Default | Meaning |
 | --- | --- | --- | --- | --- |
 | `agent` | string | an agent name (see "Validating a profile") | required in `plan`, `map`, `implement`, each reviewer and the decider | The agent dispatched for the stage. |
-| `model` | string | a model name the dispatch accepts, for example `haiku`, `sonnet`, `opus` | the dispatcher's model | Passed on each dispatch. |
+| `model` | string | a full model ID the dispatch accepts, for example `claude-sonnet-5-5`; not an alias or a short name | the dispatcher's model | Passed on each dispatch. Logged as given (see the task record reference, "Log line"). |
 | `effort` | string | a reasoning-effort level the dispatch accepts, for example `medium`, `high` | the dispatcher's effort | Passed on each dispatch. |
 
 Pass the resulting `model` and `effort` on every dispatch of the agent.
@@ -227,9 +227,9 @@ rounds, the reports and how the verdicts combine.
 
 | Profile | Driver | Stages | Parallel |
 | --- | --- | --- | --- |
-| `minimal` | `session` | `implement` with one rung on the session's model, `check`, one reviewer with focus `all`; one spec reviewer with focus `all` | no |
-| `basic` | `orchestrator` on `sonnet` | `plan`, `map`, `implement` with a ladder, `check`, two reviewers (`spec-fit`, `correctness`); three spec reviewers (`intent`, `consistency`, `feasibility`) | no |
-| `basic-parallel` | `orchestrator` on `sonnet` | as `basic` | yes |
+| `minimal` | `session` | `implement` with one rung on the session's model (logged by its full model ID), `check`, one reviewer with focus `all`; one spec reviewer with focus `all` | no |
+| `basic` | `orchestrator` on `claude-sonnet-5-5` | `plan`, `map`, `implement` with a ladder, `check`, two reviewers (`spec-fit`, `correctness`); three spec reviewers (`intent`, `consistency`, `feasibility`) | no |
+| `basic-parallel` | `orchestrator` on `claude-sonnet-5-5` | as `basic` | yes |
 
 `minimal` is the shipped default; the settings reference says when it applies.
 

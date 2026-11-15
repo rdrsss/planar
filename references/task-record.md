@@ -3,7 +3,7 @@
 The single definition of the task record: its format, its states, who writes
 it, and how to resume from it. Implements PRD-R19 (task record), PRD-R35 (run
 records), TS-7 (TS-7.1 to TS-7.4, with the comparison rule of TS-9.4 and the
-gap rule of TS-12), TS-8.11 and TS-23 (TS-23.3 and TS-23.5) and layout entry LAY-1.5.6. Follow it whenever you create,
+gap rule of TS-12), TS-8.11 and TS-23 (TS-23.3, TS-23.5 and TS-23.14) and layout entry LAY-1.5.6. Follow it whenever you create,
 update or read a record.
 
 ## Where it lives
@@ -50,20 +50,20 @@ rung: 2
 
 ## Log
 
-- 2026-11-14 16:00 | planned | attempt 1 | planner opus | skill | plan.md
-- 2026-11-14 16:02 | mapped | attempt 1 | mapper sonnet | skill | map-1.md
-- 2026-11-14 16:05 | packet-rendered | attempt 1 | orchestrator sonnet | skill | worker-packet-1.md
-- 2026-11-14 16:19 | worker-done | attempt 1 | worker haiku/high | skill | worker-report-1.md
-- 2026-11-14 16:24 | checks-done | attempt 1 | orchestrator sonnet | skill | checks-1.md: 1 passed, 1 failed
-- 2026-11-14 16:24 | changes-requested | attempt 1 | orchestrator sonnet | skill | checks-1.md: TEST-C6 failed
-- 2026-11-14 16:26 | mapped | attempt 2 | mapper sonnet | skill | map-2.md
-- 2026-11-14 16:29 | packet-rendered | attempt 2 | orchestrator sonnet | skill | worker-packet-2.md
-- 2026-11-14 16:44 | worker-done | attempt 2 | worker sonnet/medium | skill | worker-report-2.md
-- 2026-11-14 16:48 | checks-done | attempt 2 | orchestrator sonnet | skill | checks-2.md: 2 passed, 0 failed
-- 2026-11-14 16:50 | review-packet-rendered | attempt 2 | orchestrator sonnet | skill | reviewer-packet-2.md
-- 2026-11-14 16:58 | reviewed | attempt 2 | reviewer opus | skill | review-2-spec-fit.md: approve
-- 2026-11-14 16:59 | reviewed | attempt 2 | reviewer opus | skill | review-2-correctness.md: approve
-- 2026-11-14 17:00 | approved | attempt 2 | orchestrator sonnet | skill | all reviewers approved, commit 9b3e5d2
+- 2026-11-14 16:00 | planned | attempt 1 | planner claude-opus-5-5 | skill | plan.md
+- 2026-11-14 16:02 | mapped | attempt 1 | mapper claude-sonnet-5-5 | skill | map-1.md
+- 2026-11-14 16:05 | packet-rendered | attempt 1 | orchestrator claude-sonnet-5-5 | skill | worker-packet-1.md
+- 2026-11-14 16:19 | worker-done | attempt 1 | worker claude-haiku-5-5/high | skill | worker-report-1.md
+- 2026-11-14 16:24 | checks-done | attempt 1 | orchestrator claude-sonnet-5-5 | skill | checks-1.md: 1 passed, 1 failed
+- 2026-11-14 16:24 | changes-requested | attempt 1 | orchestrator claude-sonnet-5-5 | skill | checks-1.md: TEST-C6 failed
+- 2026-11-14 16:26 | mapped | attempt 2 | mapper claude-sonnet-5-5 | skill | map-2.md
+- 2026-11-14 16:29 | packet-rendered | attempt 2 | orchestrator claude-sonnet-5-5 | skill | worker-packet-2.md
+- 2026-11-14 16:44 | worker-done | attempt 2 | worker claude-sonnet-5-5/medium | skill | worker-report-2.md
+- 2026-11-14 16:48 | checks-done | attempt 2 | orchestrator claude-sonnet-5-5 | skill | checks-2.md: 2 passed, 0 failed
+- 2026-11-14 16:50 | review-packet-rendered | attempt 2 | orchestrator claude-sonnet-5-5 | skill | reviewer-packet-2.md
+- 2026-11-14 16:58 | reviewed | attempt 2 | reviewer claude-opus-5-5 | skill | review-2-spec-fit.md: approve
+- 2026-11-14 16:59 | reviewed | attempt 2 | reviewer claude-opus-5-5 | skill | review-2-correctness.md: approve
+- 2026-11-14 17:00 | approved | attempt 2 | orchestrator claude-sonnet-5-5 | skill | all reviewers approved, commit 9b3e5d2
 ```
 
 ### Front matter
@@ -90,8 +90,12 @@ six fields separated by ` | `, in this order:
    states").
 3. Attempt: `attempt <n>`.
 4. Actor: the agent or driver that did the step, then its model, then its
-   effort after a `/` when one was set: `worker haiku/high`, `mapper sonnet`.
-   Give the model and effort the actor was dispatched or run with.
+   effort after a `/` when one was set: `worker claude-haiku-5-5/high`,
+   `mapper claude-sonnet-5-5`. Give the model and effort the actor was
+   dispatched or run with. The model is always its full model ID, for
+   example `claude-sonnet-5-5`, never an alias or a short name. A stage
+   with no model logs the driver's full model ID. A session knows its own
+   full model ID from its environment and writes that.
 5. Mode: `skill` or `workflow`, the mode the run is in.
 6. Result: the file the step wrote, if any, and after `: ` a short outcome.
    Checks: the counts of passed and failed. A review: the reviewer's verdict
@@ -101,7 +105,8 @@ six fields separated by ` | `, in this order:
    check that also failed on the previous attempt as a repeat, with
    `(repeats attempt <m>)` after it (TS-8.11). `approved`: that all reviewers
    approved, then `commit <short hash>` when the task's change was committed,
-   or `not committed` when the policy commits nothing.
+   `not committed` when the policy commits nothing, or
+   `no change, not committed` when the task's change is empty (TS-23.14).
 
 Two runs are compared by their log lines without the time and mode fields.
 The comparison also leaves out the actor of a bookkeeping step and of a check
@@ -171,7 +176,17 @@ A step is complete only if its file exists and its last line is
 `status: <value>`. A review's last two lines are `verdict: <value>` and
 `status: complete`. If the front matter or the log and the files disagree, the
 files win: set `state` to match them, and record the mismatch as a gap in the
-project's gap log.
+project's gap log. A step that writes no file (`changes-requested`,
+`question`, `blocked`, `approved`, and the lines that are not states) is
+taken from its log line. The one exception is `approved`: a record with
+`state: approved`, a ticked checkbox and no `approved` line is not a
+mismatch. It is an interrupted approval, which the loop reference's "At the
+start of every run" finishes (${CLAUDE_PLUGIN_ROOT}/references/loop.md); change
+neither `state` nor the checkbox and record no gap for it here. A complete
+file whose step has no log line is a mismatch too: append the missing line,
+then record the gap. The late line has the time it is written, the session
+as actor with its full model ID, and a result that says it was appended on
+resume (`<file>: appended on resume`).
 
 ## Resume
 
