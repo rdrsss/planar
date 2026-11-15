@@ -5,9 +5,9 @@ description: "Planar plugin: review a project's spec set and take the operator's
 
 # Review the spec set
 
-Implements PRD-R16 (spec review), PRD-R36 (focuses and lenses) and PRD-R38
+Implements PRD-Q21 (amendments), PRD-R16 (spec review), PRD-R36 (focuses and lenses) and PRD-R38
 (gap analysis), with TS-3.2 (approval gate), TS-17.1 (shipped profiles),
-TS-21 (TS-21.1 digests, TS-21.4 status after a failed review), TS-22 (spec
+TS-21 (TS-21.1 digests, TS-21.3 amending, TS-21.4 status after a failed review), TS-22 (spec
 review) and TS-10; layout entry LAY-1.3.4. The formats are defined in the
 references named below, which you read and follow; they are not restated here.
 
@@ -104,13 +104,18 @@ change, leave the status at `reviewed` and say `draft` is next.
 
 ## 7. An approved set that has been amended
 
-`check` has already run and left the status at `approved`. "Amending an
+Every spec edit after approval re-runs the ID check (PRD-Q21, TS-21.3).
+Require a `reviews/spec-check-<n>.md` newer than the edit and ending
+`status: pass`; if there is none, tell the operator to run `check` and stop.
+The check leaves the status at `approved`. "Amending an
 approved spec set" in `${CLAUDE_PLUGIN_ROOT}/references/project.md` defines the
 two choices; ask the operator which, and treat no answer as a full review.
 
 - **Sign off.** Add an entry to `spec_set.amendments` with the date, the files
   changed, a one-line reason and `who: operator`; recompute and rewrite the
   digests as in step 6; leave the status `approved`.
-- **Full review.** Set `spec_set.status` to `checked` and go to step 2.
+- **Full review.** Set `spec_set.status` to `checked`, set
+  `spec_set.approved` to `null`, and go to step 2. Digests are rewritten only
+  when the operator approves again (step 6).
 
 Write nothing else: no spec, `context.md`, `ids.md` or reviewer report.

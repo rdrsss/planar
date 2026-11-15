@@ -6,7 +6,7 @@ description: "Planar plugin: draft or revise a project's specs. Records the oper
 # Draft the specs
 
 Provenance: implements PRD-R1, PRD-R2, PRD-R3, PRD-R4, PRD-R5 and PRD-R6;
-TS-3.3, TS-5 (TS-5.1, TS-5.2, TS-5.4) and TS-22.3; layout entry LAY-1.3.2.
+PRD-Q21; TS-3.3, TS-21.3, TS-5 (TS-5.1, TS-5.2, TS-5.4) and TS-22.3; layout entry LAY-1.3.2.
 The plugin's references are the definitions and are not repeated here: read
 the files named below in full and follow them exactly.
 
@@ -30,7 +30,10 @@ skill needs no subagent.
 
 ## 1. Find the project
 
-Resolve the project directory as `${CLAUDE_PLUGIN_ROOT}/references/settings.md`
+Read the environment variable `PLANAR_HOME` first, with a shell command such
+as `printenv PLANAR_HOME`: when it is set it replaces `~/.planar/` as `<home>`,
+and you never look in the real home. Then resolve the project directory as
+`${CLAUDE_PLUGIN_ROOT}/references/settings.md`
 and `${CLAUDE_PLUGIN_ROOT}/references/project.md` say (the `project` skill
 does this when the project does not exist yet; if none exists, tell the
 operator to create one first and stop). Read `project.yaml` and `context.md`.
@@ -38,9 +41,11 @@ operator to create one first and stop). Read `project.yaml` and `context.md`.
 If `spec_set.status` is `approved`, the set is amended, not drafted: "Amending
 an approved spec set" in `${CLAUDE_PLUGIN_ROOT}/references/project.md` defines
 the two choices, sign off or full review. Say which choice the operator must
-make, and make no edit to a spec before the operator has chosen. For an
+make, and make no edit to a spec before the operator has chosen; if the
+operator does not say which, it is a full review (PRD-Q21, TS-21.3). For an
 amendment you make only the spec edit and its change-log entry in
-`context.md` (step 3). Writing the amendment entry and digests, and the
+`context.md` (step 3), and you tell the operator that the `check` skill must
+re-run the ID check, then the `review` skill takes the chosen path. Writing the amendment entry and digests, and the
 sign-off or full-review step, belong to the `review` skill.
 
 ## 2. Gather context (PRD-R1)
