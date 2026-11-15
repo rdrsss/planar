@@ -10,9 +10,17 @@ changes with it.
 
 For how the pieces are used, see [methodology.md](methodology.md).
 
+The planned Codex host contract and its bounded capability evidence are
+summarized in [hosts.md](../references/hosts.md). The local app-server and
+native collaboration probes establish separate primitives, not a complete
+Planar integration or cross-host handoff. No engine or shipped runner is
+added for this support.
+
 ## The short version
 
-Planar is a Claude Code plugin. It has five kinds of parts:
+Planar is a Claude Code plugin, with Codex support planned using the same
+Markdown core. The Codex integration is not yet implemented. It has five
+kinds of parts:
 
 - **Skills** carry the method: how to draft specs, how to check them, how
   to run a task.

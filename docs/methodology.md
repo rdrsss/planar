@@ -10,6 +10,14 @@ document changes with it.
 
 For the parts the method uses, see [architecture.md](architecture.md).
 
+Codex support is planned, not yet implemented. Its intended minimal loop
+uses a selected non-Astra driver, a pinned worker, independent checks and a
+separate pinned reviewer. Configured model and effort are recorded separately
+from host observations; unavailable observations are recorded as such, never
+guessed. See [the host contract](../references/hosts.md) for the tested
+surfaces, restrictions and remaining acceptance work. Richer Codex profiles
+remain deferred.
+
 ## The idea
 
 Long-running work fails when the understanding of it lives in one
