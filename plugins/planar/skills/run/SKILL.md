@@ -301,7 +301,9 @@ previous conversation or source-host model access (PRD-R41, TS-24.5).
    invocation and immutable observation rules in
    `${CLAUDE_PLUGIN_ROOT}/references/task-record.md` (PRD-R35, TS-7.5).
    Include audit coverage in final checks; missing metadata does not prevent
-   continuation.
+   continuation. For a completed packet with an evidenced omitted pre-render
+   start, follow that reference’s independent verification and disclosure
+   procedure before continuation; report the unrecoverable violation and gap.
 
 6. **Models in the record.** Every log line names a model by its full ID,
    for example `claude-sonnet-5-5`, never an alias or a short name. A model

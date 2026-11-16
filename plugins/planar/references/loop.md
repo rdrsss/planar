@@ -53,6 +53,9 @@ Whichever it is, the driver:
 - before each dispatch or driver step, starts and subsequently supplements its
   invocation audit in the task record reference, including interruptions and
   later discoveries; missing metadata does not complete or block the step.
+  For an evidenced omitted pre-render start on a completed packet, apply the
+  independent verification and disclosure procedure in the task record
+  reference before continuation (TS-7.5).
 - dispatches every agent with the resolved active-host model and effort the profile gives for it
   (`${CLAUDE_PLUGIN_ROOT}/references/profiles.md`) and writes that model and
   effort in the agent's log line.

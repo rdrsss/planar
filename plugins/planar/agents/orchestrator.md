@@ -82,7 +82,9 @@ structured response. Use mode `workflow` in every log line.
   dispatch other agents, and those agents never dispatch (TS-11.2).
 - Before each dispatch or driver step, start its invocation and capture
   immutable sourced observations as `${CLAUDE_PLUGIN_ROOT}/references/task-record.md`
-  specifies (PRD-R35, TS-7.5); include audit coverage in final checks.
+  specifies (PRD-R35, TS-7.5); include audit coverage in final checks. For a
+  completed packet with an evidenced omitted pre-render start, follow its
+  independent verification and disclosure procedure before continuation.
 - Be the only writer of `tasks/<task-id>/record.md`: when a dispatched agent
   returns, append that step's log line, with the model and effort you
   dispatched with, and update `state` (TS-7.1). Log lines are append only: never edit or

@@ -175,6 +175,38 @@ locators. Before advertising a host as audit-linked, demonstrate real driver
 and two distinct child-role captures and an exact-ID locator lookup or explicit
 host limitation. Synthetic controls do not establish host capture.
 
+### Completed packet with an omitted start (TS-7.5)
+
+When durable evidence shows that a completed worker or reviewer packet was
+rendered without its required pre-render start entry and initial observation,
+obtain an attributable independent verification before continuing. The
+verifier must inspect durable evidence and establish each of: completion,
+required packet content (using the packets reference), candidate identity, and
+ownership. Retain its result and evidence sources. The driver's own assertion
+of completeness is not independent verification. If any dimension or the
+omission is missing or ambiguous, stop recovery. A content-invalid packet
+follows the separate immutable replacement procedure; this rule does not make
+it valid.
+
+After verification, append a new immutable current-time observation and a
+`session-observed` line linking it, without changing state. Identify the packet,
+the omitted start and observation, the evidence and sources including the
+independent verification result, and the time and source of the discovery.
+Use the observation fields above; mark unknowns unavailable with reasons. If
+an identifier is needed for the observation file, assign a fresh project-local
+ID explicitly identified as a disclosure identifier, not evidence of a
+historical invocation. Do not append a historical start, backdate anything,
+or imply the observation preceded rendering. Preserve the packet and every
+existing log line and observation. Report the original unrecoverable
+start-audit violation and the invocation as unlinked; this disclosure does not
+cure the violation or establish full traceability.
+
+Continue only from the next unfinished step, with a fresh start and observation
+for new work. Apply all ordinary recovery, ownership, candidate, profile,
+approval, configuration, check-host and policy-limit gates (TS-7.3, TS-24.5).
+Do not reset attempts or counters, rerender a completed packet, or treat this
+as a general waiver or retry.
+
 ### Lines that are not states
 
 Besides the steps in the table under "States", the log has three lines that
