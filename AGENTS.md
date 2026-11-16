@@ -37,6 +37,23 @@ binaries, migrations or Lua compile step into this repository.
 - Keep this repository free of machine-specific paths, credentials and
   personal details.
 
+## Development commands
+
+Run `make` or `make help` from the repository root or worktree holding the
+Makefile. Generic `make install` and `make uninstall` require `HOST=codex` or
+`HOST=claude`; explicit host targets are listed in help. Do not mutate user
+installations or configuration just to test wrappers. An existing explicit or
+standing user authorization for the same scope applies; do not request it again.
+The user instruction prevails.
+
+The `evals/` workspace is outside the installed plugin. Use `make evals-setup`
+for locked dependencies, `make evals-test` or `make evals` for model-free tests,
+and `make evals-plan` for preflight (override `CASE` when needed). Live
+`make evals-run` requires explicit authorization and a matching existing review
+gate; preserve the gate and recovery checks. See [evaluation guidance](evals/README.md)
+for output roots, gate preparation and recovery. Keep secrets and ignored
+outputs out of commits and preserve the engine-free design.
+
 ## Commits
 
 - Sign off every commit (`git commit -s`).

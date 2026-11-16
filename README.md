@@ -92,6 +92,30 @@ autonomy and workflow mode are deferred.
 See [architecture](docs/architecture.md) and [methodology](docs/methodology.md)
 for the components and workflow.
 
+## Development
+
+Run commands from the repository root or the worktree containing the Makefile.
+`make` defaults to `make help`. For local installation or removal, use
+`make install HOST=codex` or `make uninstall HOST=claude` (the generic targets
+require `HOST=codex` or `HOST=claude`). The explicit `install-codex`,
+`uninstall-codex`, `install-claude` and `uninstall-claude` targets are also
+available; see the installation notes above before changing a host configuration.
+
+`make evals-setup` installs the locked dependencies with uv. `make evals-test`
+and `make evals` run model-free tests. `make evals-plan` preflights the default
+`fresh-interrupted-review` case; set `CASE` to select another supported case.
+Preflight refuses a mismatched historical frozen candidate; it does not
+refreeze or approve it.
+
+A live `make evals-run` requires explicit authorization and an existing matching
+independent review gate, supplied through `AUTH_FILE` and `REVIEW_FILE`. Jobs
+and consumed-review records use ignored `evals/results` by default; set
+`EVALS_OUTPUT_ROOT` to choose another root. Place the review file under the
+selected root and use that same root for manual recovery. See the
+[evaluation workspace](evals/README.md) and [Planar evaluation notes](evals/planar/README.md)
+for gate preparation, recovery and diagnostic limits. These diagnostics do not
+establish full acceptance.
+
 ## Acknowledgement
 
 The original Planar, with its full history, source, design documents and
