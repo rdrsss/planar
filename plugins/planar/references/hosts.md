@@ -61,7 +61,7 @@ capabilities. Stop before the affected dispatch if a required pin, effort or
 capability is missing or unsupported; never silently substitute or upgrade.
 The shared serial `minimal` profile uses `gpt-6.1-terra` for the
 selected driver and worker, `gpt-6.1-sol` for task and spec reviewers, and
-`gpt-6-luna` for the spec checker, with `medium` effort on each dispatched
+`gpt-6.1-terra` for the spec checker, with `medium` effort on each dispatched
 role. Pass full model and effort explicitly for every fresh-context dispatch.
 These pins are frozen when authored or deliberately updated. Establish the
 selected driver model and effort from host configuration or explicit operator

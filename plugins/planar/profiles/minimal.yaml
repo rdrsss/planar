@@ -35,4 +35,4 @@ spec_check:
   agent: spec-checker
   execution:
     claude: {model: claude-sonnet-5-5, effort: medium}
-    codex: {model: gpt-6-luna, effort: medium}
+    codex: {model: gpt-6.1-terra, effort: medium}
