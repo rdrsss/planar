@@ -62,6 +62,7 @@ def select_native_logs(data: bytes) -> dict[str, bytes]:
     if len(data) > MAX_ARCHIVE:
         raise ValueError('archive exceeds bound')
     allowed = set()
+    ignored = set()
     with tarfile.open(fileobj=io.BytesIO(data), mode='r:*') as archive:
         for member in archive:
             name = member.name
@@ -75,6 +76,14 @@ def select_native_logs(data: bytes) -> dict[str, bytes]:
             if member.isdir():
                 if name != 'setup' and not re.fullmatch(r'sessions(?:/\d{4}(?:/\d{2}(?:/\d{2})?)?)?', name):
                     raise ValueError('unexpected native log directory')
+                continue
+            # Harbor uploads its locally generated trajectory back into the
+            # agent logs before artifact collection. Do not export that derived
+            # file; accept only one bounded regular entry at this exact path.
+            if name == 'trajectory.json':
+                if not member.isfile() or name in ignored or member.size > MAX_FILE:
+                    raise ValueError('invalid derived trajectory entry')
+                ignored.add(name)
                 continue
             if name != 'codex.txt' and not re.fullmatch(r'sessions/\d{4}/\d{2}/\d{2}/rollout-[A-Za-z0-9_.-]+\.jsonl', name):
                 raise ValueError('unexpected native log file')

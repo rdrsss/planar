@@ -53,7 +53,11 @@ class ExportTests(unittest.TestCase):
             archive.addfile(directory)
             log = tarfile.TarInfo('./codex.txt'); log.size = 3
             archive.addfile(log, io.BytesIO(b'{}\n'))
+            derived = tarfile.TarInfo('./trajectory.json'); derived.size = 7
+            archive.addfile(derived, io.BytesIO(b'private'))
         self.assertEqual(select_native_logs(out.getvalue()), {'codex.txt': b'{}\n'})
+        with self.assertRaises(ValueError):
+            select_native_logs(make('trajectory.json', kind=tarfile.SYMTYPE))
         self.assertEqual(select_flat_archive(make('reward.txt', b'0\n'), {'reward.txt', 'status.json', 'test-stdout.txt'}), {'reward.txt': b'0\n'})
         with self.assertRaises(ValueError):
             select_native_logs(make('setup/secret.txt'))

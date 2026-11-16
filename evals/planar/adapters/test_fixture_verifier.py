@@ -1,7 +1,10 @@
 import importlib.util
+import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 path = Path(__file__).resolve().parents[1] / 'cases/plugin-smoke/tests/verify.py'
 spec = importlib.util.spec_from_file_location('smoke_verify', path)
@@ -26,59 +29,29 @@ class ResultControls(unittest.TestCase):
             result.symlink_to('/etc/passwd')
             self.assertIsNotNone(verify.result_check(root))
 
-    def test_verifier_exception_is_infrastructure_error(self):
-        from unittest.mock import patch
-        with patch.object(verify, 'result_check', side_effect=OSError('failure')):
+    def test_exception_and_missing_sessions_fail_closed(self):
+        with patch.object(verify, 'assess', side_effect=OSError('failure')):
             self.assertEqual(verify.main(), 2)
-
-    def test_complete_result_alone_is_not_a_smoke_pass(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / 'RESULT.txt').write_bytes(b'2\n')
-            from unittest.mock import patch
-            with patch.object(verify, 'Path', return_value=root):
-                self.assertEqual(verify.main(), 2)
+            with self.assertRaises(ValueError):
+                verify.assess(root, root / 'missing')
 
-class SyntheticDispatchControls(unittest.TestCase):
-    def make_events(self):
-        import hashlib
-        import json
-        root = Path(__file__).resolve().parents[3] / 'plugins/planar'
-        base = '/installed-agent/codex-home/plugins/cache/planar-smoke-market/planar/0.1.0/'
-        files = ['agents/worker.md', 'references/hosts.md', 'skills/run/SKILL.md']
-        content = {base + name: (root / name).read_text() for name in files}
-        hashes = {name: hashlib.sha256(text.encode()).hexdigest() for name, text in content.items()}
-        events = [{'type': 'session_meta', 'payload': {'id': 'root'}}]
-        for index, (name, text) in enumerate(content.items()):
-            call = str(index)
-            events.extend([
-                {'type': 'response_item', 'payload': {'type': 'function_call', 'name': 'exec_command', 'call_id': call, 'arguments': json.dumps({'cmd': 'cat ' + name})}},
-                {'type': 'response_item', 'payload': {'type': 'function_call_output', 'call_id': call, 'output': text}},
-            ])
-        role = content[base + 'agents/worker.md']
-        events.append({'type': 'response_item', 'payload': {'type': 'function_call', 'name': 'spawn_agent', 'call_id': 'spawn', 'arguments': json.dumps({'message': role + '\nPacket: write /workspace/RESULT.txt', 'fork_turns': 'none', 'model': 'gpt-6.1-terra', 'reasoning_effort': 'medium'})}})
-        events.append({'type': 'response_item', 'payload': {'type': 'function_call_output', 'call_id': 'spawn', 'output': json.dumps({'task_name': '/root/worker'})}})
-        child = [
-            {'type': 'session_meta', 'payload': {'id': 'child', 'source': {'subagent': {'thread_spawn': {'parent_thread_id': 'root', 'agent_path': '/root/worker'}}}}},
-            {'type': 'response_item', 'payload': {'type': 'function_call', 'name': 'exec_command', 'arguments': '{"cmd":"write /workspace/RESULT.txt"}'}},
-            {'type': 'event_msg', 'payload': {'type': 'task_complete'}},
-        ]
-        return events, child, hashes
-
-    def test_complete_synthetic_passes_structural_check(self):
-        self.assertTrue(verify.structural_dispatch(*self.make_events()))
-
-    def test_claimed_dispatch_incomplete_role_and_mismatch_fail(self):
-        import json
-        events, child, hashes = self.make_events()
-        self.assertFalse(verify.structural_dispatch([events[0], events[-1]], child, hashes))
-        args = json.loads(events[-2]['payload']['arguments'])
-        args['message'] = 'worker role was provided'
-        events[-2]['payload']['arguments'] = json.dumps(args)
-        self.assertFalse(verify.structural_dispatch(events, child, hashes))
-        events, child, hashes = self.make_events()
-        hashes[next(iter(hashes))] = '0' * 64
-        self.assertFalse(verify.structural_dispatch(events, child, hashes))
-        events, child, hashes = self.make_events()
-        child[0]['payload']['id'] = 'root'
-        self.assertFalse(verify.structural_dispatch(events, child, hashes))
+    def test_frozen_references_and_packaged_grader_match_sources(self):
+        root = path.parents[3]
+        self.assertEqual(set(verify.expected_files(verify.BUNDLE)), set(verify.FILES))
+        for name in ('regrade_dispatch.py', 'candidate.py', 'check_provenance.py'):
+            self.assertEqual((verify.BUNDLE / name).read_bytes(), (root / 'adapters' / name).read_bytes())
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle = Path(tmp) / 'bundle'
+            shutil.copytree(verify.BUNDLE, bundle)
+            (bundle / 'candidate/agents/worker.md').write_text('tampered')
+            with self.assertRaises(ValueError):
+                verify.expected_files(bundle)
+            shutil.copytree(verify.BUNDLE, bundle, dirs_exist_ok=True)
+            manifest = json.loads((bundle / 'manifest.json').read_text())
+            manifest['files'][0]['sha256'] = '0' * 64
+            (bundle / 'manifest.json').write_text(json.dumps(manifest))
+            with self.assertRaises(ValueError):
+                verify.expected_files(bundle)
