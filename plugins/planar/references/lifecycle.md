@@ -1,8 +1,8 @@
 # Resource lifecycle
 
 This is the canonical lifecycle rule for every run and driver. Implements
-PRD-R19, PRD-R28, PRD-R35, PRD-R24, TS-19.9 and TS-7.5; layout entries
-LAY-1.5.13 and LAY-3.24. Use the host contract for verified capabilities and
+PRD-R19, PRD-R28, PRD-R35, PRD-R24, TS-19.9, TS-7.5 and TS-9.6; layout entries
+LAY-1.5.13, LAY-3.24 and LAY-3.25. Use the host contract for verified capabilities and
 `task-record.md` for the six-field log and invocation audit.
 
 ## Ownership and dispatch
@@ -70,3 +70,46 @@ the existing six-field grammar, and create a new numbered supplement for a
 later attempt rather than editing a completed report. Separate delivery and
 test verdicts from teardown status: a cleanup failure does not retroactively
 change the implementation or test verdict.
+
+## Progress, handoff and last observation
+
+Before dispatch, state the next bounded milestone, its owner and whether input
+is needed. During an active parent turn, relay meaningful observed milestone,
+child failure, blocker and stop transitions visibly; when tools permit, give
+meaningful progress at intervals no longer than 60 seconds. Include the last
+actual event, next expected boundary and any finite job deadline. A queued or
+running job alone is not progress. Do not invent timestamps or repeat empty
+updates.
+
+Each coordinator reports every completed step, blocker, failed job or stop to
+its parent through an available host channel before returning: task, result
+evidence, last observed child/process status, next action and whether an actor
+actually continues. A parent relays meaningful transitions while active. A
+normal round return (TS-9.1) is not a run stop: the session starts the next
+round when authorized work remains. Continue within scope or hand off to a
+verified live successor. A planned action, queued message or formerly active
+actor does not establish continuation; if the coordinator has stopped and no
+successor is verified, say no implementation is running. For a failed process
+report an actionable cause or explicitly unknown diagnosis.
+
+The driver replaces `reviews/run-status.md` on observed dispatch, meaningful
+progress, stop, completion and handoff. Record the actual clock time and source;
+run, task, attempt and stage; observed actor and host IDs and their source; last
+real event and evidence link; next expected milestone/action; input needed and
+its owner; continuation owner; and cleanup and pending checks. Mark unavailable
+time, identity or host status unknown. This is a replaceable last-observed
+convenience snapshot, not authoritative task state or proof of liveness; task
+records and immutable evidence remain authoritative. On resume reconcile it
+with live host state before asserting current status. Never refresh it on an
+invented timer.
+
+Before the parent turn ends, report observed active work with exact ownership
+and observation time, stopped awaiting input, externally blocked, or completed
+/stopped with the next action. Include pending tests/acceptance and cleanup as
+applicable, distinguishing implementation, static review, runtime subcase and
+full acceptance. Do not ask again for routine permission already granted.
+The host may not support wakeup, polling or unsolicited delivery after the turn
+ends; promise notification only when a supported delivery mechanism is actually
+established. Do not introduce a watcher, daemon, scheduler or connector. An
+unexpected host termination can prevent a final update; reconcile and record
+that limitation on the next observed resume.

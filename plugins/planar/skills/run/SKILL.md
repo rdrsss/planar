@@ -356,6 +356,16 @@ previous conversation or source-host model access (PRD-R41, TS-24.5).
    planner, mapper, worker and reviewers. A log line of a step the
    orchestrator does names it as the actor, with its configured model and effort, qualified as the host reference requires.
 
+Follow the communication and last-observation contract in
+`${CLAUDE_PLUGIN_ROOT}/references/lifecycle.md` (TS-9.6, LAY-3.25). Before
+dispatch state the bounded milestone, owner and input need; relay observed
+transitions while this parent turn is active. On a normal round return,
+continue authorized work by dispatching the next round; report continuation
+only after observing a live successor. Reconcile the snapshot with live host
+state on resume. Before ending this turn report the actual state, next owner
+and action, pending acceptance and cleanup. Host support may not provide a
+post-turn notification; do not promise one without an established mechanism.
+
 ## 5. When the run needs the operator, or reaches a stop point
 
 Read `${CLAUDE_PLUGIN_ROOT}/references/escalation.md` and follow it for

@@ -335,6 +335,24 @@ well as releases. It protects user changes and sole evidence. The
 [lifecycle reference](../plugins/planar/references/lifecycle.md) defines the
 rules and their host capability limits (TS-19.9).
 
+## Progress and stops
+
+Before dispatch the driver names the next bounded milestone, its owner and
+any needed input. While a parent turn is active it reports observed progress,
+failures and stops, including the next boundary. A coordinator returns its
+result and evidence to its parent; a normal round return lets the session start
+the next authorized round. Planned work alone does not mean an actor is still
+running. The final report identifies who actually continues, or why work has
+stopped, plus pending acceptance and cleanup.
+
+The replaceable `reviews/run-status.md` records the last observation and its
+clock and identity sources, evidence, next action, input and owner, and pending
+checks and cleanup. It is a convenience, not live status; on resume the driver
+checks the host and task records. Unknown observations stay unknown. The host
+may not deliver an unsolicited update after the turn ends, and an unexpected
+termination may prevent a final report. No background watcher is implied. See
+the [lifecycle reference](../plugins/planar/references/lifecycle.md) (TS-9.6).
+
 ## When the method falls short
 
 Planar has no engine by choice. When a step goes wrong, or goes slowly, in a

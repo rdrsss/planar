@@ -136,6 +136,15 @@ Never delete or restore an attributed path, whichever round its task
 belongs to (TS-8.8). Steps 8, 9 and 12 say how the two kinds are listed and
 what is done with an unattributed one.
 
+## Communication and continuation
+
+Follow the progress, handoff and last-observation contract in
+`${CLAUDE_PLUGIN_ROOT}/references/lifecycle.md` (TS-9.6, LAY-3.25) for
+every driver, including workflow bookkeeping. Refresh the snapshot at
+observed transitions and reconcile live host state on resume. Report each
+round return to the session; the session continues authorized work by starting
+the next round. A round return alone does not establish a live successor.
+
 ## Before the first round
 
 The run skill starts the driver only when all of these hold. If you find one

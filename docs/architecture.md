@@ -214,6 +214,15 @@ Records and immutable cleanup reports carry outcomes and recovery actions;
 they are Markdown bookkeeping, not a registry or cleanup engine. Host
 capabilities determine whether an individual child can be retired.
 
+### Progress and last observation
+
+Drivers follow the [lifecycle reference](../plugins/planar/references/lifecycle.md)
+for visible progress, parent handoffs and truthful stops (TS-9.6). The
+replaceable `reviews/run-status.md` is a sourced last-observed snapshot
+(LAY-3.25), not authoritative task state or a liveness guarantee. Resume
+reconciles it with live host state. Post-turn delivery depends on actual host
+capabilities; this design adds no watcher, scheduler or messaging connector.
+
 ### Replication
 
 Because specs live outside the repository, they are not versioned or
