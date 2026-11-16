@@ -16,7 +16,29 @@ The separate verifier ran without network access. Agent-writable native logs
 are bounded diagnostic evidence, not adversarial attestation. No credentials
 belong in this directory.
 
-From the repository root, these commands do not use a model or authentication:
+From the repository root, `make evals-setup` installs the locked dependencies,
+`make evals-test` (or `make evals`) runs the adapter and recovery-case tests,
+and `make evals-plan` preflights `CASE=fresh-interrupted-review` by default.
+Set `CASE` to select another supported case. A preflight can refuse a stale
+frozen candidate; it never refreezes or approves it.
+
+A live diagnostic requires a matching independent gate and explicit paths:
+
+```sh
+make evals-run AUTH_FILE='/path/to/auth.json' REVIEW_FILE='/path/to/review.json'
+```
+
+The launcher enforces the existing gate and returns its diagnostic exit status.
+Make places jobs under ignored `evals/results`; set `EVALS_OUTPUT_ROOT` to choose
+another directory. Direct launcher, smoke hook, and manual recovery use
+`PLANAR_EVALS_OUTPUT_ROOT`; when unset they retain the previous project reviews
+jobs directory. Supply the same root to manual recovery as the launch, and check
+all previously used roots for unresolved recovery markers before another run.
+With an override, review files and one-use gate reservations reside under that
+output root; without it they remain in the project reviews directory.
+Paths and credentials should be kept private; no credentials belong in this tree.
+
+These commands do not use a model or authentication:
 
 ```sh
 uv sync --project evals --locked

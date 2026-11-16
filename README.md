@@ -57,6 +57,14 @@ claude plugin marketplace add rdrsss/planar
 claude plugin install planar@planar
 ```
 
+For a local checkout, `make install-claude` adds this checkout as the
+marketplace and installs its plugin; `make uninstall-claude` removes the plugin
+while retaining its data. `make install-codex` and `make uninstall-codex` do
+the same for Codex. These targets change the selected host's user configuration;
+they leave the marketplace registered on uninstall. Run `make help` for the
+no-model evaluation commands. A marketplace with the same name may already be
+registered to another source; resolve that in the host CLI before installation.
+
 Restart Claude Code to load it. For local development, run
 `claude --plugin-dir ./plugins/planar` from the repository root. The plugin
 contains the workflow instructions and components, but the Claude end-to-end

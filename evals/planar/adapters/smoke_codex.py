@@ -11,6 +11,7 @@ from pathlib import Path
 
 from harbor.agents.installed.codex import Codex
 from candidate import inventory
+from recover import jobs_root
 
 ROOT = Path(__file__).resolve().parents[3]
 CANDIDATE = ROOT / 'plugins/planar'
@@ -42,7 +43,7 @@ class SmokeCodex(Codex):
         if not raw:
             raise ValueError('launcher-owned provenance directory is required')
         self._provenance_dir = Path(raw).resolve(strict=True)
-        if not self._provenance_dir.is_relative_to((ROOT.parent / 'reviews/harbor-t044-jobs').resolve()):
+        if not self._provenance_dir.is_relative_to(jobs_root()):
             raise ValueError('provenance directory is outside the project evidence root')
         self._execution_id = self._provenance_dir.name
         case_name = os.environ.get('PLANAR_T044_CASE', 'plugin-smoke')

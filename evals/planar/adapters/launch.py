@@ -21,7 +21,7 @@ from harbor.models.task.task import Task
 from candidate import inventory
 from smoke_codex import CANDIDATE, CONFIG, MANIFEST, ROOT, HOME, CACHE, validate_recovery_selection
 from supervise import supervise
-from recover import recover_projects
+from recover import recover_projects, jobs_root, output_roots
 
 PROJECT = ROOT.parent
 REVIEWS = PROJECT / 'reviews'
@@ -85,13 +85,19 @@ def validate_write_destination(path):
             'status': 'existing directory checked' if current == path else 'ancestor checked; creation pending'}
 
 
+def reviews_root():
+    return output_roots()[0] if os.environ.get('PLANAR_EVALS_OUTPUT_ROOT') else REVIEWS
+
+
 def plan(case_name='plugin-smoke'):
     case = CASES[case_name]
     if Path.cwd().resolve() != ROOT.resolve():
         raise ValueError('launch must run from the repository root')
-    for label, path in (('repository', ROOT), ('package', CANDIDATE), ('case', case), ('project', PROJECT), ('evidence', REVIEWS)):
+    for label, path in (('repository', ROOT), ('package', CANDIDATE), ('case', case), ('project', ROOT if os.environ.get('PLANAR_EVALS_OUTPUT_ROOT') else PROJECT),):
         if not path.is_dir():
             raise ValueError(f'{label} root is unavailable: {path}')
+    if not os.environ.get('PLANAR_EVALS_OUTPUT_ROOT') and not REVIEWS.is_dir():
+        raise ValueError(f'evidence root is unavailable: {REVIEWS}')
     git_marker = ROOT / '.git'
     if git_marker.is_dir():
         git_dir = git_marker
@@ -103,23 +109,26 @@ def plan(case_name='plugin-smoke'):
         raise ValueError('repository git root is invalid')
     if not (git_dir / 'HEAD').is_file() or not (CANDIDATE / '.claude-plugin/plugin.json').is_file():
         raise ValueError('repository or package root is invalid')
-    write_roots = {name: validate_write_destination(REVIEWS / name)
-                   for name in ('harbor-t044-jobs', 'harbor-t044-consumed')}
+    write_roots = {'harbor-t044-jobs': validate_write_destination(jobs_root()),
+                   'harbor-t044-consumed': validate_write_destination(reviews_root() / 'harbor-t044-consumed')}
     expected = json.loads((case / 'candidate.json').read_text())
     if inventory(CANDIDATE) != expected:
         raise ValueError('candidate differs from recorded frozen inventory')
-    config = config_for('planar-t044-plan', REVIEWS / 'harbor-t044-jobs', case)
+    config = config_for('planar-t044-plan', jobs_root(), case)
     if case_name == 'fresh-interrupted-review':
         selected = config['agents'][0]
         validate_recovery_selection((case / 'instruction.md').read_text(), selected['model_name'], selected['kwargs']['reasoning_effort'])
         compatibility = runpy.run_path(str(case / 'compatibility.py'))['inspect'](CANDIDATE, case / 'fixture-v2')
         if compatibility['missing_packet_sections'] or compatibility['immutable_replacement_required']:
             raise ValueError('v2 recovery packet incompatible with selected candidate')
-    config_digest = hashlib.sha256(json.dumps(config, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    identity = {'configuration': config, 'output_root': str(reviews_root()),
+                'jobs_root': str(jobs_root()), 'consumed_root': str(output_roots()[2])}
+    digest_input = identity if os.environ.get('PLANAR_EVALS_OUTPUT_ROOT') else config
+    config_digest = hashlib.sha256(json.dumps(digest_input, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     task = Task(case).config
     prerequisites = {'cwd': str(Path.cwd().resolve()), 'repository_root': str(ROOT),
         'package_read_root': str(CANDIDATE), 'case_read_root': str(case),
-        'project_root': str(PROJECT), 'evidence_write_root': str(REVIEWS / 'harbor-t044-jobs'),
+        'project_root': str(PROJECT), 'evidence_write_root': str(jobs_root()),
         'write_destinations': write_roots,
         'isolated_remote_roots': {'home': HOME, 'config': HOME + '/config.toml',
             'cache': CACHE, 'workspace': '/workspace',
@@ -164,7 +173,7 @@ def execute(auth_path, review_path, case_name='plugin-smoke'):
     case = CASES[case_name]
     snapshot = plan(case_name)
     review = review_path.resolve(strict=True)
-    if not review.is_relative_to(REVIEWS.resolve()):
+    if not review.is_relative_to(reviews_root().resolve()):
         raise ValueError('review evidence must reside under the project reviews directory')
     gate = json.loads(review.read_text())
     required = {'verdict': 'approve', 'purpose': 'one-diagnostic-attempt', 'max_attempts': 1,
@@ -184,7 +193,7 @@ def execute(auth_path, review_path, case_name='plugin-smoke'):
     result = subprocess.run(['docker', 'image', 'inspect', '--format', '{{.Id}}', image_id], text=True, capture_output=True, timeout=15)
     if result.returncode or result.stdout.strip() != image_id:
         raise ValueError('reviewed Docker image is unavailable')
-    if any((REVIEWS / 'harbor-t044-jobs').glob('*/recovery-required')):
+    if any((jobs_root()).glob('*/recovery-required')):
         raise RuntimeError('previous diagnostic cleanup is unconfirmed')
     auth_path = auth_path.resolve(strict=True)
     # Read solely to enforce the subscription route; never retain or print bytes.
@@ -195,9 +204,9 @@ def execute(auth_path, review_path, case_name='plugin-smoke'):
     except (OSError, UnicodeError, json.JSONDecodeError):
         raise ValueError('subscription file authentication is unavailable') from None
     del auth
-    consume_review_once(review, REVIEWS / 'harbor-t044-consumed')
+    consume_review_once(review, reviews_root() / 'harbor-t044-consumed')
     run_id = 'planar-t044-' + uuid.uuid4().hex
-    evidence = REVIEWS / 'harbor-t044-jobs' / run_id
+    evidence = jobs_root() / run_id
     evidence.mkdir(parents=True, exist_ok=False, mode=0o700)
     job_config = config_for(run_id, evidence, case)
     config_path = evidence / 'job-config.json'
@@ -209,6 +218,7 @@ def execute(auth_path, review_path, case_name='plugin-smoke'):
     env = {'PATH': os.pathsep.join(directories), 'HOME': str(Path.home()),
            'PYTHONPATH': str(Path(__file__).resolve().parent),
            'PLANAR_T044_EVIDENCE_DIR': str(evidence),
+           'PLANAR_EVALS_OUTPUT_ROOT': os.environ.get('PLANAR_EVALS_OUTPUT_ROOT', ''),
            'PLANAR_T044_EXPECTED_IMAGE_ID': image_id, 'PLANAR_T044_CASE': case_name,
            'CODEX_AUTH_JSON_PATH': str(auth_path), 'OPENAI_API_KEY': '', 'CODEX_API_KEY': ''}
     command = [str(harbor), 'run', '--config', str(config_path)]

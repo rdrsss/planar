@@ -91,12 +91,33 @@ def recover_projects(evidence, run=subprocess.run):
                 raise RuntimeError('project resource cleanup not confirmed')
 
 
+def output_roots():
+    """Resolve the selected root, refusing aliases for its owned directories."""
+    import os
+    from pathlib import Path
+    override = os.environ.get('PLANAR_EVALS_OUTPUT_ROOT')
+    if not override:
+        reviews = Path(__file__).resolve().parents[3].parent / 'reviews'
+        return reviews, reviews / 'harbor-t044-jobs', reviews / 'harbor-t044-consumed'
+    root = Path(override).expanduser().resolve()
+    jobs, consumed = root / 'jobs', root / 'harbor-t044-consumed'
+    for path in (jobs, consumed):
+        if path.is_symlink() or path.resolve() != path:
+            raise ValueError(f'output destination is a symlink alias: {path}')
+    return root, jobs, consumed
+
+
+def jobs_root():
+    """Evidence jobs root; override must also be supplied for manual recovery."""
+    return output_roots()[1]
+
+
 def manual_recover(evidence):
     """Recover after watchdog death only after the Harbor process is absent."""
     import os
     from pathlib import Path
     evidence = Path(evidence).resolve(strict=True)
-    root = Path(__file__).resolve().parents[3].parent / 'reviews/harbor-t044-jobs'
+    root = jobs_root()
     if not evidence.is_relative_to(root.resolve()) or not (evidence / 'recovery-required').is_file():
         raise ValueError('no registered project recovery marker')
     process_file = evidence / 'harbor-process.json'

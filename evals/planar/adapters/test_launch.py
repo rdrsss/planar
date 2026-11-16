@@ -17,6 +17,40 @@ class LaunchControls(unittest.TestCase):
         self.inventory_patch.start()
         self.addCleanup(self.inventory_patch.stop)
 
+    def test_output_root_override_reaches_plan_and_recovery(self):
+        import os
+        from recover import jobs_root
+        with tempfile.TemporaryDirectory(prefix='planar output ') as temp:
+            with patch.dict(os.environ, {'PLANAR_EVALS_OUTPUT_ROOT': temp}), patch.object(launch, 'PROJECT', Path(temp) / 'absent-sibling'), patch.object(launch, 'REVIEWS', Path(temp) / 'absent-sibling' / 'reviews'):
+                snapshot = launch.plan()
+                self.assertEqual(snapshot['prerequisites']['evidence_write_root'], str(Path(temp).resolve() / 'jobs'))
+                self.assertEqual(jobs_root(), Path(temp).resolve() / 'jobs')
+                self.assertEqual(snapshot['configuration']['jobs_dir'], str(Path(temp).resolve() / 'jobs'))
+                self.assertEqual(snapshot['prerequisites']['write_destinations']['harbor-t044-consumed']['path'], str(Path(temp).resolve() / 'harbor-t044-consumed'))
+
+    def test_output_aliases_are_rejected_and_roots_bind_gate_digest(self):
+        import os
+        with tempfile.TemporaryDirectory() as temp:
+            a, b = Path(temp) / 'a', Path(temp) / 'b'
+            a.mkdir(); b.mkdir(); (a / 'jobs').mkdir()
+            with patch.dict(os.environ, {'PLANAR_EVALS_OUTPUT_ROOT': str(a)}):
+                first = launch.plan()['configuration_sha256']
+            with patch.dict(os.environ, {'PLANAR_EVALS_OUTPUT_ROOT': str(b)}):
+                snapshot = launch.plan()
+                self.assertNotEqual(first, snapshot['configuration_sha256'])
+                gate = b / 'copied-gate.json'
+                gate.write_text(json.dumps({'verdict': 'approve', 'purpose': 'one-diagnostic-attempt', 'max_attempts': 1, 'implementation_sha256': snapshot['implementation_sha256'], 'candidate_sha256': snapshot['candidate_sha256'], 'configuration_sha256': first, 'case': snapshot['case'], 'case_sha256': snapshot['case_sha256'], 'image_id': snapshot['image_id']}))
+                with self.assertRaisesRegex(ValueError, 'stale'):
+                    launch.execute(Path('/nonexistent-auth'), gate)
+                for name in ('jobs', 'harbor-t044-consumed'):
+                    link = b / name
+                    link.symlink_to(a / 'jobs', target_is_directory=True)
+                    with self.assertRaisesRegex(ValueError, 'symlink alias'):
+                        launch.plan()
+                    with self.assertRaisesRegex(ValueError, 'symlink alias'):
+                        launch.jobs_root()
+                    link.unlink()
+
     def test_wrong_cwd_fails_before_inventory(self):
         import os
         with tempfile.TemporaryDirectory() as temp:
@@ -58,7 +92,7 @@ class LaunchControls(unittest.TestCase):
             with self.subTest(name=name), tempfile.TemporaryDirectory() as temp:
                 reviews = Path(temp)
                 (reviews / name).write_text('blocked')
-                with patch.object(launch, 'REVIEWS', reviews):
+                with patch.object(launch, 'REVIEWS', reviews), patch.object(launch, 'jobs_root', return_value=reviews / 'harbor-t044-jobs'):
                     with self.assertRaisesRegex(ValueError, 'not a directory'):
                         launch.plan()
 
