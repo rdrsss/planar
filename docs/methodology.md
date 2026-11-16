@@ -325,6 +325,16 @@ If replication is turned on for the project, its Planar files are copied into
 the repository: first when the operator approves the spec set, then again
 each time a task completes. It is off unless the operator turns it on.
 
+## Resource lifecycle
+
+The driver records ownership and intended lifetime before creating run
+resources, and preserves results and audit evidence before retiring children.
+It reconciles owned resources on resume and at boundaries, including failures
+and cancellations, and reports retained, unsupported or failed cleanup as
+well as releases. It protects user changes and sole evidence. The
+[lifecycle reference](../plugins/planar/references/lifecycle.md) defines the
+rules and their host capability limits (TS-19.9).
+
 ## When the method falls short
 
 Planar has no engine by choice. When a step goes wrong, or goes slowly, in a

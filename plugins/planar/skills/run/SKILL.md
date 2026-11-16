@@ -15,7 +15,7 @@ it before the affected action.
 Provenance: implements PRD-R16, PRD-R18, PRD-R19, PRD-R23, PRD-R26, PRD-R27, PRD-R28, PRD-R31, PRD-R32, PRD-R33, PRD-R34, PRD-R35 and PRD-N6;
 TS-3.2, TS-4.2, TS-4.5, TS-4.6, TS-6.3, TS-7.2, TS-7.3, TS-8.6 to TS-8.8,
 TS-8.10 to TS-8.12, TS-9.1, TS-9.2, TS-9.3, TS-9.4, TS-9.5, TS-17.2, TS-17.4, TS-17.5, TS-17.6, TS-17.7, TS-17.8, TS-19.1 to TS-19.4,
-TS-11.4, TS-19.5 to TS-19.7, TS-20.1 to TS-20.6, TS-21.6, TS-21.1, TS-21.2, TS-21.5 and TS-23; layout
+TS-11.4, TS-19.5 to TS-19.7, TS-19.9, TS-20.1 to TS-20.6, TS-21.6, TS-21.1, TS-21.2, TS-21.5 and TS-23; layout
 entry LAY-1.3.5.
 
 You are the session the operator is talking to. Do these steps in order.
@@ -41,6 +41,14 @@ a step names a reference, read that file in full and follow it exactly.
   gives, followed, only when `<home>` is not the default, by the one-line
   notice of step 2 naming the directory in use. Do not repair the cause,
   and do not go on to a later check.
+
+After the opening checks permit work, read and follow
+`${CLAUDE_PLUGIN_ROOT}/references/lifecycle.md` in full. The session owns
+its own dispatches and resources even when it delegates a round: record
+ownership before creation, persist results before retirement, reconcile on
+resume, and report teardown at boundaries and before returning on success,
+failure, timeout or cancellation. The orchestrator follows the same rule for
+its resources. Keep teardown status separate from task outcomes (TS-19.9).
 
 ## 1. Work out what is asked
 

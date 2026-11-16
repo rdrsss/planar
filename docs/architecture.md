@@ -206,6 +206,14 @@ and blocks approval. A profile switch affects future dispatches only and must
 retain required stages. Live interrupted handoff in both directions remains
 unverified.
 
+### Resource lifecycle
+
+The shared [lifecycle reference](../plugins/planar/references/lifecycle.md)
+defines ownership, evidence retention and teardown for both drivers (TS-19.9).
+Records and immutable cleanup reports carry outcomes and recovery actions;
+they are Markdown bookkeeping, not a registry or cleanup engine. Host
+capabilities determine whether an individual child can be retired.
+
 ### Replication
 
 Because specs live outside the repository, they are not versioned or

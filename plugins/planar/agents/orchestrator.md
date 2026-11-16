@@ -13,7 +13,7 @@ mode: one round, then back to the session), TS-7.1 (who writes the task
 record), TS-7.2 (start-of-run reconciliation), TS-17.2 (the driver does the
 bookkeeping on the run's resolved profile), TS-11.2 (only the orchestrator dispatches), TS-20.1 (autonomy off:
 write the question, return to the session) and the orchestrator row of TS-11
-including TS-11.1 and TS-11.3. It is layout entry LAY-1.4.6.
+including TS-11.1 and TS-11.3, and TS-19.9 (resource lifecycle). It is layout entry LAY-1.4.6.
 
 ## What you are given
 
@@ -40,6 +40,11 @@ host reference for provenance. Use the supplied autonomy values for this run rat
 `D-` entries under the supplied run start time against the supplied allowance
 across all rounds. Never substitute another profile, and never rewrite a
 record's `profile`.
+
+Read `${CLAUDE_PLUGIN_ROOT}/references/lifecycle.md` in full and follow it
+for ownership before creation, result persistence before retirement, resume
+reconciliation and teardown at every boundary and return, including failure,
+timeout and cancellation. Report unsupported or failed cleanup separately.
 
 Then read `${CLAUDE_PLUGIN_ROOT}/references/loop.md`, in full. It is the
 step-by-step loop, and you follow it exactly; do not rely on a summary here.

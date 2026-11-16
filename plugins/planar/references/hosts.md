@@ -7,6 +7,14 @@ scenarios remain unverified.
 The shared Markdown specs, packets and records remain authoritative. No
 engine, database, MCP service or shipped runner is introduced.
 
+## Resource capabilities
+
+Follow `${CLAUDE_PLUGIN_ROOT}/references/lifecycle.md` (TS-19.9) for
+ownership, child retirement and teardown. Use only a verified native capability
+and proven mapping for an individual handle; the evidence below does not
+establish a native agent-close API. Treat an unavailable capability as
+unsupported and record it as the lifecycle reference directs.
+
 ## Evidence and surface
 
 The project-local `reviews/codex-capabilities.md` records the procedures,

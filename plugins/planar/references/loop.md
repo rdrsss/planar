@@ -4,13 +4,22 @@ The single step-by-step description of the execution loop: how approved
 tasks are taken in rounds through mapping, coding, checks, review and
 approval, and what is written at each step. Every driver follows it, in both
 orchestration modes. Implements PRD-N6, PRD-R18, PRD-R31, PRD-R32, PRD-R34 and PRD-R35,
-TS-7.5, TS-8 (TS-8.1 to TS-8.12), TS-9.2 to TS-9.4, TS-17.4 to TS-17.6, TS-17.8, TS-20.1, TS-19 (TS-19.1 to TS-19.8), TS-23.14
+TS-7.5, TS-8 (TS-8.1 to TS-8.12), TS-9.2 to TS-9.4, TS-17.4 to TS-17.6, TS-17.8, TS-20.1, TS-19 (TS-19.1 to TS-19.9), TS-23.14
 and the reference layout entry LAY-1.5.8.
 
 This file gives the order of the steps and the rules that belong to the loop
 itself. Formats and rules defined elsewhere are linked at the step that uses
 them and are not repeated here; read the linked reference before you do that
 step for the first time.
+
+## Resource lifecycle
+
+Every driver follows `${CLAUDE_PLUGIN_ROOT}/references/lifecycle.md` in full:
+record ownership before creation, persist child results and audit before
+retirement, reconcile on resume and at task/round boundaries, and report
+teardown on success, failure, timeout, cancellation and before returning.
+This also applies while blocked. The lifecycle reference governs exact handles,
+evidence retention and unsupported host capabilities (TS-19.9).
 
 ## Who acts
 
