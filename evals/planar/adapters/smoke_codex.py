@@ -37,6 +37,10 @@ class SmokeCodex(Codex):
         if not self._provenance_dir.is_relative_to((ROOT.parent / 'reviews/harbor-t044-jobs').resolve()):
             raise ValueError('provenance directory is outside the project evidence root')
         self._execution_id = self._provenance_dir.name
+        case_name = os.environ.get('PLANAR_T044_CASE', 'plugin-smoke')
+        if case_name not in ('plugin-smoke', 'native-lineage-smoke'):
+            raise ValueError('unsupported case')
+        self._manifest = ROOT / 'evals/planar/cases' / case_name / 'candidate.json'
 
     def _record(self, name, value):
         # Unlike Harbor's agent logs, this directory is never mounted into the
@@ -88,9 +92,13 @@ class SmokeCodex(Codex):
             raise ValueError('unexpected effective config or Codex home')
         if self.mcp_servers or self.skills_dir or self._resume or self._load:
             raise ValueError('only a fresh run without MCP or skill injection is supported')
-        expected = json.loads(MANIFEST.read_text())
+        expected = json.loads(self._manifest.read_text())
         if inventory(CANDIDATE) != expected:
             raise ValueError('candidate does not match frozen inventory')
+        workspace = await self.exec_as_agent(environment, command="python3 -c 'import os,stat; p=\"/workspace\"; assert stat.S_ISDIR(os.lstat(p).st_mode) and not os.listdir(p)'", env=ENV)
+        if workspace.return_code != 0:
+            raise ValueError('workspace must be an empty directory before execution')
+        self._record('planar-workspace-preflight.json', {'status': 'passed', 'fixture': '/workspace', 'check': 'empty-directory-before-model'})
         await super()._upload_effective_config(environment, config, remote_path)
         uid, gid = await self._ensure_agent_owned_dir(environment, self._REMOTE_CODEX_HOME)
         await self.exec_as_root(environment, command=f'chown {uid}:{gid} /installed-agent/codex-home/config.toml && chmod 600 /installed-agent/codex-home/config.toml')

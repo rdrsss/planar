@@ -40,3 +40,10 @@ The project's `reviews/harbor-t044-native-audit-20261116.md`,
 review scope and limitations. Complete plaintext role delivery, independent
 backend model and effort identity, and automatic skill activation remain
 unproved.
+
+The separately versioned `native-lineage-smoke` case passed a live online
+verification with reward 1; an independent audit corroborated that bounded
+result. It checks recorded native lineage, host skill inventory and an
+independently exported exact artifact. It does not prove reads, causal writes
+or full TEST-S69 or T-044 acceptance. See [the Planar evaluation notes](planar/README.md)
+for reproduction, live mechanics and limits.

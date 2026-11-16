@@ -1,0 +1,33 @@
+schema_version = "1.3"
+artifacts = ["/workspace/RESULT.txt", "/logs/agent"]
+
+[task]
+name = "planar/native-lineage-smoke"
+description = "Version 1 bounded native lineage and artifact"
+authors = []
+keywords = ["planar", "codex"]
+
+[verifier]
+timeout_sec = 60.0
+environment_mode = "separate"
+
+[verifier.environment]
+network_mode = "no-network"
+build_timeout_sec = 600.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+gpus = 0
+mcp_servers = []
+
+[agent]
+timeout_sec = 600.0
+
+[environment]
+docker_image = "sha256:80c72c37a539e081165e5cebf0f4a6e33852e34df7cee7afaefc3bc0ab0da5a7"
+build_timeout_sec = 600.0
+cpus = 2
+memory_mb = 4096
+storage_mb = 10240
+gpus = 0
+mcp_servers = []

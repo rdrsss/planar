@@ -77,6 +77,7 @@ class OrderingTests(unittest.IsolatedAsyncioTestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.agent = SmokeCodex.__new__(SmokeCodex)
+        self.agent._manifest = MANIFEST
         self.agent.logs_dir = Path(self.tmp.name)
         self.agent._provenance_dir = Path(self.tmp.name)
         self.agent._execution_id = 'test-execution'
@@ -87,7 +88,7 @@ class OrderingTests(unittest.IsolatedAsyncioTestCase):
         self.events = []
         self.environment = SimpleNamespace(upload_dir=AsyncMock(), upload_file=AsyncMock())
         self.outputs = [
-            'codex-cli 0.169.0', '', '',
+            '', 'codex-cli 0.169.0', '', '',
             json.dumps({'pluginId': 'planar@planar-smoke-market', 'installedPath': CACHE}),
             json.dumps(['planar@planar-smoke-market']), json.dumps(self.manifest),
             json.dumps({**CONFIG, 'plugins': {**CONFIG['plugins'], 'planar@planar-smoke-market': {'enabled': True}}}),
@@ -105,15 +106,28 @@ class OrderingTests(unittest.IsolatedAsyncioTestCase):
             self.events.append('base upload')
         with patch.object(Codex, '_upload_effective_config', new=upload):
             await self.agent._upload_effective_config(self.environment, self.config, HOME + '/config.toml')
-        self.assertEqual(self.events[0], 'base upload')
-        self.assertIn('codex --version', self.events[1])
-        self.assertIn('/home/agent', self.events[2])
-        self.assertIn('marketplace add', self.events[3])
-        self.assertIn('plugin add', self.events[4])
-        self.assertIn('plugin list', self.events[5])
-        self.assertIn('planar-inventory.py', self.events[6])
-        self.assertIn('config.toml', self.events[7])
+        self.assertIn('os.listdir', self.events[0])
+        self.assertEqual(self.events[1], 'base upload')
+        self.assertIn('codex --version', self.events[2])
+        self.assertIn('/home/agent', self.events[3])
+        self.assertIn('marketplace add', self.events[4])
+        self.assertIn('plugin add', self.events[5])
+        self.assertIn('plugin list', self.events[6])
+        self.assertIn('planar-inventory.py', self.events[7])
+        self.assertIn('config.toml', self.events[8])
         self.assertTrue((self.agent.logs_dir / 'planar-install-provenance.json').is_file())
+
+    async def test_preseeded_workspace_blocks_before_config_or_model(self):
+        from types import SimpleNamespace
+        async def preseeded(*args, **kwargs):
+            self.events.append('workspace check')
+            return SimpleNamespace(stdout='',return_code=1)
+        self.agent.exec_as_agent=preseeded
+        with patch.object(Codex, '_upload_effective_config', new=AsyncMock()) as upload:
+            with self.assertRaisesRegex(ValueError, 'workspace must be an empty'): await self.agent._upload_effective_config(self.environment,self.config,HOME+'/config.toml')
+            upload.assert_not_awaited()
+        self.assertEqual(self.events,['workspace check'])
+        self.assertFalse((self.agent.logs_dir/'planar-workspace-preflight.json').exists())
 
     async def test_install_failure_stops_hook(self):
         async def upload(*args):
@@ -125,5 +139,5 @@ class OrderingTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(Codex, '_upload_effective_config', new=upload):
             with self.assertRaisesRegex(RuntimeError, 'installation failure'):
                 await self.agent._upload_effective_config(self.environment, self.config, HOME + '/config.toml')
-        self.assertEqual(self.events, ['base upload', 'install failed'])
+        self.assertEqual(self.events, ['install failed'])
         self.assertFalse((self.agent.logs_dir / 'planar-install-provenance.json').exists())

@@ -24,12 +24,15 @@ class GuardedDocker(DockerEnvironment):
         run_id = evidence.name
         if not re.fullmatch(r'planar-t044-(?:noauth-)?[0-9a-f]{32}', run_id):
             raise ValueError('invalid launcher execution identity')
+        case_name = os.environ.get('PLANAR_T044_CASE', 'plugin-smoke')
+        if case_name not in ('plugin-smoke', 'native-lineage-smoke'):
+            raise ValueError('unsupported diagnostic case')
         raw_session = kwargs.get('session_id')
         if not isinstance(raw_session, str):
             raise ValueError('environment session identity is required')
         self._static_verifier = '__verifier__' in raw_session
         if self._static_verifier:
-            expected = Path(__file__).resolve().parents[1] / 'cases/plugin-smoke/tests'
+            expected = Path(__file__).resolve().parents[1] / 'cases' / case_name / 'tests'
             if Path(kwargs['environment_dir']).resolve() != expected.resolve():
                 raise ValueError('unexpected verifier environment directory')
             policy = kwargs.get('network_policy')

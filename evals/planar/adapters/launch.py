@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -23,11 +24,26 @@ PROJECT = ROOT.parent
 REVIEWS = PROJECT / 'reviews'
 EVALS = ROOT / 'evals'
 CASE = EVALS / 'planar/cases/plugin-smoke'
+CASES = {name: EVALS / 'planar/cases' / name for name in ('plugin-smoke', 'native-lineage-smoke')}
 
 
-def source_digest():
+def case_inventory(case):
+    entries = []
+    for path in sorted(case.rglob('*')):
+        if '__pycache__' in path.parts:
+            continue
+        if path.is_symlink():
+            raise ValueError('symlink in case')
+        if path.is_file():
+            entries.append({'path': path.relative_to(case).as_posix(), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()})
+    if not entries:
+        raise ValueError('empty case')
+    return hashlib.sha256(json.dumps(entries, ensure_ascii=True, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+def source_digest(case=CASE):
     paths = [EVALS / 'pyproject.toml', EVALS / 'uv.lock', EVALS / 'README.md', EVALS / 'planar/README.md']
-    for directory in (EVALS / 'planar/adapters', CASE):
+    for directory in (EVALS / 'planar/adapters', case):
         for path in directory.rglob('*'):
             if '__pycache__' in path.parts:
                 continue
@@ -43,23 +59,26 @@ def source_digest():
     return hashlib.sha256(json.dumps(records, separators=(',', ':')).encode()).hexdigest()
 
 
-def config_for(job_name, jobs_dir):
+def config_for(job_name, jobs_dir, case=CASE):
     data = {'job_name': job_name, 'jobs_dir': str(jobs_dir), 'n_attempts': 1,
             'n_concurrent_trials': 1, 'retry': {'max_retries': 0},
             'environment': {'import_path': 'guarded_docker:GuardedDocker', 'delete': True, 'kwargs': {'auto_mounting': False}},
             'agents': [{'import_path': 'smoke_codex:SmokeCodex', 'model_name': 'gpt-6.1-terra',
                         'kwargs': {'version': '0.169.0', 'config': CONFIG, 'reasoning_effort': 'medium'}}],
-            'tasks': [{'path': str(CASE)}]}
+            'tasks': [{'path': str(case)}]}
     return JobConfig.model_validate(data).model_dump(mode='json', exclude_none=True)
 
 
-def plan():
-    expected = json.loads(MANIFEST.read_text())
+def plan(case_name='plugin-smoke'):
+    case = CASES[case_name]
+    expected = json.loads((case / 'candidate.json').read_text())
     if inventory(CANDIDATE) != expected:
         raise ValueError('candidate differs from recorded frozen inventory')
-    config = config_for('planar-t044-plan', REVIEWS / 'harbor-t044-jobs')
+    config = config_for('planar-t044-plan', REVIEWS / 'harbor-t044-jobs', case)
     config_digest = hashlib.sha256(json.dumps(config, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
-    return {'implementation_sha256': source_digest(), 'candidate_sha256': expected['sha256'],
+    return {'case': case_name, 'case_sha256': case_inventory(case),
+            'image_id': Task(case).config.environment.docker_image,
+            'implementation_sha256': source_digest(case), 'candidate_sha256': expected['sha256'],
             'configuration_sha256': config_digest, 'purpose': 'one-diagnostic-attempt',
             'harbor_version': '0.26.0', 'codex_version': '0.169.0', 'configuration': config}
 
@@ -79,8 +98,9 @@ def consume_review_once(review_path, consumed_root):
     return digest
 
 
-def execute(auth_path, review_path):
-    snapshot = plan()
+def execute(auth_path, review_path, case_name='plugin-smoke'):
+    case = CASES[case_name]
+    snapshot = plan(case_name)
     review = review_path.resolve(strict=True)
     if not review.is_relative_to(REVIEWS.resolve()):
         raise ValueError('review evidence must reside under the project reviews directory')
@@ -88,11 +108,12 @@ def execute(auth_path, review_path):
     required = {'verdict': 'approve', 'purpose': 'one-diagnostic-attempt', 'max_attempts': 1,
                 'implementation_sha256': snapshot['implementation_sha256'],
                 'candidate_sha256': snapshot['candidate_sha256'],
-                'configuration_sha256': snapshot['configuration_sha256']}
+                'configuration_sha256': snapshot['configuration_sha256'], 'case': case_name,
+                'case_sha256': snapshot['case_sha256'], 'image_id': snapshot['image_id']}
     if any(gate.get(key) != value for key, value in required.items()):
         raise ValueError('diagnostic review is missing, stale, or not approved')
     image_id = gate.get('image_id')
-    if not isinstance(image_id, str) or len(image_id) != 71 or not image_id.startswith('sha256:') or image_id != Task(CASE).config.environment.docker_image:
+    if not isinstance(image_id, str) or len(image_id) != 71 or not image_id.startswith('sha256:') or image_id != Task(case).config.environment.docker_image:
         raise ValueError('diagnostic review lacks the pinned image identity')
     result = subprocess.run(['docker', 'image', 'inspect', '--format', '{{.Id}}', image_id], text=True, capture_output=True, timeout=15)
     if result.returncode or result.stdout.strip() != image_id:
@@ -112,10 +133,10 @@ def execute(auth_path, review_path):
     run_id = 'planar-t044-' + uuid.uuid4().hex
     evidence = REVIEWS / 'harbor-t044-jobs' / run_id
     evidence.mkdir(parents=True, exist_ok=False, mode=0o700)
-    job_config = config_for(run_id, evidence)
+    job_config = config_for(run_id, evidence, case)
     config_path = evidence / 'job-config.json'
     config_path.write_text(json.dumps(job_config, indent=2, sort_keys=True) + '\n')
-    (evidence / 'launcher.json').write_text(json.dumps({'execution_id': run_id, 'implementation_sha256': snapshot['implementation_sha256'], 'candidate_sha256': snapshot['candidate_sha256'], 'harbor_version': '0.26.0', 'codex_version': '0.169.0', 'review_sha256': hashlib.sha256(review.read_bytes()).hexdigest(), 'job_config_sha256': hashlib.sha256(config_path.read_bytes()).hexdigest()}, indent=2, sort_keys=True) + '\n')
+    (evidence / 'launcher.json').write_text(json.dumps({'execution_id': run_id, 'started_at': datetime.now(timezone.utc).isoformat(), 'case': case_name, 'case_sha256': snapshot['case_sha256'], 'image_id': image_id, 'configuration_sha256': snapshot['configuration_sha256'], 'implementation_sha256': snapshot['implementation_sha256'], 'candidate_sha256': snapshot['candidate_sha256'], 'harbor_version': '0.26.0', 'codex_version': '0.169.0', 'review_sha256': hashlib.sha256(review.read_bytes()).hexdigest(), 'job_config_sha256': hashlib.sha256(config_path.read_bytes()).hexdigest()}, indent=2, sort_keys=True) + '\n')
     harbor = Path(sys.executable).parent / 'harbor'
     docker = shutil.which('docker')
     if not docker or not harbor.is_file():
@@ -126,7 +147,7 @@ def execute(auth_path, review_path):
     env = {'PATH': os.pathsep.join(directories), 'HOME': str(Path.home()),
            'PYTHONPATH': str(Path(__file__).resolve().parent),
            'PLANAR_T044_EVIDENCE_DIR': str(evidence),
-           'PLANAR_T044_EXPECTED_IMAGE_ID': image_id,
+           'PLANAR_T044_EXPECTED_IMAGE_ID': image_id, 'PLANAR_T044_CASE': case_name,
            'CODEX_AUTH_JSON_PATH': str(auth_path), 'OPENAI_API_KEY': '', 'CODEX_API_KEY': ''}
     command = [str(harbor), 'run', '--config', str(config_path)]
     (evidence / 'launcher-command.json').write_text(json.dumps({'execution_id': run_id, 'argv': command, 'environment_keys': sorted(env)}, indent=2) + '\n')
@@ -151,7 +172,7 @@ def execute(auth_path, review_path):
     finally:
         for signum, handler in handlers.items():
             signal.signal(signum, handler)
-    (evidence / 'launcher-terminal.json').write_text(json.dumps({'execution_id': run_id, **status}, indent=2) + '\n')
+    (evidence / 'launcher-terminal.json').write_text(json.dumps({'execution_id': run_id, 'finished_at': datetime.now(timezone.utc).isoformat(), **status}, indent=2) + '\n')
     print(json.dumps({'execution_id': run_id, 'evidence': str(evidence), 'diagnostic_verdict': 'pending', **status}))
     return 2
 
@@ -161,13 +182,14 @@ def main():
     parser.add_argument('--execute', action='store_true')
     parser.add_argument('--auth-file', type=Path)
     parser.add_argument('--review-file', type=Path)
+    parser.add_argument('--case', choices=tuple(CASES), default='plugin-smoke')
     args = parser.parse_args()
     if not args.execute:
-        print(json.dumps(plan(), indent=2, sort_keys=True))
+        print(json.dumps(plan(args.case), indent=2, sort_keys=True))
         return 0
     if args.auth_file is None or args.review_file is None:
         parser.error('--execute requires --auth-file and --review-file')
-    return execute(args.auth_file, args.review_file)
+    return execute(args.auth_file, args.review_file, args.case)
 
 
 if __name__ == '__main__':
