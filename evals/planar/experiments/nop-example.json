@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "hypothesis": "The deterministic control retains each repeated trial.",
+  "baseline": "baseline",
+  "variants": ["baseline", "control"],
+  "factors": {"control": "injected control label; no behavioral comparison"},
+  "pins": {"candidate": "not-applicable-nop", "case": "native-lineage-smoke-control", "verifier": "disabled", "image": "fake-environment", "host": "nop"},
+  "caps": {"session_seconds": 60, "verifier_seconds": 60, "trial_seconds": 60, "job_seconds": 300, "trials": 4},
+  "config": {
+    "job_name": "nop-plan",
+    "jobs_dir": ".",
+    "n_attempts": 2,
+    "n_concurrent_trials": 1,
+    "retry": {"max_retries": 0},
+    "agents": [{"name": "nop"}, {"name": "nop"}],
+    "tasks": [{"path": "evals/planar/cases/native-lineage-smoke"}]
+  }
+}

@@ -17,7 +17,7 @@ are bounded diagnostic evidence, not adversarial attestation. No credentials
 belong in this directory.
 
 From the repository root, `make evals-setup` installs the locked dependencies,
-`make evals-test` (or `make evals`) runs the adapter and recovery-case tests,
+`make evals-test` (or `make evals`) runs the adapter, recovery-case and model-free experiment-control tests,
 and `make evals-plan` preflights `CASE=fresh-interrupted-review` by default.
 Set `CASE` to select another supported case. A preflight can refuse a stale
 frozen candidate; it never refreezes or approves it.

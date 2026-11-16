@@ -50,7 +50,17 @@ class SmokeCodex(Codex):
         if case_name not in ('plugin-smoke', 'native-lineage-smoke', 'fresh-interrupted-review'):
             raise ValueError('unsupported case')
         self._case_name = case_name
-        self._manifest = ROOT / 'evals/planar/cases' / case_name / 'candidate.json'
+        case_snapshot = os.environ.get('PLANAR_T044_CASE_SNAPSHOT')
+        candidate_snapshot = os.environ.get('PLANAR_T044_CANDIDATE_SNAPSHOT')
+        if bool(case_snapshot) != bool(candidate_snapshot):
+            raise ValueError('candidate and case snapshots must be paired')
+        self._candidate = Path(candidate_snapshot).resolve(strict=True) if candidate_snapshot else CANDIDATE
+        self._case = Path(case_snapshot).resolve(strict=True) if case_snapshot else ROOT / 'evals/planar/cases' / case_name
+        self._manifest = self._case / 'candidate.json'
+        if case_snapshot:
+            from launch import case_inventory
+            if case_inventory(self._case) != os.environ.get('PLANAR_T044_CASE_SHA256'):
+                raise ValueError('case snapshot digest changed')
 
     def _record(self, name, value):
         # Unlike Harbor's agent logs, this directory is never mounted into the
@@ -105,7 +115,7 @@ class SmokeCodex(Codex):
         if self.mcp_servers or self.skills_dir or self._resume or self._load:
             raise ValueError('only a fresh run without MCP or skill injection is supported')
         expected = json.loads(self._manifest.read_text())
-        if inventory(CANDIDATE) != expected:
+        if inventory(getattr(self, '_candidate', CANDIDATE)) != expected:
             raise ValueError('candidate does not match frozen inventory')
         workspace = await self.exec_as_agent(environment, command="python3 -c 'import os,stat; p=\"/workspace\"; assert stat.S_ISDIR(os.lstat(p).st_mode) and not os.listdir(p)'", env=ENV)
         if workspace.return_code != 0:
@@ -123,7 +133,7 @@ class SmokeCodex(Codex):
         with tempfile.TemporaryDirectory(prefix='planar-market-') as temp:
             market = Path(temp)
             market.chmod(0o755)
-            shutil.copytree(CANDIDATE, market / 'plugins/planar')
+            shutil.copytree(getattr(self, '_candidate', CANDIDATE), market / 'plugins/planar')
             metadata = market / '.agents/plugins/marketplace.json'
             metadata.parent.mkdir(parents=True)
             metadata.write_text(json.dumps({'name': 'planar-smoke-market', 'interface': {'displayName': 'Planar smoke'}, 'plugins': [{'name': 'planar', 'source': {'source': 'local', 'path': './plugins/planar'}, 'policy': {'installation': 'AVAILABLE', 'authentication': 'ON_INSTALL'}, 'category': 'Productivity'}]}))
@@ -156,7 +166,7 @@ class SmokeCodex(Codex):
         # Retain only known, non-secret fields; never export the whole home/config.
         self._record('planar-install-provenance.json', {'candidate_sha256': expected['sha256'], 'installed_path': CACHE, 'plugin_id': data['pluginId'], 'list_contains_plugin': True, 'effective_config': {'plugins': final['plugins'], 'skills': final['skills'], 'features': final['features']}})
         if getattr(self, '_case_name', 'plugin-smoke') == 'fresh-interrupted-review':
-            case = ROOT / 'evals/planar/cases/fresh-interrupted-review'
+            case = getattr(self, '_case', ROOT / 'evals/planar/cases/fresh-interrupted-review')
             with tempfile.TemporaryDirectory(prefix='planar-recovery-') as temp:
                 staging = Path(temp)
                 staging.chmod(0o755)
@@ -192,7 +202,8 @@ class SmokeCodex(Codex):
             validate_recovery_selection(instruction, self.model_name, self.options.reasoning_effort)
         if self._resolve_auth_json_path() is None:
             raise ValueError('file-backed subscription authentication is required')
-        if self.version() != '0.169.0' or self.model_name != 'gpt-6.1-terra' or self.options.reasoning_effort != 'medium':
+        approved_effort = os.environ.get('PLANAR_T044_EFFORT', 'medium')
+        if approved_effort not in ('medium', 'high') or self.version() != '0.169.0' or self.model_name != 'gpt-6.1-terra' or self.options.reasoning_effort != approved_effort:
             raise ValueError('unexpected CLI version or model')
         if self._resume or self._load or self.mcp_servers or self.skills_dir:
             raise ValueError('only fresh, unextended exec is supported')

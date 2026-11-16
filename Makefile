@@ -17,7 +17,7 @@ PLANAR_REPO_ROOT := $(CURDIR)
 export PLANAR_REPO_ROOT EVALS_OUTPUT_ROOT CASE AUTH_FILE REVIEW_FILE HOST
 
 help:
-	@printf '%s\n' 'Planar developer commands:' '  install / uninstall HOST=codex|claude  Select one host' '  install-codex / uninstall-codex  Install/remove the local plugin in Codex' '  install-claude / uninstall-claude Install/remove the local plugin in Claude Code' '  evals-setup  Install locked evaluation dependencies' '  evals-test   Run adapter and case tests without a model' '  evals-plan   Preflight CASE (default: fresh-interrupted-review)' '  evals-run    Execute reviewed CASE (requires AUTH_FILE and REVIEW_FILE)' '  evals        Run no-model evaluation tests'
+	@printf '%s\n' 'Planar developer commands:' '  install / uninstall HOST=codex|claude  Select one host' '  install-codex / uninstall-codex  Install/remove the local plugin in Codex' '  install-claude / uninstall-claude Install/remove the local plugin in Claude Code' '  evals-setup  Install locked evaluation dependencies' '  evals-test   Run adapter, case and experiment tests without a model' '  evals-plan   Preflight CASE (default: fresh-interrupted-review)' '  evals-run    Execute reviewed CASE (requires AUTH_FILE and REVIEW_FILE)' '  evals        Run no-model evaluation tests'
 
 install uninstall:
 	@case "$$HOST" in codex|claude) $(MAKE) "$@-$$HOST" ;; *) printf '%s\n' 'HOST must be codex or claude' >&2; exit 2 ;; esac
@@ -38,6 +38,7 @@ evals-setup:
 evals-test:
 	uv run --project evals --locked python -m unittest discover -s evals/planar/adapters -p 'test_*.py' -v
 	uv run --project evals --locked python -m unittest discover -s evals/planar/cases/fresh-interrupted-review -p 'test_*.py' -v
+	uv run --project evals --locked python -m unittest discover -s evals/planar/experiments -p 'test_*.py' -v
 evals-plan:
 	PLANAR_EVALS_OUTPUT_ROOT="$$EVALS_OUTPUT_ROOT" uv run --project evals --locked python evals/planar/adapters/launch.py --case "$$CASE"
 evals-run:

@@ -115,3 +115,39 @@ An [offline interrupted-review oracle draft](cases/fresh-interrupted-review/READ
 provides a bounded fresh-session recovery case. Its synthetic and no-auth
 controls are not a live pass; execution requires independent review and a new
 matching one-use gate. The case README states its evidence and limitations.
+
+### Experimental deterministic controls
+
+`experiments/cli.py` provides a model-free version-1 plan, run/continue and
+report prototype. Each execution is a fresh Harbor job using the real `nop`
+agent and a test-only fake environment; verification is disabled, so every
+execution is incomplete rather than a plugin pass. A native START hook records
+actual Harbor job and trial IDs before environment setup. Raw jobs are retained.
+The absolute job deadline includes time paused between continuations. Run the
+controls with `evals/.venv/bin/python -m unittest discover -s
+evals/planar/experiments -v`. CLI help is available with
+`evals/.venv/bin/python evals/planar/experiments/cli.py --help`.
+
+The experimental Codex path requires a separate matching one-use review gate
+for each execution. `codex-plan` prints the review inputs and `codex-run`
+launches only one selected execution. `codex-batch` accepts a JSON mapping of
+each unreserved logical trial to a distinct existing matching review gate,
+checks the whole mapping, and stops after an account-limit result. Incomplete
+executions require an explicit `codex-run --retry-of` selection and a fresh
+gate; retries retain their predecessor. It uses frozen snapshots, the existing
+guarded launcher and cleanup checks, and classifies native typed limit errors.
+An account stop persists across invocations until `resolve-account-stop` records
+an explicit reason; unresolved interrupted executions also block dispatch.
+Serial admission and stops are shared by experiments using the same configured
+evaluation output root. Separately configured output roots do not share this
+protection; use one root for the same account. Standalone T-044 diagnostic
+launches do not participate in this experiment admission lock and must not run
+concurrently against that account.
+Independent review of this integration is required before any live execution.
+After verified native identity and cleanup, a behavioral outcome requires a
+valid separate-verifier binary reward, its retained reward file and matching
+structured `status.json`. Missing, conflicting or infrastructure evidence stays
+incomplete; typed native errors take precedence. This narrow grading does not
+establish full test acceptance. Live crash reconciliation, verifier-versioned
+regrade and cross-vendor acceptance remain pending. No-model controls are not
+plugin behavior evidence.
