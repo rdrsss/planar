@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import platform
+import runpy
 import importlib.metadata
 from pathlib import Path
 import shutil
@@ -18,7 +19,7 @@ import uuid
 from harbor.models.job.config import JobConfig
 from harbor.models.task.task import Task
 from candidate import inventory
-from smoke_codex import CANDIDATE, CONFIG, MANIFEST, ROOT, HOME, CACHE
+from smoke_codex import CANDIDATE, CONFIG, MANIFEST, ROOT, HOME, CACHE, validate_recovery_selection
 from supervise import supervise
 from recover import recover_projects
 
@@ -26,7 +27,7 @@ PROJECT = ROOT.parent
 REVIEWS = PROJECT / 'reviews'
 EVALS = ROOT / 'evals'
 CASE = EVALS / 'planar/cases/plugin-smoke'
-CASES = {name: EVALS / 'planar/cases' / name for name in ('plugin-smoke', 'native-lineage-smoke')}
+CASES = {name: EVALS / 'planar/cases' / name for name in ('plugin-smoke', 'native-lineage-smoke', 'fresh-interrupted-review')}
 
 
 def case_inventory(case):
@@ -108,6 +109,12 @@ def plan(case_name='plugin-smoke'):
     if inventory(CANDIDATE) != expected:
         raise ValueError('candidate differs from recorded frozen inventory')
     config = config_for('planar-t044-plan', REVIEWS / 'harbor-t044-jobs', case)
+    if case_name == 'fresh-interrupted-review':
+        selected = config['agents'][0]
+        validate_recovery_selection((case / 'instruction.md').read_text(), selected['model_name'], selected['kwargs']['reasoning_effort'])
+        compatibility = runpy.run_path(str(case / 'compatibility.py'))['inspect'](CANDIDATE, case / 'fixture-v2')
+        if compatibility['missing_packet_sections'] or compatibility['immutable_replacement_required']:
+            raise ValueError('v2 recovery packet incompatible with selected candidate')
     config_digest = hashlib.sha256(json.dumps(config, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     task = Task(case).config
     prerequisites = {'cwd': str(Path.cwd().resolve()), 'repository_root': str(ROOT),
@@ -128,6 +135,9 @@ def plan(case_name='plugin-smoke'):
         'budgets_seconds': {'agent': task.agent.timeout_sec, 'verifier': task.verifier.timeout_sec, 'job': 1500, 'grace': 15},
         'cleanup_owner': 'SmokeCodex and watchdog process group; recovery marker until confirmed',
         'last_observed_event': 'preflight plan', 'verdict': 'pending'}
+    if case_name == 'fresh-interrupted-review':
+        prerequisites['execution_gate'] = 'requires independent review and matching one-use gate before execution'
+        prerequisites['fixture'] = 'portable source-derived fixture; applicability requires independent review'
     return {'prerequisites': prerequisites, 'case': case_name, 'case_sha256': case_inventory(case),
             'image_id': Task(case).config.environment.docker_image,
             'implementation_sha256': source_digest(case), 'candidate_sha256': expected['sha256'],

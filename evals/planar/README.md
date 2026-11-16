@@ -52,18 +52,17 @@ replay when available; older runs without that record report it unavailable. The
 role delivery, automatic activation, backend identity and full TEST-S69 remain
 unverified or pending; native events are agent-writable.
 
-Print the frozen, no-auth launch plan with:
+Attempt to print the frozen, no-auth launch plan with:
 
 ```sh
 uv run --project evals --locked python evals/planar/adapters/launch.py --case native-lineage-smoke
 ```
 
-Reassess a retained execution without a model using:
+The launcher refuses before printing a plan if the current plugin differs from
+the historical frozen inventory. A current launch needs a reviewed freeze and gate.
 
-```sh
-python3 evals/planar/adapters/replay_native_lineage.py /path/to/retained-execution
-```
- This new assessment cross-checks retained host
+Reassess a retained execution without a model using the [historical snapshot
+procedure](#t-053-preflight-and-historical-replay). This assessment cross-checks retained host
 candidate/install records; it is not a new live execution and does not alter
 the original verifier result. A fresh live attempt requires a new one-use
 review gate bound to the printed case, candidate, configuration, implementation
@@ -99,4 +98,20 @@ Run the launcher from the repository root. Its secret-free plan checks the repos
 
 The historical online execution `planar-t044-03b5a69016f645e8b07d821b8df35049` had reward 1 with candidate `2e229df68784143220d6550bed33719016b1547689ac5a25d5d9f1e4cb1f3368` and implementation `e2513f8c8fbdeb83a25059fe74b891bbf020440a79fbfb90afdf983e53eae26a`; it is not a live result for later code. For offline replay, extract `plugins/planar` from Git commit `afda641` into a separate directory and pass that directory as the second argument to `replay_native_lineage.py`. Replay checks its full inventory against the frozen manifest and recorded host provenance. It reports the current checker and case digests and `new_live_execution: false`; it does not rewrite historical grades. A changed current candidate requires a separately reviewed freeze and gate before launch.
 
-The next-case mapping is [fresh recovery](cases/fresh-recovery-plan.md); it is a plan for T-045, not an implementation or acceptance result.
+From the repository root, with the historical commit and a retained execution available:
+
+```sh
+snapshot_dir=$(mktemp -d)
+git archive afda641 plugins/planar | tar -x -C "$snapshot_dir"
+python3 evals/planar/adapters/replay_native_lineage.py /path/to/retained-execution "$snapshot_dir/plugins/planar"
+```
+
+The retained execution is project-local evidence, not included in a clone.
+Remove the temporary snapshot when finished.
+
+The [fresh recovery mapping](cases/fresh-recovery-plan.md) describes the T-045 case; it is not an acceptance result.
+
+An [offline interrupted-review oracle draft](cases/fresh-interrupted-review/README.md)
+provides a bounded fresh-session recovery case. Its synthetic and no-auth
+controls are not a live pass; execution requires independent review and a new
+matching one-use gate. The case README states its evidence and limitations.

@@ -26,8 +26,10 @@ python3 evals/planar/adapters/candidate.py plugins/planar --compare evals/planar
 uv run --project evals --locked python evals/planar/adapters/launch.py
 ```
 
-The last command prints the current launch plan and digests without starting a
-subprocess. Project-local no-auth Docker integration controls and their
+The comparison and launch-plan commands refuse when the current plugin differs
+from the historical frozen candidate; they start no subprocess. A current launch
+needs a separately reviewed freeze and gate. For historical snapshot replay, see
+[Planar evaluations](planar/README.md#t-053-preflight-and-historical-replay). Project-local no-auth Docker integration controls and their
 prerequisites are documented in `reviews/tools/harbor-t044/README.md` relative
 to the project directory; they do not travel in a repository-only clone. A
 durable recovery marker blocks another attempt if watchdog cleanup is

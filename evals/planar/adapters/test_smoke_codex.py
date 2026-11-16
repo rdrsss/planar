@@ -27,6 +27,12 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
         self.agent._resolve_auth_json_path = lambda: Path('/not-read/auth.json')
         self.agent.exec_as_root = AsyncMock()
 
+    async def test_recovery_selection_is_checked_before_auth(self):
+        self.agent._case_name = 'fresh-interrupted-review'
+        self.agent._resolve_auth_json_path = lambda: self.fail('auth should not be checked')
+        with self.assertRaisesRegex(ValueError, 'session selection'):
+            await self.agent.run('wrong or missing selection', object(), object())
+
     async def test_setup_failure_cleans_fixed_paths(self):
         with patch.object(Codex, 'run', new=AsyncMock(side_effect=RuntimeError('hook failure'))):
             with self.assertRaisesRegex(RuntimeError, 'hook failure'):
@@ -136,6 +142,15 @@ class OrderingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('planar-inventory.py', self.events[7])
         self.assertIn('config.toml', self.events[8])
         self.assertTrue((self.agent.logs_dir / 'planar-install-provenance.json').is_file())
+
+    async def test_recovery_fixture_is_installed_after_package(self):
+        self.agent._case_name = 'fresh-interrupted-review'
+        self.outputs.append(self.json.dumps({'base':'08bacc341a31f32c14a1695b5b2de5c44b3a3e56', 'files':32, 'fixture_version':'v2-clean-review-boundary'}))
+        with patch.object(Codex, '_upload_effective_config', new=AsyncMock()):
+            await self.agent._upload_effective_config(self.environment, self.config, HOME+'/config.toml')
+        self.assertIn('install_fixture', self.events[-1])
+        self.assertEqual(self.environment.upload_dir.await_count, 2)
+        self.assertTrue((self.agent.logs_dir/'planar-fixture-provenance.json').is_file())
 
     async def test_preseeded_workspace_blocks_before_config_or_model(self):
         from types import SimpleNamespace

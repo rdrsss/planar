@@ -89,6 +89,46 @@ class LaunchControls(unittest.TestCase):
         self.assertEqual(plan['case_sha256'], launch.case_inventory(launch.CASES['native-lineage-smoke']))
         self.assertEqual(plan['image_id'], 'sha256:80c72c37a539e081165e5cebf0f4a6e33852e34df7cee7afaefc3bc0ab0da5a7')
 
+    def test_plan_and_execution_use_same_generated_settings(self):
+        for name, case in launch.CASES.items():
+            with self.subTest(case=name):
+                self.case_name = name
+                planned = launch.plan(name)['configuration']
+                actual = launch.config_for('actual-run', Path('/tmp/actual-run'), case)
+                for key in ('job_name', 'jobs_dir'):
+                    planned.pop(key); actual.pop(key)
+                self.assertEqual(planned, actual)
+
+    def test_recovery_selection_matches_fixed_instruction_and_job_config(self):
+        self.case_name = 'fresh-interrupted-review'
+        original = launch.config_for
+        for field, bad in (('model_name', 'wrong-model'), ('reasoning_effort', 'high')):
+            def altered(*args, **kwargs):
+                data = original(*args, **kwargs)
+                if field == 'model_name': data['agents'][0]['model_name'] = bad
+                else: data['agents'][0]['kwargs']['reasoning_effort'] = bad
+                return data
+            with self.subTest(field=field), patch.object(launch, 'config_for', side_effect=altered):
+                with self.assertRaisesRegex(ValueError, 'session selection'):
+                    launch.plan(self.case_name)
+
+    def test_recovery_selection_rejects_missing_or_misattributed_source(self):
+        from smoke_codex import RECOVERY_SESSION_SELECTION, validate_recovery_selection
+        validate_recovery_selection(RECOVERY_SESSION_SELECTION, 'gpt-6.1-terra', 'medium')
+        for instruction in ('', RECOVERY_SESSION_SELECTION.replace('launcher selected', 'backend verified'),
+                            RECOVERY_SESSION_SELECTION + RECOVERY_SESSION_SELECTION):
+            with self.subTest(instruction=instruction):
+                with self.assertRaisesRegex(ValueError, 'session selection'):
+                    validate_recovery_selection(instruction, 'gpt-6.1-terra', 'medium')
+
+    def test_recovery_requires_gate_before_auth(self):
+        self.case_name = 'fresh-interrupted-review'
+        plan = launch.plan(self.case_name)
+        self.assertIn('independent review', plan['prerequisites']['execution_gate'])
+        with patch.object(launch.subprocess, 'run', side_effect=AssertionError('must not start a process')):
+            with self.assertRaises(FileNotFoundError):
+                launch.execute(Path('/missing/auth'), Path('/missing/review'), self.case_name)
+
     def test_lineage_stale_case_gate_fails_before_auth(self):
         self.case_name = 'native-lineage-smoke'
         plan = launch.plan('native-lineage-smoke')

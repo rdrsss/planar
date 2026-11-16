@@ -1,0 +1,9 @@
+version: 1
+orchestration:
+  mode: skill
+profile: revision-fault
+policy: scratch
+policies:
+  scratch:
+    worktree: none
+    commit: none

@@ -15,7 +15,7 @@ from harbor.models.task.config import NetworkMode
 
 from harbor.environments.docker.docker import DockerEnvironment, _sanitize_docker_compose_project_name
 
-from safe_export import MAX_ARCHIVE, select_archive, select_flat_archive, select_native_logs, write_tree
+from safe_export import MAX_ARCHIVE, select_archive, select_flat_archive, select_native_logs, select_recovery_home, write_tree
 
 
 class GuardedDocker(DockerEnvironment):
@@ -25,8 +25,9 @@ class GuardedDocker(DockerEnvironment):
         if not re.fullmatch(r'planar-t044-(?:noauth-)?[0-9a-f]{32}', run_id):
             raise ValueError('invalid launcher execution identity')
         case_name = os.environ.get('PLANAR_T044_CASE', 'plugin-smoke')
-        if case_name not in ('plugin-smoke', 'native-lineage-smoke'):
+        if case_name not in ('plugin-smoke', 'native-lineage-smoke', 'fresh-interrupted-review'):
             raise ValueError('unsupported diagnostic case')
+        self._case_name = case_name
         raw_session = kwargs.get('session_id')
         if not isinstance(raw_session, str):
             raise ValueError('environment session identity is required')
@@ -107,6 +108,12 @@ class GuardedDocker(DockerEnvironment):
         if source_dir == '/logs/agent' and not self._static_verifier:
             archive = await self._archive(source_dir + '/.')
             write_tree(Path(target_dir), select_native_logs(archive))
+        elif source_dir == '/workspace/home' and not self._static_verifier and self._case_name == 'fresh-interrupted-review':
+            fixture = Path(__file__).resolve().parents[1] / 'cases/fresh-interrupted-review/fixture/inventory.json'
+            manifest = json.loads(fixture.read_text())['files']
+            retained = {name[len('home/'):] for name in manifest if name.startswith('home/')}
+            archive = await self._archive(source_dir + '/.')
+            write_tree(Path(target_dir), select_recovery_home(archive, retained))
         elif source_dir == '/logs/artifacts' and not self._static_verifier:
             archive = await self._archive(source_dir + '/.')
             write_tree(Path(target_dir), select_flat_archive(archive, set()))
@@ -117,6 +124,15 @@ class GuardedDocker(DockerEnvironment):
             raise RuntimeError('container directory export denied')
 
     async def download_file(self, source_path, target_path):
+        if self._case_name == 'fresh-interrupted-review':
+            allowed = {'/workspace/repository/README.md', '/workspace/repository/RESULT.txt', '/workspace/repository/STATE.txt'}
+            if source_path not in allowed: raise RuntimeError('container file export denied')
+            name = Path(source_path).name
+            if Path(target_path).name != name: raise ValueError('unexpected output filename')
+            selected = select_archive(await self._archive(source_path), {name})
+            if set(selected) != {name}: raise ValueError('expected output is absent')
+            write_tree(Path(target_path).parent, selected)
+            return
         if source_path != '/workspace/RESULT.txt':
             raise RuntimeError('container file export denied')
         cid = await self._platform._resolve_service_container('main')

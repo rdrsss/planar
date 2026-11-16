@@ -1,0 +1,2 @@
+Profile: home/profiles/revision-fault.yaml; SHA-256 ea05cae38488f1e509db44eacb82dc057e9ce1018652e2abc315b793c09650f7; version 2; host codex
+Driver: gpt-6.1-terra/medium, driver_execution.codex; worker: gpt-6.1-terra/medium, stages.implement.execution.codex; reviewer: gpt-6.1-sol/medium, stages.review.reviewers[0].execution.codex; spec reviewer: gpt-6.1-sol/medium, spec_review.reviewers[0].execution.codex; spec checker: gpt-6-luna/medium, spec_check.execution.codex. All bindings sourced from the profile.

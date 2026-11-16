@@ -159,3 +159,60 @@ def select_flat_archive(data: bytes, allowed: set[str]) -> dict[str, bytes]:
                 raise ValueError('invalid flat archive length')
             result[name] = content
     return result
+
+
+def select_recovery_home(data: bytes, retained: set[str]) -> dict[str, bytes]:
+    """Select only the declared home-relative recovery export."""
+    import re
+    if len(data) > MAX_ARCHIVE or not retained or any(
+        not isinstance(p, str) or p.startswith('/') or any(x in ('', '.', '..') for x in p.split('/'))
+        or not (p.startswith('projects/revision-fault/') or p == 'profiles/revision-fault.yaml' or p == 'settings.yaml')
+        for p in retained
+    ):
+        raise ValueError('invalid recovery export or allowlist')
+    def selected_markdown(name):
+        prefix = 'projects/revision-fault/'
+        if not name.startswith(prefix): return False
+        relative = name[len(prefix):]
+        parts = relative.split('/')
+        if len(parts) == 3 and parts[:2] == ['tasks', 'T-001']:
+            leaf = parts[2]
+        elif len(parts) == 2 and parts[0] == 'reviews':
+            leaf = parts[1]
+        else:
+            return False
+        return (len(leaf) <= 160 and re.fullmatch(r'[A-Za-z0-9]+(?:[-_.][A-Za-z0-9]+)*\.md', leaf) is not None
+                and not re.search(r'(?i)(?:secret|token|credential|password|auth|api[-_]?key)', leaf))
+    def member_label(name):
+        # Only report short, safe relative project names; never echo secrets,
+        # traversal, control characters or untrusted absolute paths.
+        if (len(name) <= 160 and re.fullmatch(r'[A-Za-z0-9_.\-/]+', name)
+                and not name.startswith('/') and all(p not in ('', '.', '..') for p in name.split('/'))
+                and not re.search(r'(?i)(?:secret|token|credential|password|auth|api[-_]?key)', name)
+                and all(len(p) <= 64 for p in name.split('/'))):
+            return name
+        return '<redacted>'
+    result = {}
+    directories = set()
+    with tarfile.open(fileobj=io.BytesIO(data), mode='r:*') as archive:
+        for member in archive:
+            name = member.name
+            while name.startswith('./'):
+                name = name[2:]
+            if name in ('', '.') and member.isdir():
+                continue
+            if not name or len(name) > 240 or name.startswith('/') or any(p in ('', '.', '..') for p in name.split('/')):
+                raise ValueError('unsafe recovery export path')
+            if member.isdir():
+                if name in directories or not (any(p.startswith(name + '/') for p in retained) or name in ('projects', 'projects/revision-fault', 'projects/revision-fault/tasks', 'projects/revision-fault/tasks/T-001', 'projects/revision-fault/reviews', 'profiles')):
+                    raise ValueError('unexpected recovery directory: ' + member_label(name))
+                directories.add(name)
+                continue
+            if (name not in retained and not selected_markdown(name)) or not member.isfile() or name in result or member.size > MAX_FILE or len(result) >= MAX_FILES:
+                raise ValueError('invalid recovery export entry: ' + member_label(name))
+            reader = archive.extractfile(member)
+            if reader is None: raise ValueError('unreadable recovery entry')
+            content = reader.read(MAX_FILE + 1)
+            if len(content) != member.size: raise ValueError('invalid recovery entry size')
+            result[name] = content
+    return result

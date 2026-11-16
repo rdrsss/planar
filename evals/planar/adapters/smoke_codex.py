@@ -18,6 +18,14 @@ MANIFEST = ROOT / 'evals/planar/cases/plugin-smoke/candidate.json'
 HOME = '/installed-agent/codex-home'
 CACHE = HOME + '/plugins/cache/planar-smoke-market/planar/0.1.0'
 ENV = {'CODEX_HOME': HOME, 'OPENAI_API_KEY': '', 'CODEX_API_KEY': ''}
+RECOVERY_SESSION_SELECTION = ('The launcher selected this fresh session with model `gpt-6.1-terra` and reasoning effort `medium` in its fixed job configuration. This is the configured selection; backend model and effort are not independently observed.')
+
+
+def validate_recovery_selection(instruction, model, effort):
+    if model != 'gpt-6.1-terra' or effort != 'medium' or instruction.count(RECOVERY_SESSION_SELECTION) != 1:
+        raise ValueError('recovery session selection does not match the fixed launcher configuration')
+
+
 CONFIG = {
     'plugins': {'_default': {'enabled': False}},
     'skills': {'bundled': {'enabled': False}},
@@ -38,8 +46,9 @@ class SmokeCodex(Codex):
             raise ValueError('provenance directory is outside the project evidence root')
         self._execution_id = self._provenance_dir.name
         case_name = os.environ.get('PLANAR_T044_CASE', 'plugin-smoke')
-        if case_name not in ('plugin-smoke', 'native-lineage-smoke'):
+        if case_name not in ('plugin-smoke', 'native-lineage-smoke', 'fresh-interrupted-review'):
             raise ValueError('unsupported case')
+        self._case_name = case_name
         self._manifest = ROOT / 'evals/planar/cases' / case_name / 'candidate.json'
 
     def _record(self, name, value):
@@ -85,6 +94,8 @@ class SmokeCodex(Codex):
             await self._upload_effective_config(environment, CONFIG, HOME + '/config.toml')
             self._record('planar-preauth.json', {'status': 'passed', 'container_id': full_id, 'image_id': image_id})
         finally:
+            if getattr(self, '_case_name', 'plugin-smoke') == 'fresh-interrupted-review':
+                await self.exec_as_root(environment, command='rm -rf /workspace/home /workspace/repository /tmp/planar-recovery-fixture && test ! -e /workspace/home && test ! -e /workspace/repository && test ! -e /tmp/planar-recovery-fixture', timeout_sec=30)
             await self.exec_as_root(environment, command='rm -rf /installed-agent/codex-home && test ! -e /installed-agent/codex-home', timeout_sec=30)
 
     async def _upload_effective_config(self, environment, config, remote_path):
@@ -143,8 +154,25 @@ class SmokeCodex(Codex):
             raise ValueError('installed plugin absent from native list')
         # Retain only known, non-secret fields; never export the whole home/config.
         self._record('planar-install-provenance.json', {'candidate_sha256': expected['sha256'], 'installed_path': CACHE, 'plugin_id': data['pluginId'], 'list_contains_plugin': True, 'effective_config': {'plugins': final['plugins'], 'skills': final['skills'], 'features': final['features']}})
+        if getattr(self, '_case_name', 'plugin-smoke') == 'fresh-interrupted-review':
+            case = ROOT / 'evals/planar/cases/fresh-interrupted-review'
+            with tempfile.TemporaryDirectory(prefix='planar-recovery-') as temp:
+                staging = Path(temp)
+                staging.chmod(0o755)
+                shutil.copyfile(case / 'install_fixture.py', staging / 'install_fixture.py')
+                shutil.copyfile(case / 'materialize_v2.py', staging / 'materialize_v2.py')
+                shutil.copytree(case / 'fixture', staging / 'fixture')
+                shutil.copytree(case / 'fixture-v2', staging / 'fixture-v2')
+                await environment.upload_dir(staging, '/tmp/planar-recovery-fixture')
+            result = await self.exec_as_agent(environment, command="python3 -c 'import sys,json; sys.path.insert(0,\"/tmp/planar-recovery-fixture\"); from install_fixture import install; print(json.dumps(install(\"/workspace\")))'", env=ENV)
+            receipt = json.loads(result.stdout)
+            if receipt.get('base') != '08bacc341a31f32c14a1695b5b2de5c44b3a3e56' or receipt.get('files') != 32 or receipt.get('fixture_version') != 'v2-clean-review-boundary':
+                raise ValueError('recovery fixture installation failed')
+            self._record('planar-fixture-provenance.json', receipt)
 
     async def exec_as_agent(self, environment, command, env=None, cwd=None, timeout_sec=None):
+        if getattr(self, '_case_name', 'plugin-smoke') == 'fresh-interrupted-review':
+            env = {**(env or {}), 'PLANAR_HOME': '/workspace/home'}
         is_exec = 'codex exec ' in command
         if is_exec:
             self._record('planar-launch.json', {'command': command, 'codex_home': HOME, 'model': self.model_name, 'cli_version': self.version(), 'status': 'started'})
@@ -159,6 +187,8 @@ class SmokeCodex(Codex):
         return result
 
     async def run(self, instruction, environment, context):
+        if getattr(self, '_case_name', 'plugin-smoke') == 'fresh-interrupted-review':
+            validate_recovery_selection(instruction, self.model_name, self.options.reasoning_effort)
         if self._resolve_auth_json_path() is None:
             raise ValueError('file-backed subscription authentication is required')
         if self.version() != '0.169.0' or self.model_name != 'gpt-6.1-terra' or self.options.reasoning_effort != 'medium':

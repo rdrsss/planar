@@ -27,7 +27,7 @@ class VerifierCaseGuard(unittest.TestCase):
             network_policy=NetworkPolicy(network_mode=mode), auto_mounting=False)
 
     def test_supported_cases_construct_and_register(self):
-        for case in ('plugin-smoke', 'native-lineage-smoke'):
+        for case in ('plugin-smoke', 'native-lineage-smoke', 'fresh-interrupted-review'):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
                 self.evidence = Path(tmp) / ('planar-t044-noauth-' + 'b' * 32); self.evidence.mkdir()
                 os.environ['PLANAR_T044_EVIDENCE_DIR'] = str(self.evidence)
