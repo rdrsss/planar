@@ -444,3 +444,12 @@ When the run ends, for whatever reason, your final reply states:
 
 Take all of it from the task list, the records and `git log`, not from
 memory.
+
+## Packet preflight and complete reads (TS-8.13)
+
+Follow the canonical packets reference before each worker or reviewer dispatch,
+including immutable evidence and immediate review-candidate freshness checks.
+Read oversized required evidence in sequential bounded ranges with version/hash
+coverage; recover truncated ranges and preserve full earlier reviews. Unread
+ranges remain work. Preserve durable progress across turns and report a stop
+through the loop's communication rules.

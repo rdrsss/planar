@@ -3,7 +3,7 @@
 The single definition of the five files that pass work between agents in the
 execution loop: the worker packet, the worker report, the checks file, the
 reviewer packet and the review. Implements PRD-R9 to PRD-R13, TS-8 (TS-8.1 to
-TS-8.5, TS-8.7, TS-8.8, TS-8.11 and TS-8.12), TS-19.5, TS-19.7, TS-19.8, TS-23
+TS-8.5, TS-8.7, TS-8.8, TS-8.11 to TS-8.13), TS-19.5, TS-19.7, TS-19.8, TS-23
 and layout entry LAY-1.5.7. Follow it whenever you write or read one of these
 files. Where the files live, who writes each and the
 task record are in the project and task record references
@@ -60,6 +60,40 @@ section and every other required section are present and accurate against the
 frozen configuration and durable inputs. Do not mark a packet complete if any
 required input is missing or cannot be verified; stop at that boundary and
 report the blocker. Missing runtime observations alone do not block dispatch.
+
+## Preflight and complete reads (TS-8.13)
+
+Before finalizing each worker or reviewer packet, compare it to the current
+rules and ordered outline below, including conditional sections and terminal
+status. Check task and attempt, base and allowed paths against the record and
+task list; compare cited sections and every applicable task and common check
+definition in full to their sources. Check all earlier reviews, findings,
+recorded answers and applicable corrections in full against durable history,
+not summaries. Verify frozen configuration and its source/digest, recipient
+bindings and path substitution; optional unavailable host observations do not
+block. For review, compare the complete base-relative diff including new and
+untracked files, checks and reruns, ownership, unattributed changes and overlap
+accounts against the current tree and task records. Missing or unverifiable
+required content blocks dispatch.
+
+Record the preflight outcome and hashes of the finalized packet and candidate
+inputs in a separate immutable task-local observation linked from the record,
+without changing the packet or six-field log grammar. Immediately before each
+review dispatch, recheck mutable candidate inputs against those hashes, including
+new files and attribution; report drift and do not dispatch a stale packet.
+Preserve the old evidence and use the replacement procedure below when a
+completed packet is malformed. Rebuild from verified current inputs and preflight
+again when candidate drift makes a completed reviewer packet stale; do not
+conceal concurrent edits or reset attempts or counters.
+
+If a required source exceeds an output limit, read sequential bounded ranges,
+tracking the actual file version/hash and ranges covered. Read missing ranges
+after visible truncation; recheck the hash and restart coverage if bytes changed.
+Do not bundle large reads into one response and call truncated output complete.
+Unread ranges are remaining work, not evidence of host refusal. Preserve durable
+progress and continue the live thread when supported or resume from artifacts;
+a completed turn is not a completed task. Full earlier reviews remain readable
+and included. Report a stop under the loop's communication rules.
 
 ## Replacing a malformed completed packet
 
@@ -388,8 +422,9 @@ Sections, in this order:
 
 1. `# Reviewer packet: <task-id>, attempt <n>`.
 2. `## Resolved configuration`: the evidence above for the reviewers.
-3. `## Task`, `## Paths you may create or change` (with the base commit) and
-   `## Cited spec sections, in full`: exactly as in the worker packet.
+3. `## Task`, `## Paths you may create or change` (with the base commit),
+   `## Cited spec sections, in full` and `## Checks this task must pass`:
+   exactly as in the worker packet, including all applicable definitions.
 4. `## Change`: the task's change in full, in a tilde fence marked `diff`. The
    task's change is everything under the task's `touches` paths that differs
    from the attempt's base commit, new files included. Take it with
@@ -461,6 +496,16 @@ Base commit: 4f2a9c1
 
 - **TS-4.1 List row.** A row is `<title> (<colour>)`; a widget with no colour
   shows `<title>`.
+
+## Checks this task must pass
+
+### TEST-C1
+
+- **TEST-C1** The list shows colours. Run from the root of the working tree:
+
+  ```sh
+  ./build/list-test --filter colour
+  ```
 
 ## Change
 

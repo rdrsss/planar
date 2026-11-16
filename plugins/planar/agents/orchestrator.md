@@ -143,3 +143,12 @@ any task waiting for the operator. A normal round return leaves the session
 responsible for the next authorized round; do not claim that a successor is
 running until observed. Workflow bookkeeping returns the same relevant
 observations through its available parent channel.
+
+## Packet preflight and complete reads (TS-8.13)
+
+Follow the canonical packets reference before each worker or reviewer dispatch,
+including immutable evidence and immediate review-candidate freshness checks.
+Read oversized required evidence in sequential bounded ranges with version/hash
+coverage; recover truncated ranges and preserve full earlier reviews. Unread
+ranges remain work. Preserve durable progress across turns and report a stop
+through the loop's communication rules.

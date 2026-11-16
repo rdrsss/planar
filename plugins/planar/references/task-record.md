@@ -175,6 +175,15 @@ locators. Before advertising a host as audit-linked, demonstrate real driver
 and two distinct child-role captures and an exact-ID locator lookup or explicit
 host limitation. Synthetic controls do not establish host capture.
 
+### Packet preflight evidence (TS-8.13)
+
+Link a separate immutable task-local observation recording the preflight result,
+packet hash, candidate input hashes and coverage/version evidence before
+dispatch, using the existing six-field log grammar. Keep later drift or
+replacement evidence as new observations. Do not rewrite completed packets,
+prior observations or history; follow the packets reference for replacement.
+Unavailable optional host observations remain unavailable, not dispatch failures.
+
 ### Completed packet with an omitted start (TS-7.5)
 
 When durable evidence shows that a completed worker or reviewer packet was

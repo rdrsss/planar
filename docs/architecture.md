@@ -387,3 +387,20 @@ scenarios needed to verify these paths remain pending.
   all.
 - **Other harnesses.** Codex has a packaged minimal host contract whose live
   integration remains unverified. Other harnesses are not supported yet.
+
+### Packet preflight and complete evidence
+
+The driver checks each packet against the current canonical packet reference
+before dispatch, records its outcome and packet/candidate hashes, and rechecks
+mutable review inputs immediately before dispatch. The review packet includes
+the complete base-relative change, including new files, applicable check
+definitions and results, ownership and overlap accounts, and full prior
+reviews and answers. Missing required content or candidate drift blocks that
+dispatch; unavailable optional host observations alone do not. A malformed
+completed packet is preserved and replaced through immutable recovery.
+
+When evidence exceeds an output limit, the driver reads sequential bounded
+ranges and tracks coverage against the actual file hash, returning to any
+truncated ranges. Full historical reviews remain available; unread material
+is remaining work. Durable progress supports continuation or resume across
+turns. These rules implement TS-8.13 using existing files and shell operations.
