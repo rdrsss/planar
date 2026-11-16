@@ -5,8 +5,8 @@
 Planar helps agents carry long-running work across sessions: specs, plans,
 tasks, decisions and handoffs that outlast any one conversation.
 
-This repository is a fresh start. It holds Planar as a Claude Code plugin,
-made of skills, agents and Markdown specs. There is no engine binary and no
+This repository is a fresh start. It holds Planar as a plugin for Claude Code
+and Codex, made of skills, agents and Markdown specs. There is no engine binary and no
 database.
 
 ## What Planar was
@@ -34,10 +34,55 @@ This repository keeps the ideas that worked and drops the engine:
 
 - Markdown specs are the source of truth;
 - skills and agents carry the workflow;
-- the plugin is distributed through Claude Code's plugin system.
+- the same plugin package carries host instructions for Claude Code and Codex.
 
 Where an engine would clearly have helped, that gap is recorded rather than
 patched over, so that any future tooling has to show it is needed first.
+
+## Repository layout
+
+The installable plugin lives in [`plugins/planar/`](plugins/planar/). Its
+manifest, skills, agents, profiles and references are scoped to that directory.
+The repository marketplace points to it, and its namespace remains `planar`.
+Other plugins can live alongside it under `plugins/`, each with its own
+manifest name.
+
+## Installation and status
+
+To install from the repository marketplace in Claude Code, add the marketplace
+and install its plugin:
+
+```sh
+claude plugin marketplace add rdrsss/planar
+claude plugin install planar@planar
+```
+
+Restart Claude Code to load it. For local development, run
+`claude --plugin-dir ./plugins/planar` from the repository root. The plugin
+contains the workflow instructions and components, but the Claude end-to-end
+scenarios are still pending verification.
+
+For Codex, `plugins/planar/plugin.json` is the portable root manifest alongside
+the Claude manifest; both package the same skills, agents, profiles and
+references. The documented installation experiment used codex-cli 0.169.0:
+a scratch plugin was listed and added from a local marketplace with
+`codex plugin list --available --json --marketplace <marketplace>` and
+`codex plugin add <plugin>@<marketplace> --json`, using process-local
+marketplace configuration. An explicitly supplied installed skill then read a
+bundled reference from the cache. This is a procedure for the scratch probe,
+not a verified installation recipe for this Planar package. Installed Planar
+discovery and role dispatch still need live checks. See the
+[host contract](plugins/planar/references/hosts.md) for the evidence and
+limits.
+
+The intended Codex scope is the serial minimal skill-mode loop: one pinned
+worker, independent checks and a separate pinned reviewer. The full Planar
+loop, recovery in both host directions and Claude end-to-end scenarios remain
+unverified; required unavailable checks stay pending. Richer Codex profiles,
+autonomy and workflow mode are deferred.
+
+See [architecture](docs/architecture.md) and [methodology](docs/methodology.md)
+for the components and workflow.
 
 ## Acknowledgement
 

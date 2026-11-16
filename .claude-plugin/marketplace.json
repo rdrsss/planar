@@ -7,7 +7,7 @@
   "plugins": [
     {
       "name": "planar",
-      "source": "./",
+      "source": "./plugins/planar",
       "description": "Spec-driven development for long-running agent work: skills, agents and Markdown specs, with no engine."
     }
   ]

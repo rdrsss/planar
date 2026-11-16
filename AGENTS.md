@@ -13,6 +13,16 @@ read-only at [rdrsss/planar-archive](https://github.com/rdrsss/planar-archive).
 Use it as a reference for ideas and past decisions. Do not copy its engine,
 binaries, migrations or Lua compile step into this repository.
 
+## Repository layout
+
+- `plugins/planar/` is the installable Planar plugin root. Keep its manifests,
+  skills, agents, references, profiles, workflows and examples inside it.
+- `.claude-plugin/marketplace.json` at the repository root is the marketplace
+  catalog; its Planar entry points to `./plugins/planar`.
+- Repository guidance, the README, licence and `docs/` stay at the repository
+  root. Give additional plugins their own directories under `plugins/` and
+  manifest namespaces.
+
 ## Working rules
 
 - Keep it engine-free. If a task seems to need an engine, a database or a

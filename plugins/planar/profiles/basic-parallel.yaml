@@ -1,0 +1,62 @@
+# The basic parallel profile: implements PRD-R27 and PRD-R34, TS-17.1
+# and TS-19.3, and layout entry LAY-1.9.3; parallel rounds.
+# references/profiles.md defines the format.
+version: 2
+name: basic-parallel
+description: Parallel rounds with the basic profile stages and reviewers.
+driver: orchestrator
+driver_execution:
+  claude: {model: claude-sonnet-5-5, effort: medium}
+parallel: true
+stages:
+  plan:
+    agent: planner
+    execution:
+      claude: {model: claude-opus-5-5, effort: high}
+  map:
+    agent: mapper
+    execution:
+      claude: {model: claude-sonnet-5-5, effort: medium}
+  implement:
+    agent: worker
+    ladder:
+      - execution:
+          claude: {model: claude-haiku-5-5, effort: high}
+      - execution:
+          claude: {model: claude-sonnet-5-5, effort: medium}
+  check: {}
+  review:
+    reviewers:
+      - agent: reviewer
+        focus: spec-fit
+        execution:
+          claude: {model: claude-opus-5-5, effort: medium}
+      - agent: reviewer
+        focus: correctness
+        execution:
+          claude: {model: claude-opus-5-5, effort: medium}
+limits:
+  revisions: none
+  stall: 2
+spec_review:
+  reviewers:
+    - agent: spec-reviewer
+      focus: intent
+      execution:
+        claude: {model: claude-opus-5-5, effort: medium}
+    - agent: spec-reviewer
+      focus: consistency
+      execution:
+        claude: {model: claude-opus-5-5, effort: medium}
+    - agent: spec-reviewer
+      focus: feasibility
+      execution:
+        claude: {model: claude-opus-5-5, effort: medium}
+spec_check:
+  agent: spec-checker
+  execution:
+    claude: {model: claude-sonnet-5-5, effort: medium}
+decider:
+  agent: decider
+  execution:
+    claude: {model: claude-opus-5-5, effort: high}

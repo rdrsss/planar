@@ -4,22 +4,24 @@ This document describes how Planar is put together. It is written for people
 and is kept in step with the system: when the system changes, this document
 changes with it.
 
-> **Status.** Planar is being built. This document describes the design as
-> decided so far. Nothing here is implemented yet, and parts marked
-> *provisional* may change before they are.
+> **Status.** The plugin contains the skills, agents, profiles, references and
+> workflow described here. Claude end-to-end scenarios remain to be verified;
+> the Codex minimal loop and shared profile are implemented but integration is
+> not yet verified. Descriptions of execution below are the instructions the
+> plugin provides, not claims that every scenario has passed.
 
 For how the pieces are used, see [methodology.md](methodology.md).
 
-The planned Codex host contract and its bounded capability evidence are
-summarized in [hosts.md](../references/hosts.md). The local app-server and
+The Codex host contract and its bounded capability evidence are
+summarized in [hosts.md](../plugins/planar/references/hosts.md). The local app-server and
 native collaboration probes establish separate primitives, not a complete
 Planar integration or cross-host handoff. No engine or shipped runner is
 added for this support.
 
 ## The short version
 
-Planar is a Claude Code plugin, with Codex support planned using the same
-Markdown core. The Codex integration is not yet implemented. It has five
+Planar packages the same Markdown core for Claude Code and the intended minimal
+Codex loop. Codex integration remains to be verified. It has five
 kinds of parts:
 
 - **Skills** carry the method: how to draft specs, how to check them, how
@@ -41,7 +43,7 @@ script to get a step done.
 
 ```mermaid
 flowchart LR
-    subgraph Plugin["Planar plugin (this repository)"]
+    subgraph Plugin["Planar plugin (plugins/planar/)"]
         S[Skills]
         A[Agents]
     end
@@ -70,15 +72,30 @@ flowchart LR
 
 ### The plugin
 
-The plugin lives in this repository and is distributed through Claude Code's
-plugin system. It holds the skills and agents, this documentation, and an
-example settings file.
+The plugin lives under `plugins/planar/`. Its Claude manifest supports Claude
+Code distribution; a portable root `plugin.json` identifies the same
+package for Codex. A discovered installed skill bootstraps the host contract
+relative to its own directory; subsequent bundled links resolve from the
+package root. Codex dispatch loads the complete bundled role instructions into
+a fresh context with bounded inputs and required restrictions. The actual Planar
+installation, discovery and role loading remain to be verified. The scratch
+local marketplace procedure and its limited evidence are described in the
+[README](../README.md#installation-and-status) and host contract. Its manifest,
+skills, agents, profiles and references are scoped to that directory; future
+workflows and example settings belong there too. The manifest keeps the `planar` namespace.
+
+The repository-level `.claude-plugin/marketplace.json` points to
+`./plugins/planar`. The README, repository guidance and this documentation
+stay at the repository root, so another plugin can have its own directory
+under `plugins/` and manifest namespace. For local development, load the plugin with
+`claude --plugin-dir ./plugins/planar` from the repository root.
 
 ### The Planar directory
 
 Everything Planar writes for a user goes under `~/.planar/` by default. Setting
-the environment variable `PLANAR_HOME` moves the whole directory, settings
-file included, somewhere else.
+`PLANAR_HOME` to an existing directory moves the default home, settings file
+included. Settings can also override the projects directory or an individual
+project path.
 
 ```text
 ~/.planar/
@@ -168,8 +185,26 @@ plugin, and an operator can add their own under `~/.planar/profiles/`.
 Every task record notes the profile and the model used at each step, so two
 runs can be compared afterwards.
 
-The repository ships an example settings file holding the maintainer's own
-preferences.
+The repository ships an example settings file. A user profile of the same
+name replaces the shipped profile. The shared `minimal` profile contains
+explicit Claude and Codex model and effort bindings; missing required bindings
+block dispatch. The Codex profile and handoff contract remain unverified in
+the complete Planar loop.
+
+### Recovery and handoff
+
+Task records, numbered artifacts, approved specs and the working tree carry
+recovery state across sessions and hosts. The receiving session verifies the
+approval, tree, profile and attribution, reconciles complete files with their
+logs, and reports the next unfinished step before dispatch. It requires the
+previous driver and children to have stopped, but no old chat or source-vendor
+model call. Partial work is retained; a partial worker, check or review is
+restarted according to its boundary, while completed applicable evidence and
+pending check batches are preserved. Approval and commit bookkeeping is
+reconciled without duplication. A required unavailable host check stays pending
+and blocks approval. A profile switch affects future dispatches only and must
+retain required stages. Live interrupted handoff in both directions remains
+unverified.
 
 ### Replication
 
@@ -226,6 +261,14 @@ Diagrams are written in Mermaid inside the Markdown.
 
 The task list says what each task is. The only state it holds is a checkbox
 per task: done or not done. It is a declaration of the work, not a log of it.
+A complete Mermaid graph shows all tasks and their `after` dependencies,
+including isolated tasks, with each stable ID and current title in its label.
+Complete-graph titles omit inline code backticks and normalize whitespace for
+mechanical comparison; labelled subset overviews may use shorter titles and
+are excluded from complete-graph checks. Entries remain authoritative and the
+spec checker checks the complete graph against them. Authors keep it
+synchronized with task and dependency changes and explain possible parallel paths and shared-path
+constraints. The graph carries no execution state or permission to dispatch.
 
 ### Task records
 
@@ -235,6 +278,13 @@ the loop, so it has a single writer even when tasks run in parallel. Beside it a
 produced: each packet, each worker report, each set of check results and
 each review, numbered by attempt. Nothing in a task directory is edited or
 deleted after it is written; a new attempt gets new files.
+
+Each new dispatch or driver step has a project-local invocation and append-only
+start and observation links in the six-field log. Immutable session observation
+files distinguish sourced host identities, collaboration names and transcript
+locators; unavailable links remain explicit gaps. They supplement completed
+evidence and do not make transcripts a recovery dependency. Final checks report
+audit coverage.
 
 A step counts as done only when its file exists and is complete. If the
 record and the files ever disagree, the files win.
@@ -262,7 +312,7 @@ context is a sign the packet, or the specs behind it, are incomplete.
 
 | Agent | Job | Does not |
 | --- | --- | --- |
-| Spec checker | Confirms section IDs are unique and unchanged, that every citation resolves, and that every requirement is built by a task and tested by a check. | Judge the content. |
+| Spec checker | Confirms section IDs are unique and unchanged, that every citation resolves, that every requirement is built by a task and tested by a check, and that the task dependency graph matches the entries. | Judge the content. |
 | Spec reviewer | Judges a drafted spec set from one focus: fit to the operator's intent, consistency, or feasibility; or through a lens such as API, security or data. The profile says which run. | Rewrite the specs. |
 | Orchestrator | Drives the tasks through the stages and keeps the records, when the profile asks for one. | Keep any state outside the records. |
 | Planner | Writes an implementation plan for each task after approval, and says so when a task cannot be done as specified. | Write code. |
@@ -304,10 +354,10 @@ The execution loop can be driven in two ways:
   workflow can only dispatch agents, so the check runner runs the checks,
   the final check included.
 
-Skill mode is complete by itself, because some organizations do not allow
-workflows and some harnesses do not have them. Both modes use the same
-packets, the same agents and the same task records, so a task started in one
-mode can be continued in the other.
+The instructions specify the same packets, agents and task records for both
+modes and permit continuation between them. Workflow mode is Claude-only;
+Codex is limited to the intended minimal skill-mode profile. The Claude
+scenarios needed to verify these paths remain pending.
 
 ## What is deliberately missing
 
@@ -318,5 +368,5 @@ mode can be continued in the other.
   run may code several tasks in parallel.
 - **No issue tracker sync.** A tracker key can name a project, and that is
   all.
-- **No support for other harnesses yet.** The design keeps skill mode free of
-  Claude-only features so that this stays possible.
+- **Other harnesses.** Codex has a packaged minimal host contract whose live
+  integration remains unverified. Other harnesses are not supported yet.

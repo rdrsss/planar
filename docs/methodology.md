@@ -4,19 +4,33 @@ This document describes how work is done with Planar. It is written for
 people and is kept in step with the system: when the method changes, this
 document changes with it.
 
-> **Status.** Planar is being built. This document describes the method as
-> decided so far. Planar itself is being built with this method, so expect it
-> to change as that work shows what holds up.
+> **Status.** The plugin contains instructions for this method. Claude
+> end-to-end scenarios remain pending, and the Codex minimal loop and its shared
+> profile are implemented but unverified. The steps below describe the intended
+> operation rather than asserting that each scenario has passed.
 
 For the parts the method uses, see [architecture.md](architecture.md).
 
-Codex support is planned, not yet implemented. Its intended minimal loop
+The Codex minimal loop
 uses a selected non-Astra driver, a pinned worker, independent checks and a
 separate pinned reviewer. Configured model and effort are recorded separately
 from host observations; unavailable observations are recorded as such, never
-guessed. See [the host contract](../references/hosts.md) for the tested
+guessed. See [the host contract](../plugins/planar/references/hosts.md) for the tested
 surfaces, restrictions and remaining acceptance work. Richer Codex profiles
-remain deferred.
+remain deferred. Skills select the host first and stop before project writes
+when the required Codex capability cannot be honoured. Codex skills read the
+host contract relative to their discovered installed location; the contract
+resolves bundled links from the package root. Each bundled role's complete
+instructions and bounded inputs go to a fresh context, with its write and
+review restrictions preserved. These Planar-specific paths and dispatches
+still require scenario verification. A scratch app-server probe observed an
+installed skill reading a bundled reference, fresh worker and reviewer
+contexts with an independent check, and a later session reading durable files.
+A separate native collaboration probe exercised explicit model and effort
+pins; its responses did not expose backend observations. Neither probe proves
+installed Planar discovery, the complete loop or cross-host recovery. See the
+[installation status](../README.md#installation-and-status) and host contract
+for the tested procedure and limits.
 
 ## The idea
 
@@ -43,7 +57,9 @@ flowchart TD
     G --> H[Render worker packet]
     H --> I[Worker implements]
     I --> J[Checks run independently]
-    J -- a check fails --> H
+    J -- pending --> P[Preserve results and resume outstanding checks]
+    P --> J
+    J -- all results available, a check fails --> H
     J -- pass --> K[Render reviewer packet]
     K --> L{Reviewer}
     L -- request changes --> H
@@ -59,7 +75,7 @@ flowchart TD
 
 - **Operator.** The person directing the work. Answers open questions,
   approves the specs and decides what merges.
-- **Session.** The Claude Code session the operator is talking to. Runs the
+- **Session.** The host session the operator is talking to. Runs the
   skills and reports. Under the minimal profile it also drives the loop.
 - **Orchestrator.** An agent that drives the loop and keeps the task
   records, under the basic profiles.
@@ -147,8 +163,9 @@ Execution does not start without both.
 
 ## Phase 2: execution
 
-The work is done in a git worktree for the project, on its own branch, so
-the operator's checkout is left alone. Which stages run depends on the
+By default the work is done in a git worktree for the project, on its own
+branch. A policy can instead select the repository checkout and can leave
+changes uncommitted. Which stages run depends on the
 project's **profile**. The steps below are the ones every profile has; the
 basic profiles add two before them:
 
@@ -184,10 +201,15 @@ in workflow mode. The worker's own report of the results is not used. When
 the last task is approved, the same runner runs every task's command checks
 once more on the finished work.
 
-If a check fails, no reviewer is dispatched at all: the task goes straight
-back to a worker with the check output. In a parallel round a failed check is
-first run once more when the other tasks of the round have settled, because a
+When a required check is unavailable, the runner preserves obtained results
+and pending entries in an immutable batch. The task stays at the checks
+boundary, even if another check failed. On resume, the runner retains completed
+results and runs the outstanding checks; the aggregate is written when all
+required results are available. Only then does a failed check send the task
+back to a worker without review. In a parallel round a failed check is first
+run once more when the other tasks of the round have settled, because a
 sibling's unfinished change can make it fail; only a second failure counts.
+The same pending boundary applies to that rerun.
 
 ### 4. Render the reviewer packet
 
@@ -212,17 +234,60 @@ Every step above is written to the task's own record as it happens: the
 packets, each attempt, the check results and each verdict. The task list is
 touched only once, when the task is approved.
 
+## Seeing dependencies
+
+Every task list includes a complete Mermaid flowchart derived from task entries:
+each task, including isolated tasks, has a label with its ID and current title,
+and each `after` dependency is an arrow from prerequisite to dependent. The
+entries are authoritative. Complete-graph titles omit inline code backticks
+and normalize whitespace for mechanical comparison. Authors create the graph
+with the tasks and update it in the same edit as task or dependency changes,
+including label changes for renamed tasks. Large graphs can be grouped or split with explicit boundary IDs;
+a labelled subset overview may use shorter titles and accompany, but cannot
+replace, the complete graph. Subset overviews are excluded from complete-graph
+checks. An empty list says no tasks are defined. The graph carries no execution
+state. The spec checker compares its nodes and edges to the entries and rejects
+drift, unknown or self dependencies and cycles before review.
+
+Alongside the graph, explain potential parallel paths and shared files or
+directory overlaps that constrain them. Shared paths do not add dependency
+arrows. Independent paths alone do not authorize dispatch: readiness, profile
+concurrency and file ownership determine each round.
+
 ## Stopping and resuming
 
-Work is expected to stop partway: sessions end, context runs out, people go
-home. To continue, a new session:
+Sessions can stop at any step, including after a usage limit, cancellation,
+crash, connectivity failure or deliberate stop. Before a replacement run,
+the operator confirms the previous driver and all its children have stopped;
+an explicit confirmation already given is sufficient. A parent reaching its
+limit alone does not establish that its children stopped.
 
-1. reads the task list to find the first task that is not ticked;
-2. reads that task's record to see how far it got;
-3. picks up at the next step, without repeating finished ones.
+A fresh session can continue with the project location and request. It reads
+specs, task records, packets, artifacts and Git state, verifies the approval
+digests, working tree, profile and attribution, and explains the recovered
+task, attempt, completed steps, next step and blockers before dispatch. It
+needs no old conversation, handoff summary, provider cache or source-vendor
+model call. Missing evidence or ambiguous changes stop recovery rather than
+being guessed.
 
-For example, if the record shows the worker finished and the checks have not
-run, the new session runs the checks. It does not dispatch the worker again.
+Each new step starts with an invocation recorded before work. The driver adds
+immutable sourced observations for acceptance, completion or interruption and
+later locator discoveries. Native IDs and collaboration names are distinct;
+unavailable or unverifiable locators remain audit gaps. Final checks report
+linked and unlinked invocations and unresolved locators. Recovery uses durable
+project evidence, independently of provider transcripts.
+
+A completed worker report leads to checks without repeating the worker. A
+partial worker is restarted with the same packet and a note about partial
+changes. An unfinished check or review is rerun, retaining completed
+independent results for the same candidate; pending check batches retain
+their completed results. A completed file with a stale log is reconciled,
+and interrupted approval or commit bookkeeping is finished without duplicates.
+Past evidence, verdicts, attempts and revision limits survive a host change.
+A compatible profile change affects future dispatches; an incompatible one
+blocks the affected dispatch. A required check on an unavailable source host
+stays pending and blocks approval. Live cross-host recovery in both directions
+remains to be verified.
 
 ## Changing a spec after approval
 
@@ -247,10 +312,12 @@ At the end of the run the operator is shown what was decided.
 ## Skill mode and workflow mode
 
 The execution loop can be run by Planar's own orchestration skill or by a
-Claude Code dynamic workflow. The steps, packets, agents and records are the
-same in both, and both read the same profile. Skill mode is the default; use
-workflow mode where workflows are available and allowed. A task can be started in one and finished in
-the other.
+Claude Code dynamic workflow. Codex is scoped to the minimal skill-mode
+profile; workflow mode, richer profiles and autonomy are deferred there. The
+instructions specify the same steps, packets, agents and records in both, and
+both read the same profile. Skill mode is the default; workflow mode
+requires an available and permitted host workflow. Continuation between modes
+is specified but remains subject to scenario verification.
 
 ## Replication
 

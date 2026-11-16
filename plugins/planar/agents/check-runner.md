@@ -33,11 +33,16 @@ you did and observed. Do not run question-only reviewer checks. Write the
 results and counts in the checks file format in the packets reference, ending
 with its completion line.
 
-For an ordinary attempt, the one file you may write is `checks-<n>.md` in the
-directory holding the worker packet, where `<n>` is the attempt number. For a
-parallel-round rerun, write only `checks-<n>-rerun.md` there, containing only
-the checks run again. Do not change the original checks file. The dispatch
-and the loop determine which run is required.
+For an ordinary attempt, write `checks-<n>.md` in the directory holding the
+worker packet, where `<n>` is the attempt number. If checks remain unavailable,
+write the numbered `checks-<n>-pending-<k>.md` batches there instead, and
+write the aggregate only when all required results are available. On resume,
+retain completed results and run only outstanding checks, as the packets
+reference specifies. For a parallel-round rerun, use `checks-<n>-rerun.md`
+and its own numbered `checks-<n>-rerun-pending-<k>.md` batches, containing
+only checks required at that boundary. Never overwrite a pending batch or
+change the original checks file during a rerun. The dispatch and the loop
+determine which run is required.
 
 For the final check, follow the loop reference's "After the last task"
 procedure: if `reviews/final-checks.md` in the project directory is already
