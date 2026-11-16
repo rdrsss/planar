@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import os
+import platform
+import importlib.metadata
 from pathlib import Path
 import shutil
 import signal
@@ -16,7 +18,7 @@ import uuid
 from harbor.models.job.config import JobConfig
 from harbor.models.task.task import Task
 from candidate import inventory
-from smoke_codex import CANDIDATE, CONFIG, MANIFEST, ROOT
+from smoke_codex import CANDIDATE, CONFIG, MANIFEST, ROOT, HOME, CACHE
 from supervise import supervise
 from recover import recover_projects
 
@@ -69,14 +71,64 @@ def config_for(job_name, jobs_dir, case=CASE):
     return JobConfig.model_validate(data).model_dump(mode='json', exclude_none=True)
 
 
+def validate_write_destination(path):
+    """Check an existing directory or its nearest existing ancestor without creating it."""
+    current = path
+    while not current.exists() and not current.is_symlink():
+        current = current.parent
+    if current.is_symlink() or not current.is_dir():
+        raise ValueError(f'write destination or ancestor is not a directory: {current}')
+    if not os.access(current, os.W_OK | os.X_OK):
+        raise ValueError(f'write destination or ancestor is not writable: {current}')
+    return {'path': str(path), 'checked_ancestor': str(current),
+            'status': 'existing directory checked' if current == path else 'ancestor checked; creation pending'}
+
+
 def plan(case_name='plugin-smoke'):
     case = CASES[case_name]
+    if Path.cwd().resolve() != ROOT.resolve():
+        raise ValueError('launch must run from the repository root')
+    for label, path in (('repository', ROOT), ('package', CANDIDATE), ('case', case), ('project', PROJECT), ('evidence', REVIEWS)):
+        if not path.is_dir():
+            raise ValueError(f'{label} root is unavailable: {path}')
+    git_marker = ROOT / '.git'
+    if git_marker.is_dir():
+        git_dir = git_marker
+    elif git_marker.is_file() and git_marker.read_text().startswith('gitdir: '):
+        git_dir = (ROOT / git_marker.read_text().strip()[8:]).resolve()
+        if not (git_dir / 'gitdir').is_file() or Path((git_dir / 'gitdir').read_text().strip()).resolve() != git_marker.resolve():
+            raise ValueError('repository git worktree identity is invalid')
+    else:
+        raise ValueError('repository git root is invalid')
+    if not (git_dir / 'HEAD').is_file() or not (CANDIDATE / '.claude-plugin/plugin.json').is_file():
+        raise ValueError('repository or package root is invalid')
+    write_roots = {name: validate_write_destination(REVIEWS / name)
+                   for name in ('harbor-t044-jobs', 'harbor-t044-consumed')}
     expected = json.loads((case / 'candidate.json').read_text())
     if inventory(CANDIDATE) != expected:
         raise ValueError('candidate differs from recorded frozen inventory')
     config = config_for('planar-t044-plan', REVIEWS / 'harbor-t044-jobs', case)
     config_digest = hashlib.sha256(json.dumps(config, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
-    return {'case': case_name, 'case_sha256': case_inventory(case),
+    task = Task(case).config
+    prerequisites = {'cwd': str(Path.cwd().resolve()), 'repository_root': str(ROOT),
+        'package_read_root': str(CANDIDATE), 'case_read_root': str(case),
+        'project_root': str(PROJECT), 'evidence_write_root': str(REVIEWS / 'harbor-t044-jobs'),
+        'write_destinations': write_roots,
+        'isolated_remote_roots': {'home': HOME, 'config': HOME + '/config.toml',
+            'cache': CACHE, 'workspace': '/workspace',
+            'status': 'configured; container setup and workspace check pending'},
+        'checker_sha256': case_inventory(case / 'tests'),
+        'runtime': {'python': sys.version, 'executable': sys.executable, 'platform': platform.platform(),
+                    'harbor_observed': importlib.metadata.version('harbor')},
+        'requested_versions': {'harbor': '0.26.0', 'codex': '0.169.0'},
+        'configuration_source': 'launch.config_for and smoke_codex.CONFIG',
+        'authentication_route': 'explicit subscription auth file; checked only on execute',
+        'installation': 'native marketplace add, plugin add, list and installed inventory during setup; pending',
+        'lifetime': 'fresh only; resume and load forbidden',
+        'budgets_seconds': {'agent': task.agent.timeout_sec, 'verifier': task.verifier.timeout_sec, 'job': 1500, 'grace': 15},
+        'cleanup_owner': 'SmokeCodex and watchdog process group; recovery marker until confirmed',
+        'last_observed_event': 'preflight plan', 'verdict': 'pending'}
+    return {'prerequisites': prerequisites, 'case': case_name, 'case_sha256': case_inventory(case),
             'image_id': Task(case).config.environment.docker_image,
             'implementation_sha256': source_digest(case), 'candidate_sha256': expected['sha256'],
             'configuration_sha256': config_digest, 'purpose': 'one-diagnostic-attempt',
@@ -115,6 +167,10 @@ def execute(auth_path, review_path, case_name='plugin-smoke'):
     image_id = gate.get('image_id')
     if not isinstance(image_id, str) or len(image_id) != 71 or not image_id.startswith('sha256:') or image_id != Task(case).config.environment.docker_image:
         raise ValueError('diagnostic review lacks the pinned image identity')
+    harbor = Path(sys.executable).parent / 'harbor'
+    docker = shutil.which('docker')
+    if not docker or not harbor.is_file():
+        raise ValueError('local Docker or locked Harbor executable is unavailable')
     result = subprocess.run(['docker', 'image', 'inspect', '--format', '{{.Id}}', image_id], text=True, capture_output=True, timeout=15)
     if result.returncode or result.stdout.strip() != image_id:
         raise ValueError('reviewed Docker image is unavailable')
@@ -136,11 +192,7 @@ def execute(auth_path, review_path, case_name='plugin-smoke'):
     job_config = config_for(run_id, evidence, case)
     config_path = evidence / 'job-config.json'
     config_path.write_text(json.dumps(job_config, indent=2, sort_keys=True) + '\n')
-    (evidence / 'launcher.json').write_text(json.dumps({'execution_id': run_id, 'started_at': datetime.now(timezone.utc).isoformat(), 'case': case_name, 'case_sha256': snapshot['case_sha256'], 'image_id': image_id, 'configuration_sha256': snapshot['configuration_sha256'], 'implementation_sha256': snapshot['implementation_sha256'], 'candidate_sha256': snapshot['candidate_sha256'], 'harbor_version': '0.26.0', 'codex_version': '0.169.0', 'review_sha256': hashlib.sha256(review.read_bytes()).hexdigest(), 'job_config_sha256': hashlib.sha256(config_path.read_bytes()).hexdigest()}, indent=2, sort_keys=True) + '\n')
-    harbor = Path(sys.executable).parent / 'harbor'
-    docker = shutil.which('docker')
-    if not docker or not harbor.is_file():
-        raise ValueError('local Docker or locked Harbor executable is unavailable')
+    (evidence / 'launcher.json').write_text(json.dumps({'execution_id': run_id, 'started_at': datetime.now(timezone.utc).isoformat(), 'case': case_name, 'case_sha256': snapshot['case_sha256'], 'image_id': image_id, 'configuration_sha256': snapshot['configuration_sha256'], 'implementation_sha256': snapshot['implementation_sha256'], 'candidate_sha256': snapshot['candidate_sha256'], 'harbor_version': '0.26.0', 'codex_version': '0.169.0', 'prerequisites': snapshot['prerequisites'], 'review_sha256': hashlib.sha256(review.read_bytes()).hexdigest(), 'job_config_sha256': hashlib.sha256(config_path.read_bytes()).hexdigest()}, indent=2, sort_keys=True) + '\n')
     # Docker uses the current user's context; no API-key or host configuration
     # variables are inherited by the Harbor process.
     directories = [str(Path(docker).resolve().parent), str(Path(sys.executable).parent), '/usr/bin', '/bin', '/usr/sbin', '/sbin']

@@ -74,6 +74,9 @@ class OrderingTests(unittest.IsolatedAsyncioTestCase):
         self.config = CONFIG
         self.cache = CACHE
         self.manifest = json.loads(MANIFEST.read_text())
+        candidate_patch = patch('smoke_codex.inventory', return_value=self.manifest)
+        candidate_patch.start()
+        self.addCleanup(candidate_patch.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.agent = SmokeCodex.__new__(SmokeCodex)
@@ -100,6 +103,23 @@ class OrderingTests(unittest.IsolatedAsyncioTestCase):
         self.agent._image_identity = lambda environment: {'name': 'test-image', 'id': 'sha256:' + 'a' * 64}
         self.agent._ensure_agent_owned_dir = AsyncMock(return_value=(1000, 1000))
         self.agent.exec_as_root = AsyncMock()
+
+    async def test_missing_configuration_and_continuation_stop_before_setup(self):
+        with self.assertRaisesRegex(ValueError, 'effective config'):
+            await self.agent._upload_effective_config(self.environment, {}, HOME + '/config.toml')
+        self.agent._resume = True
+        with self.assertRaisesRegex(ValueError, 'fresh run'):
+            await self.agent._upload_effective_config(self.environment, self.config, HOME + '/config.toml')
+        self.assertEqual(self.events, [])
+
+    async def test_marketplace_without_installation_is_rejected(self):
+        self.outputs[4] = self.json.dumps({})
+        async def upload(*args):
+            self.events.append('base upload')
+        with patch.object(Codex, '_upload_effective_config', new=upload):
+            with self.assertRaisesRegex(ValueError, 'installation result'):
+                await self.agent._upload_effective_config(self.environment, self.config, HOME + '/config.toml')
+        self.assertFalse((self.agent.logs_dir / 'planar-install-provenance.json').exists())
 
     async def test_base_install_enable_and_cache_check_order(self):
         async def upload(*args):

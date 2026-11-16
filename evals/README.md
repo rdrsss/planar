@@ -47,3 +47,5 @@ result. It checks recorded native lineage, host skill inventory and an
 independently exported exact artifact. It does not prove reads, causal writes
 or full TEST-S69 or T-044 acceptance. See [the Planar evaluation notes](planar/README.md)
 for reproduction, live mechanics and limits.
+
+The portable next-case mapping and offline historical snapshot replay procedure are in [Planar evaluations](planar/README.md). Local scratch evidence is provenance for the proposed recovery case, not a required clone dependency or a substitute for a reviewed fixture.

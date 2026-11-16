@@ -85,7 +85,7 @@ class RegradeControls(unittest.TestCase):
             sessions=trial/'agent/sessions/2026/11/16'; sessions.mkdir(parents=True)
             for name, rows in [('rollout-parent.jsonl', parent), ('rollout-child.jsonl', child)]:
                 (sessions/name).write_text(''.join(json.dumps(row)+'\n' for row in rows))
-            with patch.object(module, 'check_provenance'):
+            with patch.object(module, 'check_provenance'), patch.object(module, 'inventory', return_value=manifest):
                 self.assertEqual(module.regrade(evidence)['status'],'pass')
                 result.write_bytes(b'2')
                 with self.assertRaisesRegex(ValueError, 'bytes'): module.regrade(evidence)

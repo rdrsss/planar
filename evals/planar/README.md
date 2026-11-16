@@ -92,3 +92,11 @@ network-isolated verifier. It retains execution and cleanup records under the
 project reviews directory. Its printed pending diagnostic is not the verifier
 verdict; inspect the trial's verifier status and reward. Never put credentials
 in this repository.
+
+### T-053 preflight and historical replay
+
+Run the launcher from the repository root. Its secret-free plan checks the repository, package, case, project, jobs and consumed-review destinations (or their existing writable ancestors), and frozen candidate, and reports the checker, runtime, selected configuration source, authentication route, fresh-only lifetime, install/discovery steps, fixed remote home, config, cache and workspace paths, budgets and cleanup owner. Requested versions are distinct from observed local Harbor and Python; installation and verdict are pending at planning time. Execution checks local executables, gate, image and recovery before reading subscription authentication. Launcher termination is not a verifier verdict; consult the last observed event and retained evidence. Missing required evidence is infrastructure error, absent completion is incomplete, and usable false predicates are behavioral failure. Optional unavailable observations remain unavailable.
+
+The historical online execution `planar-t044-03b5a69016f645e8b07d821b8df35049` had reward 1 with candidate `2e229df68784143220d6550bed33719016b1547689ac5a25d5d9f1e4cb1f3368` and implementation `e2513f8c8fbdeb83a25059fe74b891bbf020440a79fbfb90afdf983e53eae26a`; it is not a live result for later code. For offline replay, extract `plugins/planar` from Git commit `afda641` into a separate directory and pass that directory as the second argument to `replay_native_lineage.py`. Replay checks its full inventory against the frozen manifest and recorded host provenance. It reports the current checker and case digests and `new_live_execution: false`; it does not rewrite historical grades. A changed current candidate requires a separately reviewed freeze and gate before launch.
+
+The next-case mapping is [fresh recovery](cases/fresh-recovery-plan.md); it is a plan for T-045, not an implementation or acceptance result.

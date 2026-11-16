@@ -22,7 +22,7 @@ def digest(root):
     return hashlib.sha256(json.dumps(rows,ensure_ascii=True,sort_keys=True,separators=(',',':')).encode()).hexdigest()
 
 
-def replay(evidence):
+def replay(evidence, candidate=ROOT/'plugins/planar'):
     evidence=evidence.resolve(strict=True)
     trials=[p for name in ('plugin-smoke','native-lineage-smoke') for p in (evidence/evidence.name).glob(name+'__*/result.json')]
     if len(trials)!=1: raise ValueError('expected one retained original trial')
@@ -31,7 +31,7 @@ def replay(evidence):
         if p.is_symlink(): raise ValueError('unsafe evidence path')
     check(evidence)
     manifest=json.loads((CASE/'candidate.json').read_text())
-    if inventory(ROOT/'plugins/planar')!=manifest: raise ValueError('current candidate mismatch')
+    if inventory(candidate)!=manifest: raise ValueError('current candidate mismatch')
     launch=json.loads((evidence/'launcher.json').read_text());install=json.loads((evidence/'planar-install-provenance.json').read_text())
     if launch.get('candidate_sha256')!=manifest['sha256'] or install.get('candidate_sha256')!=manifest['sha256']: raise ValueError('recorded candidate mismatch')
     workspace_preflight=evidence/'planar-workspace-preflight.json'
@@ -46,11 +46,11 @@ def replay(evidence):
         result['recorded_lineage_status']='pass'
         result['status']='incomplete'
         result['reason']='host pre-execution workspace evidence unavailable'
-    result.update({'assessment':'cached-lineage-v1','source_execution_id':evidence.name,'case_sha256':digest(CASE),'checker_sha256':digest(CASE/'tests'),'candidate_provenance':'host-records-cross-checked','pre_execution_workspace':workspace_status,'new_live_execution':False})
+    result.update({'assessment':'cached-lineage-v1','source_execution_id':evidence.name,'case_sha256':digest(CASE),'checker_sha256':digest(CASE/'tests'),'candidate_provenance':'snapshot-inventory-and-host-records-cross-checked', 'candidate_source':str(candidate.resolve()),'pre_execution_workspace':workspace_status,'new_live_execution':False})
     return result
 
 def main():
-    try: result=replay(Path(sys.argv[1]))
+    try: result=replay(Path(sys.argv[1]), Path(sys.argv[2]) if len(sys.argv)>2 else ROOT/'plugins/planar')
     except (IndexError,OSError,ValueError,TypeError,KeyError,json.JSONDecodeError) as exc: result=verify.outcome('infrastructure_error',str(exc),assessment='cached-lineage-v1',new_live_execution=False)
     print(json.dumps(result,indent=2,sort_keys=True))
     return {'pass':0,'behavioral_failure':1}.get(result['status'],2)
