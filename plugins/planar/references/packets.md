@@ -15,7 +15,10 @@ ${CLAUDE_PLUGIN_ROOT}/references/task-record.md).
 - Each is a file in `tasks/<task-id>/` in the project directory, named
   `worker-packet-<n>.md`, `worker-report-<n>.md`, `checks-<n>.md`,
   `reviewer-packet-<n>.md` or `review-<n>-<focus>.md`, where `<n>` is the
-  attempt number. The second run of a failed check is a second checks file,
+  attempt number. A malformed completed packet may have a replacement named
+  `worker-packet-<n>-replacement-<k>.md` or
+  `reviewer-packet-<n>-replacement-<k>.md`, as specified below. The second
+  run of a failed check is a second checks file,
   `checks-<n>-rerun.md` (see "Checks file"). Pending batches use
   `checks-<n>-pending-<k>.md` or `checks-<n>-rerun-pending-<k>.md`.
   The task record reference says
@@ -45,6 +48,43 @@ role bindings with source paths. Include these in packets, results and session
 audit observations. For Codex also record configured and observed model and
 effort separately as `${CLAUDE_PLUGIN_ROOT}/references/hosts.md` requires;
 never revise a packet with observations obtained later.
+
+Each worker and reviewer packet has a `## Resolved configuration` section,
+containing the frozen profile source path and digest, schema version, actual
+host, and each selected role binding and its source path. For Codex include
+`host: codex`, `configured_model`, `configured_effort`, `observed_model`,
+`observed_effort` and `observation_source` for each recipient; use
+`unavailable` for observations not available at creation. Apply the path
+substitutions above. Before writing `status: complete`, validate that this
+section and every other required section are present and accurate against the
+frozen configuration and durable inputs. Do not mark a packet complete if any
+required input is missing or cannot be verified; stop at that boundary and
+report the blocker. Missing runtime observations alone do not block dispatch.
+
+## Replacing a malformed completed packet
+
+A final status line does not make a packet with missing or invalid required
+content safe to dispatch. Preserve it unchanged. If the durable inputs suffice
+to reconstruct a valid packet for the same task and attempt, write a new
+immutable replacement with the appropriate name above, starting `k` at 1 and
+increasing it for each replacement of that packet kind in the attempt. Include
+`## Replacement` immediately after the heading, naming the superseded packet
+and explaining its defect. Render and validate all required sections before the
+final status line. Append the usual `packet-rendered` or
+`review-packet-rendered` six-field log line naming the replacement and the
+superseded file in its result; that line selects the replacement as authoritative.
+For either packet kind this selection line does not change `state`, including
+when a later boundary or stop has already been reached. Reconcile the record
+against all applicable completed files and log-only states, and retain the
+latest valid boundary. If interrupted after the replacement is complete but
+before its selection line, verify it and append that selection line on resume;
+then reconcile valid later files without redispatching completed work. If selection is ambiguous, or the
+inputs cannot be verified, stop and report the blocker. Never edit the original,
+change the attempt or reset a counter merely to repair a packet. Use the
+selected packet for subsequent worker or reviewer dispatches and packet inputs;
+preserve existing results and audit evidence. If work already used the defective
+packet, determine whether those results remain valid from durable evidence;
+when this cannot be established, stop rather than inventing or discarding results.
 
 Session audit observations are separate immutable supplements, not edits to
 packets or results. The record writer captures start, acceptance, completion
@@ -77,40 +117,49 @@ Written by the orchestrating actor as `worker-packet-<n>.md`. Sections, in this
 order:
 
 1. `# Worker packet: <task-id>, attempt <n>`.
-2. `## Task`: the task's entry from the task list, copied exactly (the format
+2. `## Resolved configuration`: the evidence above.
+3. `## Task`: the task's entry from the task list, copied exactly (the format
    is in ${CLAUDE_PLUGIN_ROOT}/references/tasks.md).
-3. `## Paths you may create or change`: the `touches` paths, one bullet each,
+4. `## Paths you may create or change`: the `touches` paths, one bullet each,
    then `Base commit: <short hash>`, the commit the attempt starts from.
-4. `## Cited spec sections, in full`: one `### <ID> (from <spec file name>)`
+5. `## Cited spec sections, in full`: one `### <ID> (from <spec file name>)`
    per ID in the task's `cites`, then the section quoted in full.
-5. `## Checks this task must pass`: one `### <ID>` per check, then the check
+6. `## Checks this task must pass`: one `### <ID>` per check, then the check
    copied from the testing spec in full, including its command, and its
    `Applies to` line if it has one. These are the task's `checks` plus the
    common checks that apply to the task's paths (the task list reference
    defines them).
-6. When the profile has a plan stage, `## Plan`; when it has a map stage,
+7. When the profile has a plan stage, `## Plan`; when it has a map stage,
    `## Map`. Each holds the whole file, copied exactly, in a tilde fence (see below).
-7. From attempt 2 only, `## Earlier reviews`: every review of this task from
+8. From attempt 2 only, `## Earlier reviews`: every review of this task from
    every earlier attempt, each as `### Attempt <n>, <focus>` and the whole
    review in a tilde fence. After a review that raised a question, add
    `Question answered:` and the answer, if one was recorded. When a question
    was answered, the answer is carried in full in every later worker packet
    and reviewer packet (TS-8.7). Omit the section on attempt 1.
-8. Only when the previous attempt ended on a failed check,
+9. Only when the previous attempt ended on a failed check,
    `## Previous checks`: that attempt's `checks-<n>.md`, whole, in a tilde
    fence, then its `checks-<n>-rerun.md` in a second tilde fence if there is
    one (TS-8.11). Omit the section otherwise.
-9. The last line: `status: complete`.
+10. The last line: `status: complete`.
 
 Embed a diff or another Markdown file inside a fence of four tildes (`~~~~`),
 which a three-backtick fence inside the content cannot close; use a longer run
-of tildes if the content holds four. Do not add a rule, hint or instruction to a packet beyond what
-this section lists; the worker's rules are in the next section.
+of tildes if the content holds four. Apart from the replacement section specified above, do not add a rule, hint
+or instruction to a packet beyond what this section lists; the worker's rules are in the next section.
 
 Example (attempt 2, with a map and an earlier review):
 
 `````markdown
 # Worker packet: T-007, attempt 2
+
+## Resolved configuration
+
+- Profile source: `profiles/minimal.yaml`; digest: `<digest>`; schema version: 2
+- Host: codex
+- Selected bindings and source paths: `<frozen bindings and paths>`
+- configured_model: `<requested model>`; configured_effort: `<requested effort>`
+- observed_model: unavailable; observed_effort: unavailable; observation_source: unavailable
 
 ## Task
 
@@ -338,15 +387,16 @@ check of the attempt passed, at its first run or at its second. One packet serve
 Sections, in this order:
 
 1. `# Reviewer packet: <task-id>, attempt <n>`.
-2. `## Task`, `## Paths you may create or change` (with the base commit) and
+2. `## Resolved configuration`: the evidence above for the reviewers.
+3. `## Task`, `## Paths you may create or change` (with the base commit) and
    `## Cited spec sections, in full`: exactly as in the worker packet.
-3. `## Change`: the task's change in full, in a tilde fence marked `diff`. The
+4. `## Change`: the task's change in full, in a tilde fence marked `diff`. The
    task's change is everything under the task's `touches` paths that differs
    from the attempt's base commit, new files included. Take it with
    `git add --intent-to-add <new files under the touches paths>`, so that a
    new file shows in the diff, then `git diff <base commit> -- <touches
    paths>`.
-4. `## Unattributed changes`: every unattributed change in the working tree,
+5. `## Unattributed changes`: every unattributed change in the working tree,
    by path with its diff. A changed path is attributed when it lies under the
    `touches` of any task that has uncommitted work in the tree, whether or
    not that task is in the round, or when the replicate step wrote it; every
@@ -356,27 +406,35 @@ Sections, in this order:
    attribution" and "Step 8"). A worker's edit outside its task's `touches`
    is not in `## Change`; it appears here. The same list goes in every
    reviewer packet of the round. Write "None." if there is none.
-5. `## Earlier uncommitted tasks`: the paths of tasks that have uncommitted
+6. `## Earlier uncommitted tasks`: the paths of tasks that have uncommitted
    work and are not in the round, one bullet per path with the task it
    belongs to. These paths are attributed and are never deleted or restored
    (TS-8.8). Where such a task's `touches` overlap this task's, add the
    `## Change` section of that task's latest reviewer packet, in a tilde
    fence, so that the reviewer can tell the hunks apart. Write "None." if
    there is none.
-6. When the profile has a map stage, `## Map`: the whole file in a tilde
+7. When the profile has a map stage, `## Map`: the whole file in a tilde
    fence, as in the worker packet.
-7. `## Checks`: the whole `checks-<n>.md` in a tilde fence, then, after a
+8. `## Checks`: the whole `checks-<n>.md` in a tilde fence, then, after a
    second run, the whole `checks-<n>-rerun.md` in a tilde fence of its own,
    then any `Question for the reviewer` rows of the task's checks, copied in
    full.
-8. From attempt 2 only, `## Earlier reviews`: exactly as in the worker packet,
+9. From attempt 2 only, `## Earlier reviews`: exactly as in the worker packet,
    so that a repeated finding can be recognised.
-9. The last line: `status: complete`.
+10. The last line: `status: complete`.
 
 Example (attempt 2, with a map):
 
 `````markdown
 # Reviewer packet: T-007, attempt 2
+
+## Resolved configuration
+
+- Profile source: `profiles/minimal.yaml`; digest: `<digest>`; schema version: 2
+- Host: codex
+- Selected bindings and source paths: `<frozen bindings and paths>`
+- configured_model: `<requested model>`; configured_effort: `<requested effort>`
+- observed_model: unavailable; observed_effort: unavailable; observation_source: unavailable
 
 ## Task
 

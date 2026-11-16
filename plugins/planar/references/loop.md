@@ -38,7 +38,9 @@ Whichever it is, the driver:
   and the append-only rule are in
   `${CLAUDE_PLUGIN_ROOT}/references/task-record.md`. Each step below names
   the log line it appends; set `state` to the same name when you append it,
-  unless the step says otherwise.
+  unless the step says otherwise. A worker or reviewer replacement selection
+  line is such an exception: it does not change `state` or regress a later
+  completed boundary; reconcile and resume as the task record reference says.
 - before each dispatch or driver step, starts and subsequently supplements its
   invocation audit in the task record reference, including interruptions and
   later discoveries; missing metadata does not complete or block the step.
@@ -358,11 +360,15 @@ the base commit from the record. When the previous attempt ended on a
 failed check, the packet also carries that attempt's `checks-<n>.md` in
 full, and its `checks-<n>-rerun.md` if there is one (TS-8.11).
 
-Record: the driver appends `packet-rendered`, file `worker-packet-<n>.md`.
+Validate the packet before its final status line and use the replacement
+procedure in the packets reference if a completed packet is malformed.
+Record: the driver appends `packet-rendered`, file `worker-packet-<n>.md`
+or the selected replacement. A replacement selection leaves `state` unchanged.
 
 ### Step 5. Dispatch the worker
 
-Dispatch the `implement` stage's agent on the model and effort of the
+Dispatch with the authoritative valid worker packet for this attempt. Dispatch
+the `implement` stage's agent on the model and effort of the
 record's `rung`. It writes `worker-report-<n>.md`.
 
 Record: when the worker returns and its report is complete, the driver
@@ -476,11 +482,14 @@ says, with these from step 8:
 After a second run (step 16), `## Checks` holds `checks-<n>.md` and then
 `checks-<n>-rerun.md`.
 
-Record: the driver appends `review-packet-rendered`, file
-`reviewer-packet-<n>.md`.
+Validate before its final status line and use the packets reference replacement
+procedure if a completed packet is malformed. Record: the driver appends
+`review-packet-rendered`, file `reviewer-packet-<n>.md` or the selected
+replacement. A replacement selection leaves `state` unchanged.
 
 ### Step 10. Dispatch the reviewers
 
+Dispatch with the authoritative valid reviewer packet for this attempt.
 Dispatch each entry of the profile's `review.reviewers` separately, on its
 own model and effort. Each writes only `review-<n>-<focus>.md`.
 

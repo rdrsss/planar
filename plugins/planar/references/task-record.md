@@ -249,6 +249,21 @@ and a result that says it was appended on resume (`<file>: appended on
 resume`). For Codex, use the observed model and effort or `unavailable` as
 those rules require; do not guess the session identity.
 
+A packet's status line establishes file completion, but does not establish that
+its required content is valid for dispatch. Validate and, if necessary, replace
+it under the packets reference, "Replacing a malformed completed packet".
+The latest unambiguous replacement selection log line identifies the packet to
+use for that kind and attempt; retain the original and all earlier selections.
+For both worker and reviewer replacements, the selection line is an exception
+to the usual state update: leave `state` unchanged when appending it. A completed
+replacement without its selection line is verified and selected on resume as
+described there. Reconcile all applicable later completed files and log-only
+states as usual, retaining the latest valid boundary; selection never regresses
+it. Preserve valid worker reports, checks and reviews and continue from the first
+unfinished step without redispatching completed work. If later-result
+applicability or selection is ambiguous, stop and report it. This is a repair
+within the same attempt, not a new attempt or a reset.
+
 A complete pending checks batch is evidence of a partial boundary, not a
 `checks-done` or `checks-rerun` result. Reconcile each such batch with a
 `checks-pending` log line naming its file and counts; append a missing line
@@ -278,7 +293,7 @@ To continue a task, the orchestrating actor:
 An incomplete step is run again from its start, except a checks boundary with
 complete pending batches: retain their completed results and run only the
 outstanding checks as the packets reference defines. For a worker that means a new
-worker is given the same packet plus a note that the working tree may hold a
+worker is given the authoritative packet for that attempt plus a note that the working tree may hold a
 partial change. A complete worker report resumes at checks. An incomplete review is run again
 from its start; retain completed independent results for the same candidate.
 Preserve prior verdicts, attempt history and counters: changing host alone is

@@ -213,7 +213,15 @@ workflow again with the same run context. The workflow and skill modes use the
 same loop and task records, so a later run can resume in either mode (TS-9.2
 to TS-9.4).
 
-For skill mode, follow the remainder of this section.
+For skill mode, follow the remainder of this section. After the opening checks
+pass, execute the next required loop step; finishing the whole run or obtaining
+a fully traceable audit in this turn is not a prerequisite for starting. For a
+new minimal task, create its pending record and initial invocation observation
+and start entry before rendering its worker packet. Record unavailable metadata
+with reasons as the task-record reference requires. Continue in loop order until
+completion, an operator stop point, a required question, an actual capability
+blocker or interruption. Report an interruption from the durable boundary
+actually reached.
 
 When the profile has `driver: session`, you are the driver: the
 "orchestrating actor" of every reference. When it has
