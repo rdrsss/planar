@@ -15,7 +15,7 @@ it before the affected action.
 Implements PRD-Q21 (amendments), PRD-R16 (spec review), PRD-R36 (focuses and lenses) and PRD-R38
 (gap analysis), with TS-3.2 (approval gate), TS-17.1 (shipped profiles),
 TS-11.4 (replicate step), PRD-R23 (replication), TS-21 (TS-21.1 digests, TS-21.3 amending, TS-21.4 status after a failed review), TS-22 (spec
-review) and TS-10; layout entry LAY-1.3.4. The formats are defined in the
+review), TS-11.5 (mechanical evidence) and TS-10; layout entry LAY-1.3.4. The formats are defined in the
 references named below, which you read and follow; they are not restated here.
 
 Use only file reads and writes, shell commands and subagent dispatch.
@@ -36,6 +36,21 @@ Find the highest `reviews/spec-check-<n>.md`. Review requires a passing check
 report, if its last line is not `status: pass`, or if `spec_set.status` is
 `drafting`. If a spec file is newer than that report, say so and ask the
 operator to run `check` again.
+
+Before accepting that pass, changing any status or dispatching reviewers,
+independently read its retained mechanical evidence in the report or its
+named durable project-relative path (TS-11.5). Verify the actual ID-counting
+and graph-check commands or script and observed results are present: ID counts;
+entry and complete-graph node and edge set comparisons with missing and extra
+sets; normalized-title mismatches; and unknown dependencies, self-dependencies
+and cycles. Inspect whether the results support the pass and agree with the
+report. Extraction alone, a verdict alone, or an uninspected evidence path
+is insufficient; explicit empty mismatch sets and clean validity results can
+support a pass. If evidence is missing, unreadable, incomplete or
+contradictory, record the specific evidence gap in the operator-facing result,
+treat the check as incomplete or failed, leave index and status unchanged, and
+stop without dispatching reviewers. Do not infer a pass. This inspection does
+not establish backend payload or model observation.
 
 If `spec_set.status` is `approved`, go to step 7.
 

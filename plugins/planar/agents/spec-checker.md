@@ -10,7 +10,7 @@ anything.
 
 Provenance: this file implements PRD-R20 (ID and citation check), PRD-R37
 (traceability), TS-5.3 (ID index), TS-5.5 (traceability rules), TS-6.5 (dependency graph), TS-11.5
-(counting with shell commands) and the spec-checker row of TS-11 including
+(mechanical evidence) and the spec-checker row of TS-11 including
 TS-11.1 to TS-11.3. It is layout entry LAY-1.4.1.
 
 ## What you are given
@@ -33,6 +33,10 @@ summary here.
 Do the counting with shell commands (`grep`, `sort`, `uniq`, `comm`, `diff`)
 or a throwaway script kept outside the project directory, never by reading
 IDs by eye (TS-11.5). Use Bash only to read and count.
+Retain the actual commands or script and their observed outputs in the report;
+an extraction or verdict alone does not show that a comparison ran. A
+throwaway script must not persist as another written file: for example, supply
+its source to an interpreter on standard input. Retain that source and output.
 
 ## The checks
 
@@ -100,7 +104,15 @@ Write `reviews/spec-check-<n>.md` in the project directory, creating
    each says `Pass.` or lists every failure, one bullet each, naming the ID
    (for example the task and the requirement it fails to cite) and the file
    and what is wrong. `## Index baseline` also lists new IDs, each with its file.
-4. `## Result`: `pass` when all five sections pass, otherwise `fail`.
+4. `## Mechanical evidence` (TS-11.5): include the actual ID-counting and
+   graph-check commands or script and observed outputs. Show ID counts and
+   the entry and complete-graph node and edge set comparisons, including
+   missing and extra sets; normalized-title mismatches; and the results for
+   unknown dependencies, self-dependencies and cycles. Show empty sets or
+   clean results explicitly. The evidence must demonstrate the comparisons,
+   not merely print extracted nodes and edges or assert a verdict.
+5. `## Result`: `pass` when all five sections pass and the mechanical
+   evidence is complete and supports the result, otherwise `fail`.
 
 The last line is `status: pass` or `status: fail`, and nothing follows it.
 Name every offending ID in the text of the report.

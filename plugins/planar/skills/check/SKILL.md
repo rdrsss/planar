@@ -50,8 +50,23 @@ using the result. Give it the project directory and
 write or edit the report yourself.
 
 Read the report. Its last line is `status: pass` or `status: fail`. If it is
-missing or the file is incomplete, treat the check as not run: say so, change
-nothing, and stop.
+missing or the file is incomplete, record the specific gap in the
+operator-facing result, treat the check as not run, change nothing, and stop.
+
+Before accepting a pass or changing the index or check status, independently
+read the retained mechanical evidence in the report or its named durable
+project-relative path (TS-11.5). Verify it contains the actual ID-counting and
+graph-check commands or script and observed results: ID counts; comparison of
+entry and complete-graph node and edge sets, including missing and extra sets;
+normalized-title mismatches; and unknown dependencies, self-dependencies and
+cycles. Inspect whether those results agree with the report and, if it claims
+a pass, support that pass. Extraction alone, a verdict alone, or an uninspected evidence path
+is insufficient. Empty mismatch sets and clean validity results can support a
+pass. If evidence is missing, unreadable, incomplete or contradictory, record
+the specific evidence gap in the operator-facing result, treat the check as
+incomplete or failed, change neither index nor status, and stop without
+dispatching reviewers. Do not infer a pass. This inspection does not establish
+backend payload or model observation.
 
 ## 4. On a pass
 
