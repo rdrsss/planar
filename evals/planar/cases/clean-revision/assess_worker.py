@@ -120,15 +120,34 @@ def assess_worker(files):
         if fields.get('step', '').lower() not in ('worker-done', 'worker dispatch'):
             raise Incomplete('unsupported worker observation step')
         if 'parent' not in fields or not fields['parent']: raise Incomplete('worker parent missing')
-        if fields['parent'] != driver and not re.fullmatch(r'unavailable(?: \([^)]*\))?', fields['parent'], re.I):
-            raise Contradiction('worker parent does not match packet driver')
-        if parent is None: parent = fields['parent']
-        elif parent != fields['parent']: raise Contradiction('worker parent mismatch')
+        raw_parent = fields['parent']
+        parent_match = re.fullmatch(r"([A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*)(?: \(([A-Za-z][A-Za-z0-9_ .,'-]*)\))?", raw_parent)
+        if not parent_match: raise Incomplete('unsupported worker parent format')
+        parent_core = parent_match.group(1)
+        annotation = parent_match.group(2) or ''
+        embedded_ids = re.findall(r'\b[A-Za-z]+(?:[-_][A-Za-z0-9]+)*[-_][0-9]+\b', annotation)
+        if any(identity != parent_core for identity in embedded_ids):
+            raise Contradiction('conflicting worker parent annotation')
+        if parent_core.lower() == 'unavailable': parent_core = 'unavailable'
+        elif parent_core != driver: raise Contradiction('worker parent does not match packet driver')
+        if parent is None: parent = parent_core
+        elif parent != parent_core: raise Contradiction('worker parent mismatch')
         if 'result' not in fields: raise Incomplete('worker result missing')
-        result = fields['result']
-        if not re.fullmatch(r'worker-report-1\.md(?:, SHA-256 [0-9a-f]{64}, status: done)?', result, re.I):
-            raise Contradiction('worker result mismatch')
-        if ',' in result and hashlib.sha256(report_bytes).hexdigest() not in result:
+        parts = [part.strip() for part in fields['result'].split(',')]
+        if not parts[0]: raise Incomplete('worker result path missing')
+        if parts[0] != 'worker-report-1.md': raise Contradiction('worker result mismatch')
+        metadata = {}
+        for part in parts[1:]:
+            match = re.fullmatch(r'(SHA-256)\s+([0-9a-fA-F]{64})', part, re.I)
+            if match: key, value = 'sha256', match.group(2).lower()
+            else:
+                match = re.fullmatch(r'(status):\s*([A-Za-z-]+)', part, re.I)
+                if not match: raise Incomplete('unsupported worker result metadata')
+                key, value = 'status', match.group(2).lower()
+            if key in metadata: raise Contradiction('duplicate worker result metadata')
+            metadata[key] = value
+        if 'status' in metadata and metadata['status'] != 'done': raise Contradiction('worker report status mismatch')
+        if 'sha256' in metadata and metadata['sha256'] != hashlib.sha256(report_bytes).hexdigest():
             raise Contradiction('worker report digest mismatch')
         phase = fields.get('phase', '').split(',',1)[0].strip().lower()
         if number == 1:

@@ -40,6 +40,14 @@ def retained():
         files[TASK+path.name] = path.read_bytes()
     return files
 
+def retained_live():
+    files = example()
+    for name in list(files):
+        if name.startswith(TASK): del files[name]
+    for path in (CASE/'fixtures/retained-a-20261117').iterdir():
+        files[TASK+path.name] = path.read_bytes()
+    return files
+
 def retained_aliases():
     files = retained()
     driver = TASK+'session-I-001-1.md'
@@ -54,6 +62,22 @@ def retained_aliases():
                       .replace(b'phase: dispatch accepted', b'phase: accepted')
                       .replace(b'phase: completed', b'phase: completed (child return)'))
     return files
+
+class RetainedLiveMetadataTests(unittest.TestCase):
+    def test_actual_parent_annotation_and_status_only(self):
+        self.assertEqual(assess_worker(retained_live())['boundary'], 'worker-done')
+
+    def test_conflicting_and_unknown_metadata(self):
+        controls = [(TASK+'session-worker-1-1.md', b"render-1 (driver's task-local invocation)", b"render-2 (driver's task-local invocation)", Contradiction),
+                    (TASK+'session-worker-1-1.md', b"render-1 (driver's task-local invocation)", b'render-1 (render-2)', Contradiction),
+                    (TASK+'session-worker-1-3.md', b'worker-report-1.md, status: done', b'other.md, status: done', Contradiction),
+                    (TASK+'session-worker-1-3.md', b'status: done', b'status: failed', Contradiction),
+                    (TASK+'session-worker-1-3.md', b'status: done', b'status: done, status: done', Contradiction),
+                    (TASK+'session-worker-1-3.md', b'status: done', b'SHA-256 '+b'0'*64+b', status: done', Contradiction),
+                    (TASK+'session-worker-1-3.md', b'status: done', b'metadata: unknown', Incomplete)]
+        for key, before, after, error in controls:
+            files = retained_live(); self.assertIn(before, files[key]); files[key] = files[key].replace(before, after)
+            with self.subTest(before=before, after=after), self.assertRaises(error): assess_worker(files)
 
 class RetainedBoundaryTests(unittest.TestCase):
     def test_actual_record_and_observations(self):

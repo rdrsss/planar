@@ -157,7 +157,7 @@ async def main():
     (case/'task.toml').write_text('''schema_version = "1.4"\nartifacts = ["/workspace/home"]\n[task]\nname = "planar/guarded-worker-control"\ndescription = "Synthetic no-model guard control"\n[environment]\ndocker_image = "sha256:06e95472c9fb2a7ab49c50b0f2c87f5f1006aa33397ef17715a75164458b7ed2"\n[agent]\ntimeout_sec = 60\n[verifier]\nenvironment_mode = "separate"\ntimeout_sec = 60\n[verifier.environment]\nnetwork_mode = "no-network"\n[[steps]]\nname = "worker"\nmin_reward = 1\n[steps.verifier]\ntimeout_sec = 60\n[steps.verifier.env]\nPLANAR_CLEAN_PHASE = "worker"\n''')
     if smoke:
         config_text=(case/'task.toml').read_text()
-        config_text=config_text.replace('[verifier.environment]\nnetwork_mode', '[verifier.environment]\ndocker_image = \"sha256:61d601922852f3e15221feb89be232185b758188c9b70f381bc2e5c9d0a03349\"\nnetwork_mode')
+        config_text=config_text.replace('[verifier.environment]\nnetwork_mode', '[verifier.environment]\ndocker_image = \"sha256:0ca35a67f73d3f023852541e9de76218ab40d692c4fa5c40bb85b094eca4c800\"\nnetwork_mode')
         (case/'task.toml').write_text(config_text)
     if both:
         with (case/'task.toml').open('a') as task:
@@ -174,7 +174,7 @@ async def main():
         'started_monotonic_ns':time.monotonic_ns(),'deadline_seconds':1050,
         'absolute_deadline':absolute,'synthetic_control':True})+'\n')
     os.environ['PLANAR_T045_NOAUTH_CONTROL']='1'
-    if smoke: os.environ['PLANAR_T045_VERIFIER_IMAGE_ID']='sha256:61d601922852f3e15221feb89be232185b758188c9b70f381bc2e5c9d0a03349'
+    if smoke: os.environ['PLANAR_T045_VERIFIER_IMAGE_ID']='sha256:0ca35a67f73d3f023852541e9de76218ab40d692c4fa5c40bb85b094eca4c800'
     digest=launch.case_inventory(case); os.environ['PLANAR_T044_CASE_SHA256']=digest
     (evidence/'launcher.json').write_text(json.dumps({'execution_id':evidence.name,'case':'clean-revision','case_sha256':digest,'prerequisites':{'case_read_root':str(case)}})+'\n')
     config=JobConfig.model_validate({'job_name':evidence.name,'jobs_dir':str(evidence),'n_attempts':1,'n_concurrent_trials':1,'retry':{'max_retries':0},'agents':[({'import_path':'guarded_worker_probe:SyntheticSmoke','model_name':'gpt-6.1-terra','resume_trajectory':False,'kwargs':{'version':'0.169.0','config':CONFIG,'reasoning_effort':'medium'}} if smoke else {'import_path':'guarded_worker_probe:SyntheticWorker','resume_trajectory':False})],'environment':{'import_path':'guarded_docker:GuardedDocker','delete':True,'kwargs':{'auto_mounting':False}},'tasks':[{'path':str(case)}],'quiet':True})
