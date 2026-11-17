@@ -275,14 +275,13 @@ class RunnableReview(unittest.TestCase):
                 altered=schema2.read_record(shared_path); altered['experiment']='foreign'; shared_path.write_bytes(pv.canonical(altered))
                 with self.assertRaises(schema2.Invalid): resolve_cli()
                 shared_path.write_bytes(original)
-                self.assertEqual(resolve_cli()['status'],'resolved'); self.assertEqual(resolve_cli()['status'],'resolved')
-                conflicting=command.copy(); conflicting[conflicting.index('--reason')+1]='different reason'
-                with self.assertRaises(schema2.Invalid): resolve_cli(conflicting)
+                # A reason-only resolver may not clear a before-native stop.
+                with self.assertRaisesRegex(schema2.Invalid,'pretrial stop requires typed'): resolve_cli()
                 self.assertEqual((folder/'terminal.json').read_bytes(),terminal_before)
-                self.assertTrue((records/(reserved['execution_id']+'.resolved.json')).is_file())
-                self.assertNotIn(reserved['execution_id'],codex_run.pending_account_stops(out))
-                self.assertEqual(codex_run.shared_pending(records),[])
-                (records/(reserved['execution_id']+'.resolved.json')).unlink(); (folder/'account-stop-resolved.json').unlink(); shutil.rmtree(cleanup_evidence)
+                self.assertFalse((records/(reserved['execution_id']+'.resolved.json')).exists())
+                self.assertIn(reserved['execution_id'],codex_run.pending_account_stops(out))
+                self.assertEqual(len(codex_run.shared_pending(records)),1)
+                shutil.rmtree(cleanup_evidence)
                 # Reconciliation adapter must reject contradictory provenance
                 # before invoking the existing native reconciler.
                 # Isolated crash-before-dispatch simulation: retained start and

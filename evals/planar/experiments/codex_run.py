@@ -55,6 +55,23 @@ def shared_pending(records):
                 from clean_work_release import validate_published
                 release=json.loads(resolved.read_text(),object_pairs_hook=__import__('terminal_failure_schema').unique)
                 return validate_published(start,resolved,release)
+            if data.get('runnable_contract')=='planar-schema2-runnable-v1':
+                eid=data.get('execution_id')
+                if not isinstance(eid,str): return False
+                evidence=launch.jobs_root()/('planar-t044-'+eid)
+                folder=Path(data['experiment'])/'executions'/eid
+                terminal=folder/'terminal.json'
+                if terminal.is_symlink() or not terminal.is_file(): return False
+                status=json.loads(terminal.read_text(),object_pairs_hook=__import__('schema2_admission').no_duplicates)
+                pretrial_stop=status=={'status':'incomplete','reason':'portable native provenance or cleanup unconfirmed'}
+                if resolved.is_symlink(): return False
+                if resolved.is_file():
+                    marker=json.loads(resolved.read_text(),object_pairs_hook=__import__('schema2_admission').no_duplicates)
+                    pretrial_stop=pretrial_stop or marker.get('type')=='schema2-pretrial-v1'
+                if pretrial_stop or not (evidence/'native-trial-start.json').is_file() or (evidence/'native-trial-start.json').is_symlink():
+                    if _ACTIVE_ADMISSION.get()!=records.resolve() or closed.exists() or closed.is_symlink() or resolved.is_symlink() or not resolved.is_file(): return False
+                    from schema2_pretrial_release import validate_published
+                    return validate_published(start,resolved)
             if data.get('case') != 'retained-a-fresh-b': return closed.exists() or resolved.exists()
             if closed.exists() or closed.is_symlink() or resolved.is_symlink() or not resolved.is_file(): return False
             import retained_b_release_schema

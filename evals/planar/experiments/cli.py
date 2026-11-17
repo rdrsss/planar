@@ -95,6 +95,8 @@ def main():
     v2resolve.add_argument('execution_id')
     v2resolve.add_argument('--reason', required=True)
     v2resolve.add_argument('--gate', type=Path, required=True)
+    pretrial_release = commands.add_parser('resolve-pretrial-account-v2', help='publish a separately reviewed pre-native account-only disposition')
+    pretrial_release.add_argument('--review', type=Path, required=True)
     v2gate = commands.add_parser('check-gate-v2', help='compare an existing gate without consuming or authorizing it')
     v2gate.add_argument('experiment', type=Path)
     v2gate.add_argument('identity')
@@ -137,6 +139,9 @@ def main():
     elif args.command == 'resolve-account-stop-v2':
         import schema2_execution
         print(json.dumps(schema2_execution.resolve_account_stop(args.experiment,args.identity,args.execution_id,args.reason,gate_path=args.gate),indent=2))
+    elif args.command == 'resolve-pretrial-account-v2':
+        import schema2_pretrial_release
+        print(json.dumps(schema2_pretrial_release.publish(args.review),indent=2))
     elif args.command == 'check-gate-v2':
         import schema2
         gate = json.loads(args.gate.read_text())

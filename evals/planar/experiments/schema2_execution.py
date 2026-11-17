@@ -35,12 +35,13 @@ def activate_runnable(root, identity, reservation_id, gate_path, *, preparation_
     if scope.is_symlink() or (scope/'lock').is_symlink() or (scope/'records').is_symlink(): raise schema2.Invalid('unsafe shared admission scope')
     # Use the same account lock and account record namespace as schema 1.
     with codex_run.admission_scope() as records:
+        if codex_run.shared_pending(records): raise schema2.Invalid('shared account admission blocked')
         try: fd=os.open(root/'controller.lock',os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
         except OSError as exc: raise schema2.Invalid('unsafe controller lock') from exc
         with os.fdopen(fd,'r+') as lock:
             if not stat.S_ISREG(os.fstat(lock.fileno()).st_mode): raise schema2.Invalid('unsafe controller lock')
             fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-            if codex_run.shared_pending(records) or codex_run.pending_account_stops(root): raise schema2.Invalid('shared account admission blocked')
+            if codex_run.pending_account_stops(root): raise schema2.Invalid('shared account admission blocked')
             gate_bytes=gate_path.read_bytes()
             gate=pv.parse(gate_bytes,1024*1024)
             checked=schema2_runnable.check_gate(root,identity,reservation_id,gate,preparation_evidence=preparation_evidence)
@@ -462,8 +463,10 @@ def resolve_account_stop(root, identity, reservation_id, reason, *, gate_path):
         if marker.parent.is_symlink() or marker.is_symlink() or not marker.is_file() or marker.read_bytes()!=b'reserved\n': raise schema2.Invalid('gate consumption missing')
         terminal=schema2.read_record(folder/'terminal.json')
         if terminal.get('status') not in ('incomplete','error'): raise schema2.Invalid('stopped terminal required')
+        if terminal=={'status':'incomplete','reason':'portable native provenance or cleanup unconfirmed'}: raise schema2.Invalid('pretrial stop requires typed reviewed disposition')
         if not (folder/'account-stop.json').is_file() or (folder/'account-stop.json').is_symlink(): raise schema2.Invalid('account stop missing')
         dispatch=schema2.read_record(folder/'dispatch.json'); run_id='planar-t044-'+reservation_id; evidence=Path(dispatch['evidence'])
+        if not (evidence/'native-trial-start.json').is_file() or (evidence/'native-trial-start.json').is_symlink(): raise schema2.Invalid('pretrial stop requires typed reviewed disposition')
         if dispatch.get('launcher_id')!=run_id or evidence!=launch.jobs_root()/run_id or evidence.is_symlink() or not evidence.is_dir() or (evidence/'recovery-required').exists() or (evidence/'recovery-required').is_symlink(): raise schema2.Invalid('cleanup or dispatch unconfirmed')
         def read_json(name):
             file=evidence/name
