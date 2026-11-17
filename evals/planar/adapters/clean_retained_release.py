@@ -326,6 +326,88 @@ def resolver_identity():
     return {'commit':commit,'implementation_sha256':launch.source_digest(launch.CASES['clean-retained-a-continuation'])}
 
 
+# This reconciliation is deliberately limited to the one independently audited
+# historical marker. It does not execute code from the historical commit.
+_DRIFT_EID='planar-t044-9b0e5f60ad9545b9b0f8a85784516979'
+_DRIFT_MARKER='8e339922b58e836897a283bc84deef0f07585d24e42e2b0feb71aa44202dd82f'
+_DRIFT_REVIEW='43a74b629db06daa2923826a03f92de98bbc689602bc383a3960052868278ff6'
+_DRIFT_OLD='4a28e90e2055bf093555eb26bd0ac543a2446ec8'
+_DRIFT_OLD_IMPL='ee9c66d73eb92af528afd335acf7d8bd2e31cfce52c2a6dad74b84817b78a376'
+_DRIFT_ORACLE='4e835ed6b0c5c50ccadd3897e4ae1a004b5be415'
+_DRIFT_KEYS={'schema','execution_id','marker_sha256','review_sha256','old_commit','old_implementation_sha256',
+             'current_commit','current_tree','current_implementation_sha256','scope','source_status','source_reward','target_status','target_reward'}
+
+
+def _reconciliation(records, marker_path, marker, doc, approval_path, approval_raw):
+    """Validate closed reviewed bindings and the complete committed source diff."""
+    reviews=launch.reviews_root().resolve(strict=True)
+    if (marker.get('execution_id')!=_DRIFT_EID or digest(read_safe(marker_path,reviews))!=_DRIFT_MARKER or
+        marker.get('review_sha256')!=_DRIFT_REVIEW or doc['resolver_commit']!=_DRIFT_OLD or
+        doc['resolver_implementation_sha256']!=_DRIFT_OLD_IMPL or doc['source_status']!='behavioral_failure' or
+        type(doc['source_reward']) is not int or doc['source_reward']!=0 or doc['target_status']!='behavioral_failure' or
+        type(doc['target_reward']) is not int or doc['target_reward']!=0): raise ValueError('unsupported historical marker')
+    approval_path=safe_path(approval_path,reviews)
+    if approval_path.is_relative_to(launch.jobs_root().resolve(strict=True)): raise ValueError('approval inside target evidence')
+    if read_safe(approval_path,reviews)!=approval_raw: raise ValueError('approval changed')
+    approval=json.loads(approval_raw,object_pairs_hook=unique)
+    if approval_raw!=canonical(approval)+b'\n': raise ValueError('approval not canonical')
+    if (not isinstance(approval,dict) or set(approval)!={'schema','decision','independent_review','reviewer','reviewed_at','expected_sidecar','diff','source_review_sha256','oracle_diff','account_diff'} or
+        approval['schema']!='planar-retained-clean-reconciliation-approval-v1' or approval['decision']!='approve-account-reconciliation' or
+        approval['independent_review'] is not True or not isinstance(approval['reviewer'],str) or not approval['reviewer'].strip()): raise ValueError('approval unsupported')
+    try:
+        if datetime.fromisoformat(approval['reviewed_at']).utcoffset() is None: raise ValueError()
+    except (TypeError,ValueError): raise ValueError('approval time invalid') from None
+    expected=approval['expected_sidecar']
+    if not isinstance(expected,dict) or set(expected)!=_DRIFT_KEYS: raise ValueError('sidecar binding malformed')
+    identity=resolver_identity(); commit=identity['commit']
+    def git(*args): return subprocess.run(['git',*args],cwd=launch.ROOT,capture_output=True,check=True,timeout=30).stdout
+    tree=git('rev-parse',commit+'^{tree}').decode().strip()
+    fixed={'schema':'planar-retained-clean-reconciliation-v1','execution_id':_DRIFT_EID,'marker_sha256':_DRIFT_MARKER,
+           'review_sha256':_DRIFT_REVIEW,'old_commit':_DRIFT_OLD,'old_implementation_sha256':_DRIFT_OLD_IMPL,
+           'current_commit':commit,'current_tree':tree,'current_implementation_sha256':identity['implementation_sha256'],
+           'scope':'account-only','source_status':'behavioral_failure','source_reward':0,'target_status':'behavioral_failure','target_reward':0}
+    if canonical(expected)!=canonical(fixed) or type(expected['source_reward']) is not int or type(expected['target_reward']) is not int: raise ValueError('stale or contradictory reconciliation')
+    changed=git('diff','--name-only','-z',_DRIFT_OLD,commit).decode().split('\0'); changed=[x for x in changed if x]
+    diff=approval['diff']
+    if not isinstance(diff,list) or len(diff)!=len(changed) or not changed or len(set(changed))!=len(changed): raise ValueError('diff inventory missing')
+    actual=[]
+    for name in sorted(changed):
+        if name.startswith('/') or '..' in Path(name).parts: raise ValueError('unsafe diff path')
+        actual.append({'path':name,'sha256':digest(git('show',commit+':'+name))})
+    if diff!=actual: raise ValueError('diff inventory mismatch')
+    # The independently produced source review has one fixed location. It binds
+    # the post-implementation commit and the partition, not just a boolean.
+    source_review=reviews/'resolver-drift-source-review-v1.json'
+    source_raw=read_safe(source_review,reviews)
+    if digest(source_raw)!=approval['source_review_sha256']: raise ValueError('source review drift')
+    source=json.loads(source_raw,object_pairs_hook=unique)
+    if source_raw!=canonical(source)+b'\n' or not isinstance(source,dict) or set(source)!={'schema','decision','independent_review','reviewer','reviewed_at','old_commit','oracle_commit','current_commit','current_tree','oracle_diff','account_diff'}: raise ValueError('source review malformed')
+    if (source['schema']!='planar-retained-clean-source-review-v1' or source['decision']!='approve' or source['independent_review'] is not True or
+        not isinstance(source['reviewer'],str) or not source['reviewer'].strip() or source['old_commit']!=_DRIFT_OLD or
+        source['oracle_commit']!=_DRIFT_ORACLE or source['current_commit']!=commit or source['current_tree']!=tree): raise ValueError('source review identity mismatch')
+    try:
+        if datetime.fromisoformat(source['reviewed_at']).utcoffset() is None: raise ValueError()
+    except (TypeError,ValueError): raise ValueError('source review time invalid') from None
+    git('merge-base','--is-ancestor',_DRIFT_ORACLE,commit)
+    def names(base,head):
+        return set(x for x in git('diff','--name-only','-z',base,head).decode().split('\0') if x)
+    oracle_names=names(_DRIFT_OLD,_DRIFT_ORACLE); account_names=names(_DRIFT_ORACLE,commit)
+    if not oracle_names or not account_names or oracle_names & account_names or oracle_names | account_names != set(changed): raise ValueError('diff partition mismatch')
+    oracle=[v for v in actual if v['path'] in oracle_names]; account=[v for v in actual if v['path'] in account_names]
+    if (approval['oracle_diff']!=oracle or approval['account_diff']!=account or source['oracle_diff']!=oracle or source['account_diff']!=account): raise ValueError('source review partition mismatch')
+    return {**fixed,'approval_path':str(approval_path),'approval_sha256':digest(approval_raw)}
+
+
+def _sidecar_valid(records,marker_path,marker,doc):
+    sidecar=records/(_DRIFT_EID+'.retained-clean-reconciliation-v1.json')
+    reviews=launch.reviews_root().resolve(strict=True)
+    raw=read_safe(sidecar,reviews); value=json.loads(raw,object_pairs_hook=unique)
+    if not isinstance(value,dict) or set(value)!=_DRIFT_KEYS|{'approval_path','approval_sha256'} or raw!=canonical(value)+b'\n': return False
+    approval=safe_path(value['approval_path'],reviews); approval_raw=read_safe(approval,reviews)
+    if digest(approval_raw)!=value['approval_sha256']: return False
+    return canonical(value)==canonical(_reconciliation(records,marker_path,marker,doc,approval,approval_raw))
+
+
 def validate_published(start,marker_path,marker):
     try:
         import codex_run
@@ -341,7 +423,9 @@ def validate_published(start,marker_path,marker):
         if census.parent!=records.resolve() or census.name!=marker['execution_id']+'.retained-clean-census-'+marker['census_sha256']+'.json': return False
         census_raw=read_safe(census,reviews); value=json.loads(census_raw,object_pairs_hook=unique)
         if census_raw!=canonical(value)+b'\n' or digest(canonical(value))!=marker['census_sha256'] or value.get('execution_id')!=marker['execution_id'] or value.get('native_group')!='absent' or type(value.get('matching_commands')) is not int or value['matching_commands']!=0 or type(value.get('unresolved')) is not int or value['unresolved']!=0: return False
-        if resolver_identity()!={'commit':doc['resolver_commit'],'implementation_sha256':doc['resolver_implementation_sha256']}: return False
+        sidecar=records/(marker['execution_id']+'.retained-clean-reconciliation-v1.json')
+        identity_matches=resolver_identity()=={'commit':doc['resolver_commit'],'implementation_sha256':doc['resolver_implementation_sha256']}
+        if (not identity_matches or sidecar.exists() or sidecar.is_symlink()) and not _sidecar_valid(records,marker_path,marker,doc): return False
         evidence=launch.jobs_root()/doc['execution_id']; verified=verify(doc,evidence,start)
         live_check(evidence,verified['trial_name'],verified['trial'])
         return True
@@ -393,3 +477,33 @@ def publish(evidence,review):
             return {'execution_id':eid,'account':'resolved','outcome':doc['target_status']}
     finally:
         sys.path.remove(str(launch.EVALS/'planar/experiments'))
+
+
+def publish_reconciliation(evidence, approval):
+    """Publish exactly one reviewed account-only sidecar under the admission lock."""
+    import codex_run
+    reviews=launch.reviews_root().resolve(strict=True); evidence=Path(evidence)
+    if evidence!=launch.jobs_root()/_DRIFT_EID: raise ValueError('wrong target')
+    approval=safe_path(approval,reviews); approval_raw=read_safe(approval,reviews)
+    with codex_run.admission_scope() as records:
+        start=records/(_DRIFT_EID+'.start.json'); marker_path=records/(_DRIFT_EID+'.resolved.json')
+        closed=records/(_DRIFT_EID+'.closed.json')
+        if closed.exists() or closed.is_symlink(): raise ValueError('conflicting marker')
+        marker_raw=read_safe(marker_path,reviews); marker=json.loads(marker_raw,object_pairs_hook=unique)
+        if marker_raw!=canonical(marker)+b'\n': raise ValueError('marker not canonical')
+        review=safe_path(marker['review_path'],reviews); review_raw=read_safe(review,reviews); doc=parse(review_raw)
+        if digest(review_raw)!=marker.get('review_sha256') or canonical(doc)!=canonical(marker.get('review_binding')): raise ValueError('marker review mismatch')
+        sidecar=_reconciliation(records,marker_path,marker,doc,approval,approval_raw)
+        verified=verify(doc,evidence,start); live_check(evidence,verified['trial_name'],verified['trial'])
+        if read_safe(approval,reviews)!=approval_raw or read_safe(marker_path,reviews)!=marker_raw: raise ValueError('authority changed')
+        destination=records/(_DRIFT_EID+'.retained-clean-reconciliation-v1.json')
+        fd,tmp=tempfile.mkstemp(prefix='.retained-clean-reconciliation-',dir=records)
+        try:
+            with os.fdopen(fd,'wb') as f: f.write(canonical(sidecar)+b'\n'); f.flush(); os.fsync(f.fileno())
+            os.link(tmp,destination,follow_symlinks=False)
+            directory=os.open(records,os.O_RDONLY|os.O_DIRECTORY)
+            try: os.fsync(directory)
+            finally: os.close(directory)
+        finally: os.unlink(tmp)
+        if not validate_published(start,marker_path,marker) or codex_run.shared_pending(records): raise ValueError('published reconciliation remains pending')
+        return {'execution_id':_DRIFT_EID,'account':'resolved','outcome':'behavioral_failure'}

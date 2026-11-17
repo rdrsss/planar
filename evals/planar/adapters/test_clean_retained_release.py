@@ -190,3 +190,76 @@ ValueError: unexpected repository directory
                               ('final_capture','present'),('job_log_sha256','bad'),('missing_artifacts',[])):
                 changed=copy.deepcopy(doc); changed[key]=value
                 with self.subTest(key=key),self.assertRaises(ValueError): release.parse(json.dumps(changed))
+
+class Reconciliation(unittest.TestCase):
+    def test_locked_sidecar_and_stale_tamper_fail_closed(self):
+        import codex_run
+        with TemporaryDirectory() as tmp:
+            root=Path(tmp).resolve(); jobs=root/'jobs'; jobs.mkdir(); eid='planar-t044-'+'1'*32
+            evidence=jobs/eid; evidence.mkdir(); doc=document(root); doc.update(execution_id=eid,target_status='behavioral_failure')
+            review=root/'review.json'; review.write_bytes(release.canonical(doc)+b'\n'); review_hash=release.digest(review.read_bytes())
+            identity={'commit':'d'*40,'implementation_sha256':'e'*64}; tree='f'*40
+            census={'execution_id':eid,'native_group':'absent','matching_commands':0,'unresolved':0}
+            census_hash=release.digest(release.canonical(census))
+            def git(args,**kw):
+                if len(args)==3 and args[1]=='rev-parse' and args[2].endswith('^{tree}'): value=(tree+'\n').encode()
+                elif args[1:4]==['diff','--name-only','-z']:
+                    value=(b'evals/oracle.py\0' if args[5]==release._DRIFT_ORACLE else b'evals/account.py\0' if args[4]==release._DRIFT_ORACLE else b'evals/account.py\0evals/oracle.py\0')
+                elif args[1:3]==['merge-base','--is-ancestor']: value=b''
+                elif len(args)==3 and args[1]=='show': value=b'reviewed source'
+                else: raise AssertionError(args)
+                return SimpleNamespace(stdout=value)
+            with patch.object(release.launch,'reviews_root',return_value=root),patch.object(release.launch,'jobs_root',return_value=jobs), \
+                 patch.object(release,'verify',return_value={'trial_name':'trial','trial':{}}),patch.object(release,'live_check',return_value=census), \
+                 patch.object(release,'resolver_identity',return_value=identity),patch.object(release.subprocess,'run',side_effect=git), \
+                 patch.object(release,'_DRIFT_EID',eid),patch.object(release,'_DRIFT_REVIEW',review_hash), \
+                 patch.object(release,'_DRIFT_OLD',doc['resolver_commit']),patch.object(release,'_DRIFT_OLD_IMPL',doc['resolver_implementation_sha256']):
+                with codex_run.admission_scope() as records:
+                    start=records/(eid+'.start.json'); start.write_text(json.dumps({'case':'clean-retained-a-continuation','execution_id':eid}))
+                    census_path=records/(eid+'.retained-clean-census-'+census_hash+'.json'); census_path.write_bytes(release.canonical(census)+b'\n')
+                    marker={'schema':'planar-retained-clean-account-marker-v1','type':'retained-clean-account-v1','execution_id':eid,'review_path':str(review),'review_sha256':review_hash,'census_path':str(census_path),'census_sha256':census_hash,'review_binding':doc}
+                    marker_path=records/(eid+'.resolved.json'); marker_path.write_bytes(release.canonical(marker)+b'\n'); marker_hash=release.digest(marker_path.read_bytes())
+                expected={'schema':'planar-retained-clean-reconciliation-v1','execution_id':eid,'marker_sha256':marker_hash,'review_sha256':review_hash,'old_commit':doc['resolver_commit'],'old_implementation_sha256':doc['resolver_implementation_sha256'],'current_commit':identity['commit'],'current_tree':tree,'current_implementation_sha256':identity['implementation_sha256'],'scope':'account-only','source_status':'behavioral_failure','source_reward':0,'target_status':'behavioral_failure','target_reward':0}
+                oracle=[{'path':'evals/oracle.py','sha256':release.digest(b'reviewed source')}]
+                account=[{'path':'evals/account.py','sha256':release.digest(b'reviewed source')}]
+                source={'schema':'planar-retained-clean-source-review-v1','decision':'approve','independent_review':True,'reviewer':'independent','reviewed_at':'2026-11-17T00:00:00+00:00','old_commit':doc['resolver_commit'],'oracle_commit':release._DRIFT_ORACLE,'current_commit':identity['commit'],'current_tree':tree,'oracle_diff':oracle,'account_diff':account}
+                source_path=root/'resolver-drift-source-review-v1.json'; source_path.write_bytes(release.canonical(source)+b'\n')
+                approval={'schema':'planar-retained-clean-reconciliation-approval-v1','decision':'approve-account-reconciliation','independent_review':True,'reviewer':'independent','reviewed_at':'2026-11-17T00:00:00+00:00','expected_sidecar':expected,'diff':account+oracle,'oracle_diff':oracle,'account_diff':account,'source_review_sha256':release.digest(source_path.read_bytes())}
+                approval_path=root/'approval.json'; approval_path.write_bytes(release.canonical(approval)+b'\n')
+                with patch.object(release,'_DRIFT_MARKER',marker_hash):
+                    original_source=source_path.read_bytes(); source_path.unlink()
+                    with self.assertRaises(FileNotFoundError): release.publish_reconciliation(evidence,approval_path)
+                    source_path.write_bytes(original_source+b' ')
+                    with self.assertRaises(ValueError): release.publish_reconciliation(evidence,approval_path)
+                    source_path.write_bytes(original_source)
+                    original_approval=approval_path.read_bytes()
+                    bad=copy.deepcopy(approval); del bad['source_review_sha256']; approval_path.write_bytes(release.canonical(bad)+b'\n')
+                    with self.assertRaises(ValueError): release.publish_reconciliation(evidence,approval_path)
+                    bad=copy.deepcopy(approval); bad['account_diff']=oracle; approval_path.write_bytes(release.canonical(bad)+b'\n')
+                    with self.assertRaises(ValueError): release.publish_reconciliation(evidence,approval_path)
+                    approval_path.write_bytes(original_approval)
+                    with codex_run.admission_scope() as locked: self.assertIn(start,codex_run.shared_pending(locked))
+                    with patch.object(release.os,'link',side_effect=OSError('fault')):
+                        with self.assertRaises(OSError): release.publish_reconciliation(evidence,approval_path)
+                    with codex_run.admission_scope() as locked: self.assertIn(start,codex_run.shared_pending(locked))
+                    self.assertEqual(release.publish_reconciliation(evidence,approval_path)['account'],'resolved')
+                    sidecar=records/(eid+'.retained-clean-reconciliation-v1.json'); original=sidecar.read_bytes()
+                    with codex_run.admission_scope() as locked: self.assertEqual(codex_run.shared_pending(locked),[])
+                    with self.assertRaises(FileExistsError): release.publish_reconciliation(evidence,approval_path)
+                    with patch.object(release,'resolver_identity',return_value={'commit':'9'*40,'implementation_sha256':'e'*64}):
+                        with codex_run.admission_scope() as locked: self.assertIn(start,codex_run.shared_pending(locked))
+                    with patch.object(release,'live_check',side_effect=ValueError('resource active')):
+                        with codex_run.admission_scope() as locked: self.assertIn(start,codex_run.shared_pending(locked))
+                    with patch.object(release,'verify',side_effect=ValueError('evidence tampered')):
+                        with codex_run.admission_scope() as locked: self.assertIn(start,codex_run.shared_pending(locked))
+                    value=json.loads(original); value['target_reward']=False; sidecar.write_bytes(release.canonical(value)+b'\n')
+                    with codex_run.admission_scope() as locked: self.assertIn(start,codex_run.shared_pending(locked))
+                    sidecar.unlink(); sidecar.symlink_to(approval_path)
+                    with codex_run.admission_scope() as locked: self.assertIn(start,codex_run.shared_pending(locked))
+                    sidecar.unlink(); sidecar.write_bytes(original)
+                    self.assertFalse(release.validate_published(start,marker_path,marker))
+                    original_marker=marker_path.read_bytes(); marker_path.write_bytes(original_marker+b' ')
+                    with codex_run.admission_scope() as locked: self.assertIn(start,codex_run.shared_pending(locked))
+                    marker_path.write_bytes(original_marker)
+                    approval['diff'][0]['sha256']='0'*64; approval_path.write_bytes(release.canonical(approval)+b'\n')
+                    with codex_run.admission_scope() as locked: self.assertIn(start,codex_run.shared_pending(locked))
