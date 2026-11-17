@@ -139,6 +139,16 @@ known. Append completion, interruption and later discovery lines as
 the result. The ordinary completion line and its state transition still apply;
 a start or observation alone never completes a step.
 
+Within a task round, before the first command executing a required task check,
+including a probe or preliminary assertion, append the check phase's `started`
+line and write its initial observation. One invocation may cover the phase and
+its commands; no separate audit file is required for each shell command.
+Read-only setup and clock acquisition are not execution of a required check.
+If the start was omitted, preserve the omission and actual execution evidence
+in an immutable current-time supplement and report the original invocation as
+unlinked. Never backdate it: a later recorded repeat is a new execution and
+cannot repair the original audit gap (TS-7.5).
+
 The record writer creates immutable `session-<invocation-id>-<sequence>.md`
 files beside the record, sequences starting at 1 for each invocation. Each is
 a separate observation, written at dispatch acceptance, completion or

@@ -427,6 +427,14 @@ result (TS-8.3).
 Which checks: the task's `checks` and the common checks that apply to its
 paths (`${CLAUDE_PLUGIN_ROOT}/references/tasks.md`).
 
+Within a task round, before the first command executing a required task check,
+including a probe or preliminary assertion, append the check phase's `started`
+line and write its initial observation as the task-record reference specifies
+(TS-7.5). One invocation may cover the phase and its commands. Read-only setup
+and clock acquisition are not execution of a required check. A later recorded
+repeat cannot repair an omitted start; disclose the omission as that reference
+directs.
+
 - Command checks run on every attempt.
 - Scenario checks: on attempt 1, all of them. On a later attempt, first
   only those that failed on the previous attempt; when those pass, all of

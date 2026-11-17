@@ -31,7 +31,7 @@ Before anything else, resolve what the run uses, exactly as
 `${CLAUDE_PLUGIN_ROOT}/references/settings.md` says: `<home>` (the
 environment variable `PLANAR_HOME` first, never the real home directory when
 it is set), the settings, the policy and the profile in force for the
-project (the project's `project.yaml` names its profile). Compare the current
+project (the project override is `settings.projects.<name>.profile`). Compare the current
 resolution with the supplied frozen configuration before any dispatch. On a
 source path, digest, version, host, binding or binding source mismatch stop and
 resolve explicitly; never silently replace the frozen configuration. Use the
