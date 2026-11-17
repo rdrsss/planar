@@ -6,7 +6,7 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from recover import recover_projects
+from recover import recover_projects, validate_owned_evidence
 from supervise import supervise
 
 
@@ -19,7 +19,7 @@ def process_record(evidence, pid, deadline):
 
 
 def main():
-    evidence=Path(os.environ['PLANAR_T044_EVIDENCE_DIR']).resolve(strict=True)
+    evidence=validate_owned_evidence(os.environ['PLANAR_T044_EVIDENCE_DIR'])
     parent=int(os.environ['PLANAR_T044_PARENT_PID'])
     marker=evidence/'recovery-required'
     if not marker.is_file():

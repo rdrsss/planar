@@ -29,6 +29,9 @@ def activate_runnable(root, identity, reservation_id, gate_path, *, preparation_
     import launch
     root=Path(root); gate_path=Path(gate_path); pv.safe_id(reservation_id)
     if root.is_symlink() or not root.is_dir(): raise schema2.Invalid('unsafe experiment root')
+    manifest=schema2.validate(root,identity)
+    if manifest.get('runnable_contract') != schema2_runnable.CONTRACT: raise schema2.Invalid('historical runnable authority cannot dispatch')
+    schema2_runnable.validate_context(manifest)
     reviews=launch.reviews_root()
     if reviews.is_symlink() or not reviews.is_dir() or gate_path.is_symlink() or not gate_path.is_file() or not gate_path.resolve().is_relative_to(reviews.resolve()): raise schema2.Invalid('unsafe gate or review root')
     scope=reviews/'planar-account-admission-v1'
@@ -66,16 +69,17 @@ def activate_runnable(root, identity, reservation_id, gate_path, *, preparation_
             if consumed.is_symlink() or (consumed/marker_hash).exists(): raise schema2.Invalid('gate already consumed or unsafe')
             folder=root/'executions'/reservation_id
             if folder.exists() or folder.is_symlink(): raise schema2.Invalid('reservation already activated')
-            schema2.write_new(records/f'{reservation_id}.start.json',{'experiment':str(root.resolve()),'execution_id':reservation_id,'runnable_contract':'planar-schema2-runnable-v1','reservation_sha256':schema2.h(reservation_bytes),'gate_marker_sha256':marker_hash,'gate_raw_sha256':schema2.h(gate_bytes)})
+            schema2.write_new(records/f'{reservation_id}.start.json',{'experiment':str(root.resolve()),'execution_id':reservation_id,'runnable_contract':schema2_runnable.CONTRACT,'reservation_sha256':schema2.h(reservation_bytes),'gate_marker_sha256':marker_hash,'gate_raw_sha256':schema2.h(gate_bytes),'selection_context_sha256':r['selection_context_sha256'],'selection_source':r['selection_source']})
             folder.mkdir(mode=0o700)
             _sync_directory(folder.parent)
-            schema2.write_new(folder/'start.json',{'execution_id':reservation_id,'reservation_id':reservation_id,'logical_id':r['logical_id'],'variant_id':r['variant_id'],'repetition':r['repetition'],'predecessor_execution_id':r['predecessor_execution_id'],'reservation_sha256':schema2.h(reservation_bytes),'gate_marker_sha256':marker_hash,'concrete_job_config_sha256':r['concrete_binding']['concrete_job_config_sha256']})
+            schema2.write_new(folder/'start.json',{'execution_id':reservation_id,'reservation_id':reservation_id,'logical_id':r['logical_id'],'variant_id':r['variant_id'],'repetition':r['repetition'],'predecessor_execution_id':r['predecessor_execution_id'],'reservation_sha256':schema2.h(reservation_bytes),'gate_marker_sha256':marker_hash,'concrete_job_config_sha256':r['concrete_binding']['concrete_job_config_sha256'],'selection_context_sha256':r['selection_context_sha256'],'selection_source':r['selection_source']})
             # Any post-start failure leaves the shared record pending.
             if gate_path.is_symlink() or gate_path.read_bytes()!=gate_bytes or reservation_path.read_bytes()!=reservation_bytes: raise schema2.Invalid('review bytes drift after start')
             schema2.validate(root,identity)
             now=schema2.datetime.now(schema2.timezone.utc)
             required=min(r['concrete_binding']['caps']['trial_seconds'],1500)
             if min(schema2.utc(gate['expires_at']),schema2.utc(r['expires_at']),schema2.utc(schema2.read_record(root/'manifest.json')['deadline_at']))-now < schema2.timedelta(seconds=required): raise schema2.Invalid('insufficient remaining reviewed wall time')
+            schema2_runnable.validate_context(schema2.validate(root,identity))
             if consumed.is_symlink(): raise schema2.Invalid('unsafe consumed root')
             consumed.mkdir(mode=0o700,exist_ok=True)
             _sync_directory(consumed.parent)
@@ -89,9 +93,10 @@ def activate_runnable(root, identity, reservation_id, gate_path, *, preparation_
             launcher_id='planar-t044-'+reservation_id
             evidence=launch.jobs_root()/launcher_id
             trial_deadline=min(r['concrete_binding']['caps']['trial_seconds'],1500)
-            schema2.write_new(folder/'dispatch.json',{'launcher_id':launcher_id,'evidence':str(evidence),'case':'native-lineage-portable','effort':r['concrete_binding']['job_config']['agents'][0]['kwargs']['reasoning_effort'],'trial_deadline':trial_deadline})
+            schema2.write_new(folder/'dispatch.json',{'launcher_id':launcher_id,'evidence':str(evidence),'case':'native-lineage-portable','effort':r['concrete_binding']['job_config']['agents'][0]['kwargs']['reasoning_effort'],'trial_deadline':trial_deadline,'selection_context_sha256':r['selection_context_sha256'],'selection_source':r['selection_source']})
             # Keep both locks through guarded launch, so recovery cannot mistake
             # a live dispatcher for a crash before the durable dispatch boundary.
+            schema2_runnable.validate_context(schema2.validate(root,identity))
             return _dispatch()
 
 
@@ -108,15 +113,17 @@ def verify_activated(root, identity, reservation_id, gate_path, *, preparation_e
     gate_bytes=gate_path.read_bytes(); gate=pv.parse(gate_bytes,1024*1024)
     result=schema2_runnable.check_gate(root,identity,reservation_id,gate,preparation_evidence=preparation_evidence,allow_activated=True)
     reservation_path=root/'reservations'/f'{reservation_id}.json'; r=schema2.read_record(reservation_path)
+    if r.get('runnable_contract') != schema2_runnable.CONTRACT: raise schema2.Invalid('historical runnable authority cannot dispatch')
+    schema2_runnable.validate_context(schema2.validate(root,identity))
     folder=root/'executions'/reservation_id
     if folder.is_symlink() or not folder.is_dir(): raise schema2.Invalid('missing activated execution')
     start=schema2.read_record(folder/'start.json')
     marker_hash=hashlib.sha256(json.dumps(gate,sort_keys=True,separators=(',',':')).encode()).hexdigest()
-    if start.get('execution_id')!=reservation_id or start.get('reservation_id')!=reservation_id or start.get('logical_id')!=r['logical_id'] or start.get('reservation_sha256')!=schema2.h(reservation_path.read_bytes()) or start.get('gate_marker_sha256')!=marker_hash or start.get('concrete_job_config_sha256')!=r['concrete_binding']['concrete_job_config_sha256']:
+    if start.get('execution_id')!=reservation_id or start.get('reservation_id')!=reservation_id or start.get('logical_id')!=r['logical_id'] or start.get('reservation_sha256')!=schema2.h(reservation_path.read_bytes()) or start.get('gate_marker_sha256')!=marker_hash or start.get('concrete_job_config_sha256')!=r['concrete_binding']['concrete_job_config_sha256'] or any(start.get(k)!=r[k] for k in ('selection_context_sha256','selection_source')):
         raise schema2.Invalid('activated execution mismatch')
     scope=reviews/'planar-account-admission-v1'; records=scope/'records'; shared=records/f'{reservation_id}.start.json'
     if scope.is_symlink() or records.is_symlink() or shared.is_symlink() or r['account_scope_id']!=str(scope.resolve()): raise schema2.Invalid('unsafe shared admission')
-    if schema2.read_record(shared)!={'experiment':str(root.resolve()),'execution_id':reservation_id,'runnable_contract':'planar-schema2-runnable-v1','reservation_sha256':schema2.h(reservation_path.read_bytes()),'gate_marker_sha256':marker_hash,'gate_raw_sha256':schema2.h(gate_bytes)} or (records/f'{reservation_id}.closed.json').exists() or (records/f'{reservation_id}.resolved.json').exists(): raise schema2.Invalid('shared admission not active')
+    if schema2.read_record(shared)!={'experiment':str(root.resolve()),'execution_id':reservation_id,'runnable_contract':schema2_runnable.CONTRACT,'reservation_sha256':schema2.h(reservation_path.read_bytes()),'gate_marker_sha256':marker_hash,'gate_raw_sha256':schema2.h(gate_bytes),'selection_context_sha256':r['selection_context_sha256'],'selection_source':r['selection_source']} or (records/f'{reservation_id}.closed.json').exists() or (records/f'{reservation_id}.resolved.json').exists(): raise schema2.Invalid('shared admission not active')
     consumed=reviews/'harbor-t044-consumed'; marker=consumed/marker_hash
     if consumed.is_symlink() or marker.is_symlink() or not marker.is_file() or marker.read_bytes()!=b'reserved\n': raise schema2.Invalid('gate consumption missing')
     if r['implementation_sha256']!=implementation_identity(): raise schema2.Invalid('implementation changed')
@@ -139,7 +146,7 @@ def execute_runnable(root, identity, reservation_id, auth_path, gate_path, *, pr
     import launch
     root=Path(root); pv.safe_id(reservation_id)
     r=schema2.read_record(root/'reservations'/f'{reservation_id}.json')
-    if r.get('runnable_contract') != 'planar-schema2-runnable-v1': raise schema2.Invalid('offline-only reservation')
+    if r.get('runnable_contract') != 'planar-schema2-runnable-context-v2': raise schema2.Invalid('historical or offline reservation cannot dispatch')
     selected=schema2.preflight(root,identity,r['logical_id'])
     caps=r['concrete_binding']['caps']
     trial_deadline=min(caps['trial_seconds'],1500)
@@ -195,11 +202,25 @@ def reconcile_runnable(root, identity, reservation_id, gate_path):
     if not isinstance(reservation_id,str) or len(reservation_id)!=32 or any(c not in '0123456789abcdef' for c in reservation_id) or root.is_symlink() or not root.is_dir(): return None
     folder=root/'executions'/reservation_id
     try:
-        with codex_run.admission_scope() as records, _controller_lock(root) as lock:
+        initial_manifest=schema2.validate(root,identity)
+        initial_context=launch.context()
+        if initial_manifest.get('runnable_contract')==schema2_runnable.CONTRACT:
+            schema2_runnable.validate_context(initial_manifest)
+        elif initial_manifest.get('runnable_contract') != schema2_runnable.LEGACY_CONTRACT or initial_context.layout_kind not in ('legacy-reviews','override-jobs'):
+            raise ValueError('exact historical or v2 authority required')
+        elif (root/'controller.lock').is_symlink() or not (root/'controller.lock').is_file():
+            # Never create a missing lock as a side effect of historical inspection.
+            raise ValueError('historical controller lock unavailable')
+        with codex_run.admission_scope() as records, _controller_lock(root, create=initial_manifest.get('runnable_contract') != schema2_runnable.LEGACY_CONTRACT) as lock:
             manifest=schema2.validate(root,identity)
             reservation_path=root/'reservations'/f'{reservation_id}.json'
-            r=schema2.read_record(reservation_path); schema2_runnable.closed(r,schema2_runnable.RESERVATION_FIELDS)
-            if r.get('runnable_contract')!='planar-schema2-runnable-v1' or r['experiment_identity']!=identity or r['reservation_id']!=reservation_id or r['execution_id']!=reservation_id: raise ValueError('reservation mismatch')
+            r=schema2.read_record(reservation_path)
+            contract=r.get('runnable_contract'); is_v2=contract==schema2_runnable.CONTRACT
+            if contract not in (schema2_runnable.CONTRACT,schema2_runnable.LEGACY_CONTRACT): raise ValueError('unknown runnable contract')
+            if is_v2: schema2_runnable.validate_context(manifest)
+            elif launch.context().layout_kind not in ('legacy-reviews','override-jobs'): raise ValueError('historical layout required')
+            schema2_runnable.closed(r,schema2_runnable.RESERVATION_FIELDS | (schema2_runnable.CONTEXT_FIELDS if is_v2 else set()))
+            if manifest.get('runnable_contract')!=contract or r['experiment_identity']!=identity or r['reservation_id']!=reservation_id or r['execution_id']!=reservation_id: raise ValueError('reservation mismatch')
             v=next(x for x in manifest['variants'] if x['variant_id']==r['variant_id'])
             if any(r[key]!=v[key] for key in (*schema2.IDENTITIES,'configuration_sha256','image_id','verifier_image_id','host_version')): raise ValueError('frozen reservation mismatch')
             binding=r['concrete_binding']; schema2_runnable.closed(binding,schema2_runnable.BINDING_FIELDS)
@@ -207,9 +228,10 @@ def reconcile_runnable(root, identity, reservation_id, gate_path):
             if binding['concrete_job_config_sha256']!=concrete: raise ValueError('concrete binding mismatch')
             gate_file=Path(gate_path)
             if gate_file.is_symlink() or not gate_file.is_file() or not gate_file.resolve().is_relative_to(launch.reviews_root().resolve()): raise ValueError('gate missing or outside review scope')
-            gate=pv.parse(gate_file.read_bytes(),1024*1024); schema2_runnable.closed(gate,schema2_runnable.GATE_FIELDS)
+            gate=pv.parse(gate_file.read_bytes(),1024*1024); schema2_runnable.closed(gate,schema2_runnable.GATE_FIELDS | (schema2_runnable.CONTEXT_FIELDS if is_v2 else set()))
             expected={k:r[k] for k in schema2.GATE_FIELDS if k in r and k not in ('schema_version','expires_at')}
-            expected.update({'schema_version':2,'purpose':'one-experiment-trial','verdict':'approve','max_attempts':1,'reservation_sha256':schema2.h(reservation_path.read_bytes()),'runnable_contract':'planar-schema2-runnable-v1','concrete_job_config_sha256':concrete})
+            expected.update({'schema_version':2,'purpose':'one-experiment-trial','verdict':'approve','max_attempts':1,'reservation_sha256':schema2.h(reservation_path.read_bytes()),'runnable_contract':contract,'concrete_job_config_sha256':concrete})
+            if is_v2: expected.update({k:r[k] for k in schema2_runnable.CONTEXT_FIELDS})
             if any(gate.get(k)!=value for k,value in expected.items()) or schema2.utc(gate['expires_at'])>schema2.utc(r['expires_at']): raise ValueError('gate mismatch')
             if (type(gate.get('schema_version')) is not int or type(gate.get('max_attempts')) is not int
                 or not all(isinstance(gate.get(key),str) and gate[key].strip() for key in ('reviewer','report','reviewed_at'))
@@ -217,7 +239,8 @@ def reconcile_runnable(root, identity, reservation_id, gate_path):
                 or schema2.utc(gate['expires_at']) > schema2.utc(manifest['deadline_at'])): raise ValueError('gate review metadata mismatch')
             if r['account_scope_id'] != str(records.parent.resolve()) or r['account_scope_id'] != manifest['configuration']['account_scope_id'] or r['canonical_output_root'] != manifest['configuration']['canonical_output_root'] or r['implementation_sha256'] != manifest['implementation_sha256'] or r['state'] != 'planned': raise ValueError('reservation scope mismatch')
             marker_hash=hashlib.sha256(json.dumps(gate,sort_keys=True,separators=(',',':')).encode()).hexdigest()
-            expected_shared={'experiment':str(root.resolve()),'execution_id':reservation_id,'runnable_contract':'planar-schema2-runnable-v1','reservation_sha256':schema2.h(reservation_path.read_bytes()),'gate_marker_sha256':marker_hash,'gate_raw_sha256':schema2.h(gate_file.read_bytes())}
+            expected_shared={'experiment':str(root.resolve()),'execution_id':reservation_id,'runnable_contract':contract,'reservation_sha256':schema2.h(reservation_path.read_bytes()),'gate_marker_sha256':marker_hash,'gate_raw_sha256':schema2.h(gate_file.read_bytes())}
+            if is_v2: expected_shared.update({k:r[k] for k in schema2_runnable.CONTEXT_FIELDS})
             if schema2.read_record(records/f'{reservation_id}.start.json')!=expected_shared: raise ValueError('account record mismatch or unbound legacy start')
             consumed=launch.reviews_root()/'harbor-t044-consumed'; marker=consumed/marker_hash
             if consumed.is_symlink() or marker.is_symlink(): raise ValueError('unsafe gate marker')
@@ -228,6 +251,10 @@ def reconcile_runnable(root, identity, reservation_id, gate_path):
             has_dispatch=dispatch_path.exists() or dispatch_path.is_symlink()
             start_path=folder/'start.json'; has_start=start_path.exists() or start_path.is_symlink()
             marker_exists=marker.exists()
+            if not is_v2 and (not has_start or not marker_exists):
+                # V1 gate and start bytes are historical evidence; an absent
+                # record stays pending and must never be reconstructed here.
+                return None
             if not has_start or not marker_exists:
                 # The account lock proves activation is no longer in its locked
                 # write sequence. Only its known pre-dispatch prefixes can be
@@ -242,6 +269,7 @@ def reconcile_runnable(root, identity, reservation_id, gate_path):
             expected_start={'execution_id':reservation_id,'reservation_id':reservation_id,'logical_id':r['logical_id'],
                 'variant_id':r['variant_id'],'repetition':r['repetition'],'predecessor_execution_id':r['predecessor_execution_id'],
                 'reservation_sha256':schema2.h(reservation_path.read_bytes()),'gate_marker_sha256':marker_hash,'concrete_job_config_sha256':concrete}
+            if is_v2: expected_start.update({k:r[k] for k in schema2_runnable.CONTEXT_FIELDS})
             if has_start:
                 if schema2.read_record(start_path)!=expected_start: raise ValueError('local start mismatch')
             else: schema2.write_new(start_path,expected_start)
@@ -280,6 +308,7 @@ def reconcile_runnable(root, identity, reservation_id, gate_path):
                 else: schema2.write_new(closed,{'status':'incomplete'})
                 return {'status':'incomplete','reason':reason,'stop_account':False}
             dispatch=schema2.read_record(dispatch_path); evidence=Path(dispatch['evidence'])
+            if is_v2 and any(dispatch.get(k) != r[k] for k in schema2_runnable.CONTEXT_FIELDS): raise ValueError('dispatch context mismatch')
             if evidence != launch.jobs_root()/launcher_id or evidence.is_symlink() or not evidence.is_dir() or dispatch['launcher_id']!=launcher_id: raise ValueError('evidence mismatch')
             def read(name):
                 path=evidence/name
@@ -289,7 +318,7 @@ def reconcile_runnable(root, identity, reservation_id, gate_path):
                 return value
             launched=read('launcher.json'); native=read('native-trial-start.json')
             instance=Path(r['concrete_binding']['path_bindings']['case_instance']['raw'])
-            if (launched.get('execution_id')!=launcher_id or launched.get('case')!='native-lineage-portable' or launched.get('runnable_contract')!='planar-schema2-runnable-v1' or launched.get('case_sha256')!=launch.case_inventory(instance) or launched.get('candidate_sha256')!=r['candidate_inventory_sha256'] or launched.get('image_id')!=r['image_id'] or launched.get('verifier_image_id')!=r['verifier_image_id'] or launched.get('review_sha256')!=schema2.h(Path(gate_path).read_bytes())): raise ValueError('launcher provenance mismatch')
+            if (launched.get('execution_id')!=launcher_id or launched.get('case')!='native-lineage-portable' or launched.get('runnable_contract')!=contract or launched.get('case_sha256')!=launch.case_inventory(instance) or launched.get('candidate_sha256')!=r['candidate_inventory_sha256'] or launched.get('image_id')!=r['image_id'] or launched.get('verifier_image_id')!=r['verifier_image_id'] or launched.get('review_sha256')!=schema2.h(Path(gate_path).read_bytes())): raise ValueError('launcher provenance mismatch')
             job_dir=evidence/launcher_id; trial_name=native['trial_name']
             if not isinstance(trial_name,str) or Path(trial_name).name!=trial_name: raise ValueError('unsafe trial name')
             submitted=JobConfig.model_validate_json((evidence/'job-config.json').read_text())
@@ -422,9 +451,9 @@ def _write_receipt(root, identity, reservation, gate_path, kind, outcome):
 
 
 @__import__('contextlib').contextmanager
-def _controller_lock(root):
+def _controller_lock(root, *, create=True):
     import fcntl, stat
-    fd=os.open(Path(root)/'controller.lock',os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
+    fd=os.open(Path(root)/'controller.lock',os.O_RDWR|os.O_NOFOLLOW|(os.O_CREAT if create else 0),0o600)
     with os.fdopen(fd,'r+') as lock:
         if not stat.S_ISREG(os.fstat(lock.fileno()).st_mode): raise ValueError('unsafe controller lock')
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
@@ -440,6 +469,9 @@ def resolve_account_stop(root, identity, reservation_id, reason, *, gate_path):
     import launch
     root=Path(root); pv.safe_id(reservation_id)
     if root.is_symlink() or not root.is_dir(): raise schema2.Invalid('unsafe experiment root')
+    manifest=schema2.validate(root,identity)
+    if manifest.get('runnable_contract') != schema2_runnable.CONTRACT: raise schema2.Invalid('v2 context authority required')
+    schema2_runnable.validate_context(manifest)
     scope=launch.reviews_root()/'planar-account-admission-v1'
     if scope.is_symlink() or (scope/'lock').is_symlink() or (scope/'records').is_symlink(): raise schema2.Invalid('unsafe account scope')
     if len(reservation_id)!=32 or any(c not in '0123456789abcdef' for c in reservation_id): raise schema2.Invalid('unsafe execution id')
@@ -447,13 +479,14 @@ def resolve_account_stop(root, identity, reservation_id, reason, *, gate_path):
     with codex_run.admission_scope() as records, _controller_lock(root):
         m=schema2.validate(root,identity)
         if m.get('runnable_contract') != schema2_runnable.CONTRACT: raise schema2.Invalid('runnable schema-2 experiment required')
-        path=root/'reservations'/f'{reservation_id}.json'; r=schema2.read_record(path); schema2_runnable.closed(r,schema2_runnable.RESERVATION_FIELDS)
+        path=root/'reservations'/f'{reservation_id}.json'; r=schema2.read_record(path); schema2_runnable.closed(r,schema2_runnable.RESERVATION_FIELDS | schema2_runnable.CONTEXT_FIELDS)
         if r['runnable_contract']!=schema2_runnable.CONTRACT or r['experiment_identity']!=identity or r['execution_id']!=reservation_id or r['account_scope_id']!=str(records.parent.resolve()): raise schema2.Invalid('reservation or account scope mismatch')
         gate_path=Path(gate_path); reviews=launch.reviews_root()
         if gate_path.is_symlink() or not gate_path.is_file() or not gate_path.resolve().is_relative_to(reviews.resolve()): raise schema2.Invalid('unsafe gate')
-        gate_bytes=gate_path.read_bytes(); gate=pv.parse(gate_bytes,1024*1024); schema2_runnable.closed(gate,schema2_runnable.GATE_FIELDS)
+        gate_bytes=gate_path.read_bytes(); gate=pv.parse(gate_bytes,1024*1024); schema2_runnable.closed(gate,schema2_runnable.GATE_FIELDS | schema2_runnable.CONTEXT_FIELDS)
         marker_hash=hashlib.sha256(json.dumps(gate,sort_keys=True,separators=(',',':')).encode()).hexdigest()
-        expected_shared={'experiment':str(root.resolve()),'execution_id':reservation_id,'runnable_contract':schema2_runnable.CONTRACT,'reservation_sha256':schema2.h(path.read_bytes()),'gate_marker_sha256':marker_hash,'gate_raw_sha256':schema2.h(gate_bytes)}
+        expected_shared={'experiment':str(root.resolve()),'execution_id':reservation_id,'runnable_contract':schema2_runnable.CONTRACT,'reservation_sha256':schema2.h(path.read_bytes()),'gate_marker_sha256':marker_hash,'gate_raw_sha256':schema2.h(gate_bytes),'selection_context_sha256':r['selection_context_sha256'],'selection_source':r['selection_source']}
+        if any(gate[k] != r[k] for k in schema2_runnable.CONTEXT_FIELDS): raise schema2.Invalid('gate context mismatch')
         if schema2.read_record(records/f'{reservation_id}.start.json')!=expected_shared: raise schema2.Invalid('shared admission mismatch')
         folder=root/'executions'/reservation_id
         if folder.is_symlink() or not folder.is_dir(): raise schema2.Invalid('unsafe execution')
@@ -474,6 +507,7 @@ def resolve_account_stop(root, identity, reservation_id, reason, *, gate_path):
             with file.open() as stream: return json.load(stream,object_pairs_hook=__import__('schema2_admission').no_duplicates)
         watchdog=read_json('watchdog-terminal.json'); launcher=read_json('launcher-terminal.json')
         if watchdog.get('execution_id')!=run_id or launcher.get('execution_id')!=run_id or watchdog.get('status') not in ('completed','interrupted') or launcher.get('status')!=watchdog.get('status'): raise schema2.Invalid('cleanup status unconfirmed')
+        raise schema2.Invalid('v2 account disposition requires independent reviewed authority')
         closed=records/f'{reservation_id}.closed.json'; resolved=records/f'{reservation_id}.resolved.json'; local=folder/'account-stop-resolved.json'
         if closed.exists() or closed.is_symlink(): raise schema2.Invalid('account is already closed')
         record={'reason':reason}

@@ -10,7 +10,8 @@ import schema2
 import schema2_projection as projection
 import schema2_reporting
 
-CONTRACT = 'planar-schema2-runnable-v1'
+LEGACY_CONTRACT = 'planar-schema2-runnable-v1'
+CONTRACT = 'planar-schema2-runnable-context-v2'
 MANIFEST_FIELDS = frozenset(('schema_version','case','contract_version','configuration','configuration_sha256','implementation_sha256','deadline_at','variants','trials','identity','runnable_contract'))
 RESERVATION_FIELDS = schema2_reporting.RESERVATION_FIELDS | {'runnable_contract','concrete_binding'}
 GATE_FIELDS = schema2.GATE_FIELDS | {'runnable_contract','concrete_job_config_sha256'}
@@ -22,6 +23,7 @@ ROOTS = frozenset(('experiment','reviews','jobs','consumed'))
 PATHS = ROOTS | {'candidate','case_instance','evidence'}
 VARIANT_FIELDS = frozenset(('variant_id','source','resolved_source','effort','image_id','verifier_image_id','host_version',*schema2.IDENTITIES,'configuration','configuration_sha256'))
 CONFIG_FIELDS = frozenset(('config','raw_output_root','canonical_output_root','account_scope_id'))
+CONTEXT_FIELDS = frozenset(('selection_context_sha256','selection_source'))
 CONFIG_PAYLOAD_FIELDS = frozenset(('model','variant_efforts','caps','native_config'))
 CAP_FIELDS = frozenset(('session_seconds','verifier_seconds','trial_seconds','job_seconds','trials','max_executions'))
 
@@ -37,13 +39,26 @@ def path_pair(value):
 
 def digest(value): return hashlib.sha256(projection.canonical(value)).hexdigest()
 
+def validate_context(manifest):
+    import sys
+    sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters'))
+    import launch
+    context = launch.context()
+    configuration = manifest['configuration']
+    if context.layout_kind != 'new' or configuration.get('selection_context') != context.identity() or configuration.get('selection_context_sha256') != context.digest():
+        raise schema2.Invalid('selected context changed')
+    return context
+
+
 def check(root, identity, reservation_id, gate, *, job, original_verifier_environment, preparation_evidence, allow_activated=False):
     """Check review inputs only; return no approval or authorization."""
     root=Path(root)
     m=schema2.validate(root,identity)
     closed(m,MANIFEST_FIELDS)
-    if m['runnable_contract'] != CONTRACT or type(m['schema_version']) is not int or m['schema_version'] != 2 or type(m['contract_version']) is not int or m['contract_version'] != 2 or m['case'] != 'planar/native-lineage-portable': raise schema2.Invalid('offline-only or invalid manifest')
-    closed(m['configuration'],CONFIG_FIELDS)
+    if m['runnable_contract'] not in (CONTRACT, LEGACY_CONTRACT) or type(m['schema_version']) is not int or m['schema_version'] != 2 or type(m['contract_version']) is not int or m['contract_version'] != 2 or m['case'] != 'planar/native-lineage-portable': raise schema2.Invalid('offline-only or invalid manifest')
+    is_v2 = m['runnable_contract'] == CONTRACT
+    closed(m['configuration'],CONFIG_FIELDS | ({'selection_context','selection_context_sha256'} if is_v2 else set()))
+    if is_v2: validate_context(m)
     closed(m['configuration']['config'],CONFIG_PAYLOAD_FIELDS)
     closed(m['configuration']['config']['caps'],CAP_FIELDS)
     if any(type(value) is not int or not 0 < value <= 86400 for value in m['configuration']['config']['caps'].values()): raise schema2.Invalid('invalid caps')
@@ -59,8 +74,9 @@ def check(root, identity, reservation_id, gate, *, job, original_verifier_enviro
         logical.add(trial['logical_id'])
     path=root/'reservations'/f'{pv.safe_id(reservation_id)}.json'
     r=schema2.read_record(path)
-    closed(r,RESERVATION_FIELDS); closed(gate,GATE_FIELDS)
-    if r['runnable_contract'] != CONTRACT or gate['runnable_contract'] != CONTRACT: raise schema2.Invalid('offline-only reservation or gate')
+    closed(r,RESERVATION_FIELDS | (CONTEXT_FIELDS if is_v2 else set())); closed(gate,GATE_FIELDS | (CONTEXT_FIELDS if is_v2 else set()))
+    if r['runnable_contract'] != m['runnable_contract'] or gate['runnable_contract'] != m['runnable_contract']: raise schema2.Invalid('offline-only reservation or gate')
+    if is_v2 and any(r[k] != gate[k] or r[k] != ({'selection_context_sha256':m['configuration']['selection_context_sha256'],'selection_source':m['configuration']['selection_context']['selection_source']})[k] for k in CONTEXT_FIELDS): raise schema2.Invalid('selection context mismatch')
     # Delegate unchanged legacy gate checks for actual reservation, roots, expiry,
     # scope, images and frozen input selection; it does not consume or authorize.
     legacy={k:gate[k] for k in schema2.GATE_FIELDS}
@@ -158,6 +174,9 @@ def reserve(root, identity, logical_id, *, expires_at, preparation_evidence,
     sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters'))
     import launch
     root=Path(root)
+    m=schema2.validate(root,identity)
+    if m.get('runnable_contract') != CONTRACT: raise schema2.Invalid('historical or offline manifest cannot reserve runnable v2')
+    validate_context(m)
     if root.is_symlink() or not root.is_dir(): raise schema2.Invalid('unsafe experiment root')
     try: fd=os.open(root/'reservation.lock',os.O_RDWR|os.O_CREAT|os.O_NOFOLLOW,0o600)
     except OSError as exc: raise schema2.Invalid('unsafe reservation lock') from exc
@@ -215,7 +234,7 @@ def reserve(root, identity, logical_id, *, expires_at, preparation_evidence,
             'predecessor_execution_id':predecessor_execution_id,'retry_reason_sha256':schema2.h(retry_reason.encode()) if retry_reason else None,
             **{key:v[key] for key in schema2.IDENTITIES},'configuration_sha256':v['configuration_sha256'],'implementation_sha256':m['implementation_sha256'],
             'image_id':v['image_id'],'verifier_image_id':v['verifier_image_id'],'host_version':v['host_version'],'account_scope_id':m['configuration']['account_scope_id'],
-            'canonical_output_root':m['configuration']['canonical_output_root'],'expires_at':expires_at,'runnable_contract':CONTRACT,'concrete_binding':binding}
+            'canonical_output_root':m['configuration']['canonical_output_root'],'expires_at':expires_at,'runnable_contract':CONTRACT,'concrete_binding':binding, 'selection_context_sha256':m['configuration']['selection_context_sha256'],'selection_source':m['configuration']['selection_context']['selection_source']}
         schema2.write_new(root/'reservations'/f'{eid}.json',r)
         return r
 
@@ -229,7 +248,7 @@ def check_gate(root, identity, reservation_id, gate, *, preparation_evidence, al
     import launch
     root=Path(root); pv.safe_id(reservation_id)
     r=schema2.read_record(root/'reservations'/f'{reservation_id}.json')
-    closed(r,RESERVATION_FIELDS)
+    closed(r,RESERVATION_FIELDS | (CONTEXT_FIELDS if r.get('runnable_contract') == CONTRACT else set()))
     selected=schema2.preflight(root,identity,r['logical_id']); v=selected['variant']
     policy=selected['manifest']['configuration']['config']['native_config']; closed(policy,POLICY_FIELDS)
     evidence=Path(policy['roots']['jobs']['raw'])/('planar-t044-'+reservation_id)

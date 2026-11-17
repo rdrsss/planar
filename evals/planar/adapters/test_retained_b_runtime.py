@@ -12,7 +12,7 @@ def h(value): return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(
 
 class RuntimeAuthority(TestCase):
     def test_shared_gate_swap_rejected_even_when_local_gate_unchanged(self):
-        with TemporaryDirectory() as temp, patch.dict(os.environ,{'PLANAR_EVALS_OUTPUT_ROOT':temp,'PLANAR_T045_VERIFIER_IMAGE_ID':'v','PLANAR_T044_EXPECTED_IMAGE_ID':'i','PLANAR_T044_ABSOLUTE_DEADLINE':'d'},clear=True):
+        with TemporaryDirectory() as temp, patch.dict(os.environ,{**({'PLANAR_HOME':os.environ['PLANAR_HOME']} if 'PLANAR_HOME' in os.environ else {}),'PLANAR_EVALS_PROJECT_DIR':os.environ['PLANAR_EVALS_PROJECT_DIR'],'PLANAR_EVALS_OUTPUT_ROOT':temp,'PLANAR_T045_VERIFIER_IMAGE_ID':'v','PLANAR_T044_EXPECTED_IMAGE_ID':'i','PLANAR_T044_ABSOLUTE_DEADLINE':'d'},clear=True):
             root=Path(temp).resolve(); eid='planar-t044-'+'a'*32; evidence=root/'jobs'/eid; evidence.mkdir(parents=True); scope=root/'planar-account-admission-v1'; records=scope/'records'; records.mkdir(parents=True)
             packet=root/'packet'; packet.mkdir(); case=root/'case'; case.mkdir(); candidate=root/'candidate'; candidate.mkdir(); config={'job':'fixed'}
             gate={'execution_id':eid,'case':'retained-a-fresh-b','source_packet_sha256':'s','source_packet_root':str(packet),'case_sha256':'c','candidate_sha256':'p','effective_configuration_sha256':h(config),'verifier_image_id':'v','image_id':'i','absolute_deadline':'d','verdict':'approve','account_scope_id':str(scope),'implementation_sha256':'impl','configuration_sha256':'config'}

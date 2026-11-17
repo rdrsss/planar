@@ -1,5 +1,6 @@
 """Durable account admission controls, with injected typed-status records."""
 import tempfile
+import os
 import unittest
 from pathlib import Path
 import codex_run
@@ -22,7 +23,10 @@ class AccountStopTest(unittest.TestCase):
         from unittest.mock import patch
         import launch
         with tempfile.TemporaryDirectory() as temp, patch.object(launch, 'reviews_root', return_value=Path(temp)):
+            with patch.dict(os.environ,{'PLANAR_EVALS_OUTPUT_ROOT':temp}): selected=launch.context()
+            context_patch=patch.object(launch,'context',return_value=selected); context_patch.start(); self.addCleanup(context_patch.stop)
             with codex_run.admission_scope() as records:
+                self.assertEqual(records,Path(temp)/'planar-account-admission-v1'/'records')
                 with self.assertRaises(BlockingIOError):
                     with codex_run.admission_scope():
                         pass

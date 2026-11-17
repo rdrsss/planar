@@ -1,4 +1,6 @@
 import json
+import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,11 +19,19 @@ class LaunchControls(unittest.TestCase):
         self.inventory_patch.start()
         self.addCleanup(self.inventory_patch.stop)
 
+    def git_only(self):
+        real_run = subprocess.run
+        def checked(argv, **kwargs):
+            if argv[0] != 'git' or argv[3:5] not in (['rev-parse','--path-format=absolute'], ['worktree','list']):
+                raise AssertionError('non-Git process launched')
+            return real_run(argv, **kwargs)
+        return patch.object(launch.subprocess, 'run', side_effect=checked)
+
     def test_output_root_override_reaches_plan_and_recovery(self):
         import os
         from recover import jobs_root
         with tempfile.TemporaryDirectory(prefix='planar output ') as temp:
-            with patch.dict(os.environ, {'PLANAR_EVALS_OUTPUT_ROOT': temp}), patch.object(launch, 'PROJECT', Path(temp) / 'absent-sibling'), patch.object(launch, 'REVIEWS', Path(temp) / 'absent-sibling' / 'reviews'):
+            with patch.dict(os.environ, {'PLANAR_EVALS_OUTPUT_ROOT': temp}):
                 snapshot = launch.plan()
                 self.assertEqual(snapshot['prerequisites']['evidence_write_root'], str(Path(temp).resolve() / 'jobs'))
                 self.assertEqual(jobs_root(), Path(temp).resolve() / 'jobs')
@@ -84,15 +94,15 @@ class LaunchControls(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'package root'):
                     launch.plan()
             with patch.object(launch, 'ROOT', root), patch.object(launch.Path, 'cwd', return_value=root):
-                with self.assertRaisesRegex(ValueError, 'git root'):
+                with self.assertRaisesRegex(ValueError, 'identity unavailable'):
                     launch.plan()
 
     def test_write_destinations_reject_files(self):
-        for name in ('harbor-t044-jobs', 'harbor-t044-consumed'):
+        for name in ('jobs', 'harbor-t044-consumed'):
             with self.subTest(name=name), tempfile.TemporaryDirectory() as temp:
                 reviews = Path(temp)
                 (reviews / name).write_text('blocked')
-                with patch.object(launch, 'REVIEWS', reviews), patch.object(launch, 'jobs_root', return_value=reviews / 'harbor-t044-jobs'):
+                with patch.dict(os.environ, {'PLANAR_EVALS_OUTPUT_ROOT':str(reviews)}):
                     with self.assertRaisesRegex(ValueError, 'not a directory'):
                         launch.plan()
 
@@ -102,7 +112,12 @@ class LaunchControls(unittest.TestCase):
                 launch.plan()
 
     def test_plan_is_one_fresh_docker_attempt_with_explicit_config(self):
-        with patch.object(launch.subprocess, 'run', side_effect=AssertionError('must not start a process')):
+        real_run = subprocess.run
+        def git_only(argv, **kwargs):
+            if argv[0] != 'git' or not (argv[3:5] in (['rev-parse','--path-format=absolute'], ['worktree','list'])):
+                raise AssertionError('non-Git process launched')
+            return real_run(argv, **kwargs)
+        with patch.object(launch.subprocess, 'run', side_effect=git_only):
             plan = launch.plan()
         config = plan['configuration']
         self.assertEqual(config['n_attempts'], 1)
@@ -160,7 +175,7 @@ class LaunchControls(unittest.TestCase):
         self.case_name = 'fresh-interrupted-review'
         plan = launch.plan(self.case_name)
         self.assertIn('independent review', plan['prerequisites']['execution_gate'])
-        with patch.object(launch.subprocess, 'run', side_effect=AssertionError('must not start a process')):
+        with self.git_only():
             with self.assertRaises(FileNotFoundError):
                 launch.execute(Path('/missing/auth'), Path('/missing/review'), self.case_name)
 
@@ -172,7 +187,7 @@ class LaunchControls(unittest.TestCase):
             review = root / 'review.json'
             gate = {**plan, 'verdict': 'approve', 'max_attempts': 1, 'case_sha256': 'stale'}
             review.write_text(json.dumps(gate))
-            with patch.object(launch, 'REVIEWS', root), patch.object(launch.subprocess, 'run', side_effect=AssertionError('must not start a process')):
+            with patch.dict(os.environ, {'PLANAR_EVALS_OUTPUT_ROOT':str(root)}), self.git_only():
                 with self.assertRaisesRegex(ValueError, 'stale'):
                     launch.execute(root / 'missing-auth', review, 'native-lineage-smoke')
 
@@ -181,7 +196,7 @@ class LaunchControls(unittest.TestCase):
             root = Path(temp)
             review = root / 'review.json'
             review.write_text(json.dumps({'verdict': 'approve', 'implementation_sha256': 'stale'}))
-            with patch.object(launch, 'REVIEWS', root), patch.object(launch.subprocess, 'run', side_effect=AssertionError('must not start a process')):
+            with patch.dict(os.environ, {'PLANAR_EVALS_OUTPUT_ROOT':str(root)}), self.git_only():
                 with self.assertRaisesRegex(ValueError, 'stale'):
                     launch.execute(root / 'missing-auth', review)
 
@@ -190,7 +205,9 @@ class LaunchControls(unittest.TestCase):
             root = Path(temp)
             review = root / 'review.json'
             review.write_text('{"purpose":"one-diagnostic-attempt"}')
-            first = launch.consume_review_once(review, root / 'consumed')
-            self.assertEqual(len(first), 64)
-            with self.assertRaisesRegex(ValueError, 'already consumed'):
-                launch.consume_review_once(review, root / 'consumed')
+            with patch.dict(os.environ, {'PLANAR_EVALS_OUTPUT_ROOT':str(root)}):
+                selected=launch.context()
+                first = launch.consume_review_once(review, Path(selected.consumed_root), expected_context=selected.identity())
+                self.assertEqual(len(first), 64)
+                with self.assertRaisesRegex(ValueError, 'already consumed'):
+                    launch.consume_review_once(review, Path(selected.consumed_root), expected_context=selected.identity())

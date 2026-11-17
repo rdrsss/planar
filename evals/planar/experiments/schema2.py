@@ -98,12 +98,15 @@ def initialize(root, *, template, reviewed_template_sha256, variants, repetition
     if config['variant_efforts'] != {v['id']:v['effort'] for v in variants} or len(variants)*repetitions > caps['trials'] or len(variants)*repetitions > caps['max_executions']:
         raise Invalid('configuration effort or trial cap mismatch')
     if runnable_contract is not None:
-        if runnable_contract != 'planar-schema2-runnable-v1': raise Invalid('unsupported runnable contract')
+        if runnable_contract != 'planar-schema2-runnable-context-v2': raise Invalid('only context-bound runnable v2 can be created')
         # Use the actual guarded launcher and default-resolved pinned JobConfig;
         # only a policy matching every field and concrete scope can be frozen.
         import sys
         sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters'))
         import launch
+        selection_context = launch.context()
+        if selection_context.layout_kind != 'new' or not root.absolute().is_relative_to(Path(selection_context.output_root)):
+            raise Invalid('experiment outside selected output root')
         from harbor.models.job.config import JobConfig
         from harbor.models.task.task import Task
         import schema2_runnable
@@ -150,6 +153,8 @@ def initialize(root, *, template, reviewed_template_sha256, variants, repetition
     # The complete provided configuration, resolved root and caps must be supplied
     # and compared to actual launcher configuration at the integration boundary.
     configuration = {'config':config, 'raw_output_root':str(root.absolute()), 'canonical_output_root':str(root.resolve()), 'account_scope_id':account_scope_id}
+    if runnable_contract == 'planar-schema2-runnable-context-v2':
+        configuration.update({'selection_context':selection_context.identity(), 'selection_context_sha256':selection_context.digest()})
     for v in records:
         v['configuration'] = {**configuration, 'task':{'case':'planar/native-lineage-portable','contract_version':2},
             'variant_id':v['variant_id'], 'effort':v['effort'], 'image_id':v['image_id'],
@@ -173,6 +178,13 @@ def validate(root, identity):
     m = read_record(root/'manifest.json')
     if not isinstance(m, dict) or m.get('schema_version') != 2 or m.get('identity') != identity or object_hash({k:v for k,v in m.items() if k != 'identity'}) != identity:
         raise Invalid('manifest identity mismatch')
+    contract=m.get('runnable_contract')
+    if contract not in (None, 'planar-schema2-runnable-v1', 'planar-schema2-runnable-context-v2'):
+        raise Invalid('unknown runnable contract')
+    context_fields={'selection_context','selection_context_sha256'}
+    present=context_fields & set(m.get('configuration',{}))
+    if (contract == 'planar-schema2-runnable-context-v2' and present != context_fields) or (contract != 'planar-schema2-runnable-context-v2' and present):
+        raise Invalid('mixed context authority fields')
     if str(root.absolute()) != m['configuration']['raw_output_root'] or str(root.resolve()) != m['configuration']['canonical_output_root'] or object_hash(m['configuration']) != m['configuration_sha256']:
         raise Invalid('output or configuration drift')
     for v in m['variants']:

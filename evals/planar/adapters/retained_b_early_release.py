@@ -73,7 +73,7 @@ def resolve(evidence,case,candidate,packet,audit,release):
     sys.path.insert(0,str(launch.EVALS/'planar/experiments'))
     try:
         import codex_run
-        reviews=(launch.PROJECT/'reviews').resolve(strict=True); scope=launch.reviews_root().resolve(strict=True)
+        reviews=(launch.project_dir()/'reviews').resolve(strict=True); scope=launch.reviews_root().resolve(strict=True)
         evidence,case,candidate,packet,release=map(Path,(evidence,case,candidate,packet,release))
         if release.resolve(strict=True).is_relative_to(launch.jobs_root().resolve()): raise ValueError('release review inside job')
         scope_path=scope/'planar-account-admission-v1'

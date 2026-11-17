@@ -5,7 +5,7 @@ from unittest import TestCase
 import launch
 from retained_b_early_snapshots import inspect
 
-SOURCE=launch.PROJECT/'reviews/t045-retained-b-final-prep-20261117/output/jobs/planar-t044-aeaec469c5c549ee96f3ce7729dc4c2e/retained-b'
+SOURCE=launch.project_dir()/'reviews/t045-retained-b-final-prep-20261117/output/jobs/planar-t044-aeaec469c5c549ee96f3ce7729dc4c2e/retained-b'
 
 class EarlySnapshots(TestCase):
     def setUp(self):

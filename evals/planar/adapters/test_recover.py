@@ -1,7 +1,7 @@
 import json
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from recover import recover
 
@@ -34,6 +34,6 @@ class RecoveryControls(unittest.TestCase):
             registry.mkdir(parents=True)
             (registry / 'entry.json').write_text(json.dumps({'execution_id': evidence.name, 'compose_project': 'someone-else'}))
             run = Mock()
-            with self.assertRaisesRegex(RuntimeError, 'identity'):
+            with patch('recover.validate_owned_evidence',return_value=evidence), self.assertRaisesRegex(RuntimeError, 'identity'):
                 recover_projects(evidence, run)
             run.assert_not_called()

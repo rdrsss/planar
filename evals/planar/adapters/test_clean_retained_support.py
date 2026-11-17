@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -46,6 +47,7 @@ class HostSetup(unittest.IsolatedAsyncioTestCase):
             with patch('clean_revision_support.load_case_module',side_effect=lambda case,name:modules[name]), \
                  patch('clean_revision_support.check_revision_time') as clock, \
                  patch('retained_b_support._run',return_value={'source_packet_sha256':'digest'}), \
+                 patch('launch.project_dir',return_value=Path(os.environ['PLANAR_EVALS_PROJECT_DIR'])), \
                  patch('subprocess.run',return_value=Process()):
                 result=await clean_retained_support.prepare_target(Env(),case,packet,case,evidence,'source','target','digest')
             self.assertEqual(result['status'],'restored-no-fault'); clock.assert_called_once_with(evidence,565)

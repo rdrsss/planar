@@ -42,7 +42,7 @@ def recover(record, run=subprocess.run):
 def recover_projects(evidence, run=subprocess.run):
     """Recover projects registered by GuardedDocker before container creation."""
     from pathlib import Path
-    evidence = Path(evidence).resolve(strict=True)
+    evidence = validate_owned_evidence(evidence)
     registry = evidence / 'projects'
     if not registry.is_dir() or registry.is_symlink():
         raise RuntimeError('project registry unavailable; manual audit required')
@@ -92,19 +92,13 @@ def recover_projects(evidence, run=subprocess.run):
 
 
 def output_roots():
-    """Resolve the selected root, refusing aliases for its owned directories."""
+    """Resolve the explicitly selected project and output context."""
     import os
     from pathlib import Path
-    override = os.environ.get('PLANAR_EVALS_OUTPUT_ROOT')
-    if not override:
-        reviews = Path(__file__).resolve().parents[3].parent / 'reviews'
-        return reviews, reviews / 'harbor-t044-jobs', reviews / 'harbor-t044-consumed'
-    root = Path(override).expanduser().resolve()
-    jobs, consumed = root / 'jobs', root / 'harbor-t044-consumed'
-    for path in (jobs, consumed):
-        if path.is_symlink() or path.resolve() != path:
-            raise ValueError(f'output destination is a symlink alias: {path}')
-    return root, jobs, consumed
+    from eval_context import resolve
+    repo = Path(__file__).resolve().parents[3]
+    context = resolve(repo, historical=os.environ.get('PLANAR_EVALS_LAYOUT_KIND') in ('legacy-reviews', 'override-jobs'))
+    return Path(context.output_root), Path(context.jobs_root), Path(context.consumed_root)
 
 
 def jobs_root():
@@ -112,14 +106,73 @@ def jobs_root():
     return output_roots()[1]
 
 
-def manual_recover(evidence):
-    """Recover after watchdog death only after the Harbor process is absent."""
+def validate_owned_evidence(evidence):
+    """Verify context and exact recorded evidence before any cleanup or write."""
     import os
     from pathlib import Path
-    evidence = Path(evidence).resolve(strict=True)
+    value = Path(evidence)
+    if not value.is_absolute() or value.is_symlink() or value != value.resolve(strict=True):
+        raise ValueError('unsafe evidence path')
+    evidence = value
     root = jobs_root()
-    if not evidence.is_relative_to(root.resolve()) or not (evidence / 'recovery-required').is_file():
+    if evidence.parent != root or not (evidence / 'recovery-required').is_file() or (evidence / 'recovery-required').is_symlink():
         raise ValueError('no registered project recovery marker')
+    # A pathname alone is not proof of the historical identity. Require the
+    # immutable launcher and its bound config to name this exact job root.
+    import hashlib
+    launcher_file, config_file = evidence / 'launcher.json', evidence / 'job-config.json'
+    if any(p.is_symlink() or not p.is_file() for p in (launcher_file, config_file)):
+        raise ValueError('launcher and job config are required')
+    launcher = json.loads(launcher_file.read_text())
+    raw = config_file.read_bytes()
+    config = json.loads(raw)
+    if (launcher.get('execution_id') != evidence.name or
+        launcher.get('job_config_sha256') != hashlib.sha256(raw).hexdigest() or
+        Path(config.get('jobs_dir', '')).resolve() != evidence):
+        raise ValueError('recorded job root or identity mismatch')
+    from eval_context import resolve
+    historical = os.environ.get('PLANAR_EVALS_LAYOUT_KIND') in ('legacy-reviews','override-jobs')
+    selection = resolve(Path(__file__).resolve().parents[3], historical=historical)
+    prerequisites = launcher.get('prerequisites')
+    if (not isinstance(prerequisites, dict) or prerequisites.get('project_root') != selection.project_dir or
+        prerequisites.get('evidence_write_root') != selection.jobs_root):
+        raise ValueError('project and jobs roots not bound in launcher record')
+    if not historical:
+        if not os.environ.get('PLANAR_EVALS_CONTEXT'):
+            raise ValueError('forwarded context is required for new watchdog cleanup')
+        if (prerequisites.get('selection_context') != selection.identity() or
+            prerequisites.get('selection_context_sha256') != selection.digest()):
+            raise ValueError('recorded context mismatch')
+    else:
+        review_value = os.environ.get('PLANAR_EVALS_REVIEW_PATH')
+        if not review_value: raise ValueError('historical recovery requires the exact recorded review path')
+        review = Path(review_value)
+        if (not review.is_absolute() or review.is_symlink() or not review.is_file() or
+            review != review.resolve() or not review.is_relative_to(Path(selection.output_root))):
+            raise ValueError('unsafe historical review path')
+        review_raw = review.read_bytes()
+        if hashlib.sha256(review_raw).hexdigest() != launcher.get('review_sha256'):
+            raise ValueError('historical review hash mismatch')
+        def unique(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result: raise ValueError('duplicate historical gate field')
+                result[key] = value
+            return result
+        gate = json.loads(review_raw, object_pairs_hook=unique)
+        marker_id = hashlib.sha256(json.dumps(gate, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        marker = Path(selection.consumed_root)/marker_id
+        if marker.is_symlink() or not marker.is_file() or marker.read_bytes() != b'reserved\n':
+            raise ValueError('historical consumed gate marker missing')
+    return evidence
+
+
+def manual_recover(evidence):
+    """Recover an exact historical job after the Harbor process is absent."""
+    import os
+    if os.environ.get('PLANAR_EVALS_LAYOUT_KIND') not in ('legacy-reviews', 'override-jobs'):
+        raise ValueError('manual recovery requires exact historical root and layout')
+    evidence = validate_owned_evidence(evidence)
     process_file = evidence / 'harbor-process.json'
     if process_file.is_symlink() or not process_file.is_file():
         raise RuntimeError('Harbor process identity missing; manual audit required')

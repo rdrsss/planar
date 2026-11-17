@@ -80,14 +80,42 @@ def historical_components(commit,tree):
 def historical_identity(commit,tree): return schema2.object_hash(historical_components(commit,tree))
 
 
+# Fixed projection of 40454a3's override-output launcher algorithm. This is
+# data construction only: no historical source is imported or executed.
+LEGACY_CONTRACT = 'planar-schema2-runnable-v1'
+
+def legacy_plan_digest(output, jobs, consumed, candidate, case, effort, deadline):
+    from harbor.models.job.config import JobConfig
+    config = {'plugins': {'_default': {'enabled': False}},
+              'skills': {'bundled': {'enabled': False}},
+              'features': {'apps': False, 'remote_plugin': False, 'multi_agent': True}}
+    job = {'job_name':'planar-t044-plan','jobs_dir':str(jobs),'n_attempts':1,'n_concurrent_trials':1,
+           'retry':{'max_retries':0},'environment':{'import_path':'guarded_docker:GuardedDocker','delete':True,'kwargs':{'auto_mounting':False}},
+           'agents':[{'import_path':'smoke_codex:SmokeCodex','model_name':'gpt-6.1-terra','kwargs':{'version':'0.169.0','config':config,'reasoning_effort':effort}}],
+           'tasks':[{'path':str(case)}]}
+    typed=JobConfig.model_validate(job).model_dump(mode='json',exclude_none=True)
+    identity={'configuration':typed,'output_root':str(output),'jobs_root':str(jobs),'consumed_root':str(consumed)}
+    return h(json.dumps({'base':identity,'candidate_root':str(candidate),'case_root':str(case),'trial_deadline':deadline}, sort_keys=True, separators=(',', ':')).encode())
+
+
 def verify(doc, records):
-    reviews=(launch.PROJECT/'reviews').resolve(strict=True); root=Path(doc['experiment_root']); rid=doc['reservation_id']; evidence=launch.jobs_root()/('planar-t044-'+rid); folder=root/'executions'/rid
+    reviews=Path(launch.context().project_reviews_dir).resolve(strict=True); root=Path(doc['experiment_root']); rid=doc['reservation_id']; evidence=launch.jobs_root()/('planar-t044-'+rid); folder=root/'executions'/rid
     if root.is_symlink() or not root.is_dir() or evidence.is_symlink() or not evidence.is_dir() or folder.is_symlink() or not folder.is_dir(): raise ValueError('pretrial roots unavailable')
     if not root.resolve().is_relative_to(reviews) or not evidence.resolve().is_relative_to(reviews): raise ValueError('pretrial roots outside project reviews')
+    selection=launch.context()
+    if selection.layout_kind != 'override-jobs' or str(Path(records).parent.resolve()) != selection.account_scope:
+        raise ValueError('exact historical override scope required')
     m=schema2.validate(root,doc['experiment_identity']); reservation_path=root/'reservations'/(rid+'.json'); reservation=schema2.read_record(reservation_path); schema2_runnable.closed(reservation,schema2_runnable.RESERVATION_FIELDS)
-    if reservation['reservation_id']!=rid or reservation['execution_id']!=rid or reservation['experiment_identity']!=doc['experiment_identity'] or reservation['account_scope_id']!=str(Path(records).parent.resolve()) or reservation['implementation_sha256']!=m['implementation_sha256'] or reservation['runnable_contract']!=schema2_runnable.CONTRACT: raise ValueError('reservation authority mismatch')
+    if reservation['reservation_id']!=rid or reservation['execution_id']!=rid or reservation['experiment_identity']!=doc['experiment_identity'] or reservation['account_scope_id']!=str(Path(records).parent.resolve()) or reservation['implementation_sha256']!=m['implementation_sha256'] or reservation['runnable_contract']!=LEGACY_CONTRACT: raise ValueError('reservation authority mismatch')
+    policy_roots=m['configuration']['config']['native_config']['roots']
+    expected_roots={'experiment':str(root.resolve()),'reviews':selection.output_root,'jobs':selection.jobs_root,'consumed':selection.consumed_root}
+    for key, value in expected_roots.items():
+        if policy_roots.get(key) != {'raw':value,'resolved':value}: raise ValueError('historical policy root mismatch')
+    if (m['configuration']['account_scope_id'] != selection.account_scope or
+        m['configuration']['canonical_output_root'] != str(root.resolve())):
+        raise ValueError('historical manifest root mismatch')
     selected=schema2.preflight(root,doc['experiment_identity'],reservation['logical_id']); variant=selected['variant']
-    if m.get('runnable_contract')!=schema2_runnable.CONTRACT or len(m['trials'])!=1 or m['trials'][0]!=selected['trial'] or len(m['variants'])!=1:
+    if m.get('runnable_contract')!=LEGACY_CONTRACT or len(m['trials'])!=1 or m['trials'][0]!=selected['trial'] or len(m['variants'])!=1:
         raise ValueError('unsupported experiment matrix')
     caps=m['configuration']['config']['caps']
     if caps.get('trials')!=1 or type(caps.get('trials')) is not int or caps.get('max_executions')!=1 or type(caps.get('max_executions')) is not int:
@@ -103,7 +131,7 @@ def verify(doc, records):
     marker_hash=hashlib.sha256(json.dumps(gate,sort_keys=True,separators=(',',':')).encode()).hexdigest(); marker=launch.reviews_root()/'harbor-t044-consumed'/marker_hash
     if read_safe(marker,reviews)!=b'reserved\n': raise ValueError('gate consumption missing')
     shared=Path(records)/(rid+'.start.json'); shared_value=schema2.read_record(shared)
-    if shared_value!={'experiment':str(root.resolve()),'execution_id':rid,'runnable_contract':schema2_runnable.CONTRACT,'reservation_sha256':h(reservation_path.read_bytes()),'gate_marker_sha256':marker_hash,'gate_raw_sha256':h(gate_raw)}: raise ValueError('shared start mismatch')
+    if shared_value!={'experiment':str(root.resolve()),'execution_id':rid,'runnable_contract':LEGACY_CONTRACT,'reservation_sha256':h(reservation_path.read_bytes()),'gate_marker_sha256':marker_hash,'gate_raw_sha256':h(gate_raw)}: raise ValueError('shared start mismatch')
     local=schema2.read_record(folder/'start.json')
     expected_local={'concrete_job_config_sha256':binding['concrete_job_config_sha256'],'execution_id':rid,'gate_marker_sha256':marker_hash,'logical_id':reservation['logical_id'],'predecessor_execution_id':reservation['predecessor_execution_id'],'repetition':reservation['repetition'],'reservation_id':rid,'reservation_sha256':h(reservation_path.read_bytes()),'variant_id':reservation['variant_id']}
     if canonical(local)!=canonical(expected_local): raise ValueError('local start mismatch')
@@ -133,9 +161,18 @@ def verify(doc, records):
     if not schema2_projection.exact(schema2_projection.project(effective),binding['effective_verifier_environment']): raise ValueError('verifier environment mismatch')
     launcher=obj('launcher.json')
     if launcher.get('execution_id')!=run_id or launcher.get('case')!='native-lineage-portable' or launcher.get('implementation_sha256')!=historical_components(doc['historical_commit'],doc['historical_tree'])['launcher'] or launcher.get('image_id')!=reservation['image_id'] or launcher.get('verifier_image_id')!=reservation['verifier_image_id'] or launcher.get('review_sha256')!=doc['gate_sha256'] or launcher.get('job_config_sha256')!=h(config_raw): raise ValueError('launcher authority mismatch')
-    snapshot=launch.plan('native-lineage-portable',candidate_root=Path(selected['candidate']),case_root=Path(selected['instance']),trial_deadline=dispatch['trial_deadline'],effort=dispatch['effort'])
-    if any(launcher.get(k)!=snapshot[k] for k in ('case_sha256','candidate_sha256','configuration_sha256')): raise ValueError('launcher input binding mismatch')
-    if launcher.get('runnable_contract')!=schema2_runnable.CONTRACT or not schema2_projection.exact(launcher.get('effective_verifier_environment'),binding['effective_verifier_environment']): raise ValueError('launcher verifier environment mismatch')
+    candidate=Path(selected['candidate']); case=Path(selected['instance'])
+    from candidate import inventory
+    candidate_inventory=inventory(candidate)
+    if (launcher.get('case_sha256') != launch.case_inventory(case) or
+        launcher.get('candidate_sha256') != candidate_inventory.get('sha256') or
+        launcher.get('configuration_sha256') != legacy_plan_digest(selection.output_root,selection.jobs_root,selection.consumed_root,candidate,case,dispatch['effort'],dispatch['trial_deadline'])):
+        raise ValueError('launcher input binding mismatch')
+    prereq=launcher.get('prerequisites',{})
+    if (prereq.get('project_root') != selection.project_dir or prereq.get('evidence_write_root') != selection.jobs_root or
+        prereq.get('case_read_root') != str(case) or prereq.get('package_read_root') != str(candidate)):
+        raise ValueError('historical launcher roots mismatch')
+    if launcher.get('runnable_contract')!=LEGACY_CONTRACT or not schema2_projection.exact(launcher.get('effective_verifier_environment'),binding['effective_verifier_environment']): raise ValueError('launcher verifier environment mismatch')
     command=obj('launcher-command.json'); argv=command.get('argv')
     keys={'CODEX_API_KEY','CODEX_AUTH_JSON_PATH','HOME','OPENAI_API_KEY','PATH','PLANAR_EVALS_OUTPUT_ROOT','PLANAR_SCHEMA2_CONTEXT','PLANAR_T044_CANDIDATE_SNAPSHOT','PLANAR_T044_CASE','PLANAR_T044_CASE_SHA256','PLANAR_T044_CASE_SNAPSHOT','PLANAR_T044_DEADLINE_SECONDS','PLANAR_T044_EFFORT','PLANAR_T044_EVIDENCE_DIR','PLANAR_T044_EXPECTED_IMAGE_ID','PLANAR_T045_VERIFIER_IMAGE_ID','PYTHONPATH'}
     if set(command)!={'execution_id','argv','environment_keys'} or command.get('execution_id')!=run_id or not isinstance(argv,list) or len(argv)!=4 or argv[1]!=str(launch.ROOT/'evals/planar/adapters/native_job.py') or argv[0]!=str(launch.EVALS/'.venv/bin/python') or argv[2:]!=[str(evidence/'job-config.json'),str(evidence)] or not isinstance(command.get('environment_keys'),list) or set(command['environment_keys'])!=keys or len(command['environment_keys'])!=len(keys): raise ValueError('native command mismatch')
@@ -190,7 +227,7 @@ def _check_pair(start, resolved, *, locked=False):
     start=Path(start); resolved=Path(resolved); records=start.parent
     if codex_run._ACTIVE_ADMISSION.get()!=records.resolve(): return False
     try:
-        reviews=(launch.PROJECT/'reviews').resolve(strict=True)
+        reviews=Path(launch.context().project_reviews_dir).resolve(strict=True)
         marker=pv.parse(read_safe(resolved,reviews),4*1024*1024)
         fields={'schema','type','reservation_id','review_path','review_sha256','review_binding','census_path','census_sha256'}
         if not isinstance(marker,dict) or set(marker)!=fields or marker['schema']!='planar-schema2-pretrial-marker-v1' or marker['type']!='schema2-pretrial-v1': return False
@@ -218,7 +255,10 @@ def validate_published(start,resolved): return _check_pair(start,resolved)
 def publish(review):
     """Explicit independently reviewed account-only resolution; never runs a trial."""
     import codex_run
-    reviews=(launch.PROJECT/'reviews').resolve(strict=True); review=safe_path(review,reviews); raw=read_safe(review,reviews); doc=parse(raw); rid=doc['reservation_id']; root=Path(doc['experiment_root'])
+    selection=launch.context()
+    if selection.layout_kind != 'override-jobs': raise ValueError('historical override scope required')
+    reviews=Path(selection.project_reviews_dir).resolve(strict=True); review=safe_path(review,reviews); raw=read_safe(review,reviews); doc=parse(raw); rid=doc['reservation_id']; root=Path(doc['experiment_root'])
+    verify(doc,Path(selection.account_scope)/'records')
     with codex_run.admission_scope() as records, schema2_execution._controller_lock(root):
         if read_safe(review,reviews)!=raw: raise ValueError('review changed before locked verification')
         shared=records/(rid+'.resolved.json'); local=root/'executions'/rid/'account-stop-resolved.json'; closed=records/(rid+'.closed.json')

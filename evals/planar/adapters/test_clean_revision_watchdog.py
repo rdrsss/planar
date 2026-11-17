@@ -16,7 +16,7 @@ class WatchdogTest(unittest.TestCase):
             def supervise(command, **kwargs):
                 calls.append(kwargs); kwargs['cleanup']()
                 return {'status':'interrupted','reason':'TimeoutExpired'}
-            with patch.dict(os.environ,env,clear=True), patch.object(watchdog,'supervise',side_effect=supervise), patch.object(watchdog,'recover_projects') as recovery:
+            with patch.dict(os.environ,env,clear=True), patch.object(watchdog,'validate_owned_evidence',return_value=root.resolve()), patch.object(watchdog,'supervise',side_effect=supervise), patch.object(watchdog,'recover_projects') as recovery:
                 self.assertEqual(watchdog.main(),2)
             self.assertEqual(calls[0]['deadline'],1050)
             self.assertEqual(calls[0]['grace'],15)
@@ -33,7 +33,7 @@ class WatchdogTest(unittest.TestCase):
             def supervise(command, **kwargs):
                 kwargs['on_start'](1234); kwargs['cleanup']()
                 return {'status':'completed','return_code':0}
-            with patch.dict(os.environ,env,clear=True), patch.object(watchdog,'supervise',side_effect=supervise), patch.object(watchdog,'recover_projects'):
+            with patch.dict(os.environ,env,clear=True), patch.object(watchdog,'validate_owned_evidence',return_value=root.resolve()), patch.object(watchdog,'supervise',side_effect=supervise), patch.object(watchdog,'recover_projects'):
                 watchdog.main()
             record=json.loads((root/'harbor-process.json').read_text())
             self.assertEqual(record['execution_id'],root.name)

@@ -33,6 +33,25 @@ From the repository root, `make evals-setup` installs the locked dependencies,
 `make evals-test` (or `make evals`) runs the adapter, recovery-case,
 clean-revision, clean-work-review, retained-A/fresh-B and model-free experiment-control tests,
 and `make evals-plan` preflights `CASE=fresh-interrupted-review` by default.
+`make evals-test` uses a disposable Planar project and runs the portable
+model-free suite. It reports how many retained-evidence tests are selected
+separately; it fails on unexpected skips. Synthetic checks cover general
+provenance types, path safety, publication faults and locking, but do not prove
+that original historical evidence is intact.
+
+For changes to historical consumers or account-release logic, also run:
+
+```sh
+make evals-evidence-test EVALS_PROJECT_DIR="/path/to/selected/project"
+```
+
+This read-only, no-model suite checks the explicitly selected project's 24
+retained-evidence tests (21 adapter, one case and two experiment tests). It
+fails when selection, retained inputs or any required check is unavailable;
+it does not treat a skip as a pass. These tests include the original reviewed
+trace, gate and marker checks. A passing portable suite alone does not establish
+those historical results. Neither suite authorizes a live diagnostic.
+
 Set `CASE` to select another supported case. A preflight can refuse a stale
 frozen candidate or missing case-specific inputs; it never refreezes or approves
 them. Specialized cases requiring paired snapshots and a fixed deadline use
@@ -50,13 +69,20 @@ make evals-run AUTH_FILE='/path/to/auth.json' REVIEW_FILE='/path/to/review.json'
 ```
 
 The launcher enforces the existing gate and returns its diagnostic exit status.
-Make places jobs under ignored `evals/results`; set `EVALS_OUTPUT_ROOT` to choose
-another directory. Direct launcher, smoke hook, and manual recovery use
-`PLANAR_EVALS_OUTPUT_ROOT`; when unset they retain the previous project reviews
-jobs directory. Supply the same root to manual recovery as the launch, and check
-all previously used roots for unresolved recovery markers before another run.
-With an override, review files and one-use gate reservations reside under that
-output root; without it they remain in the project reviews directory.
+New project-owned plans and runs require an explicit selected project directory:
+set `EVALS_PROJECT_DIR` for Make or `PLANAR_EVALS_PROJECT_DIR` for direct
+launcher use. The directory must match Planar settings and the repository's
+Git identity. Without an output override the destination is the selected
+project's `scratch/scratch-evals`; `EVALS_OUTPUT_ROOT` (Make) or
+`PLANAR_EVALS_OUTPUT_ROOT` (direct) explicitly selects a different owned root.
+The plan records the selected context for a fresh matching review gate.
+Historical recovery requires the exact previously recorded output root and
+`PLANAR_EVALS_LAYOUT_KIND=legacy-reviews` or `override-jobs`; provide the
+exact original gate with `PLANAR_EVALS_REVIEW_PATH`. The launcher record must
+bind the project and jobs roots and the gate must match its hash and consumed
+marker. Older records missing those bindings remain pending for review. Never
+point recovery at a new scratch root. Confirm unresolved recovery markers at all previously
+used roots before another run.
 Paths and credentials should be kept private; no credentials belong in this tree.
 
 These commands do not use a model or authentication:

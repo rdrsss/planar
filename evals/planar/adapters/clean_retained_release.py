@@ -121,7 +121,7 @@ def validate_export_log(raw):
 
 def verify(doc,evidence,start):
     """Revalidate the exact immutable source, host and native authority."""
-    evidence,start=Path(evidence),Path(start); reviews=launch.PROJECT/'reviews'; target_root=launch.reviews_root().resolve(strict=True)
+    evidence,start=Path(evidence),Path(start); reviews=launch.project_dir()/'reviews'; target_root=launch.reviews_root().resolve(strict=True)
     if evidence.is_symlink() or evidence.resolve(strict=True).parent!=launch.jobs_root().resolve(strict=True) or evidence.name!=doc['execution_id']:
         raise ValueError('target evidence path mismatch')
     def raw(p): return read_safe(Path(p),reviews.resolve(strict=True))
@@ -270,7 +270,7 @@ def verify(doc,evidence,start):
 def live_check(evidence,trial_name,trial,*,run=subprocess.run):
     """Repeat current owned-resource checks; caller holds the admission lock."""
     import retained_b_census
-    evidence=Path(evidence); eid=evidence.name; reviews=launch.PROJECT/'reviews'
+    evidence=Path(evidence); eid=evidence.name; reviews=launch.project_dir()/'reviews'
     if not re.fullmatch(r'planar-t044-[0-9a-f]{32}',eid) or not re.fullmatch(r'[A-Za-z0-9_-]+',trial_name): raise ValueError('invalid target identity')
     names={(eid+'-'+trial_name).lower()+'__env',(eid+'-'+trial_name).lower()+'__verifier__trial'}
     # Query both possible labels even if a registration is absent or malformed.

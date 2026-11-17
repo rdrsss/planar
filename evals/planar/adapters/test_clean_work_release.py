@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -31,8 +32,10 @@ class CleanWorkPublication(TestCase):
             linked_dir=root/'linked-dir'; linked_dir.symlink_to(root, target_is_directory=True)
             verified={'trial_name':'case__x','trial':{}}; census={'execution_id':eid,'native_group':'absent','matching_commands':0,'unresolved':0}
             identity={'commit':doc['resolver_commit'],'implementation_sha256':doc['resolver_implementation_sha256']}
-            with patch.object(release.launch,'reviews_root',return_value=root),patch.object(release.launch,'jobs_root',return_value=jobs),patch.object(release.evidence_checks,'verify',return_value=verified),patch.object(release.clean_work_live,'check',return_value=census),patch.object(release,'resolver_identity',return_value=identity):
+            with patch.dict(os.environ,{'PLANAR_EVALS_OUTPUT_ROOT':str(root)}): selected_context=release.launch.context()
+            with patch.object(release.launch,'context',return_value=selected_context),patch.object(release.launch,'reviews_root',return_value=root),patch.object(release.launch,'jobs_root',return_value=jobs),patch.object(release.evidence_checks,'verify',return_value=verified),patch.object(release.clean_work_live,'check',return_value=census),patch.object(release,'resolver_identity',return_value=identity):
                 with codex_run.admission_scope() as records:
+                    self.assertEqual(records,root/'planar-account-admission-v1'/'records')
                     start=records/(eid+'.start.json'); start.write_text(json.dumps({'case':'clean-work-review','execution_id':eid}))
                 for bad in (root/'..'/'outside.json',linked,linked_dir/'review.json'):
                     with self.subTest(path=str(bad)):
@@ -55,8 +58,10 @@ class CleanWorkPublication(TestCase):
             verified={'trial_name':'case__x','trial':{}}
             census={'execution_id':eid,'native_group':'absent','matching_commands':0,'unresolved':0}
             identity={'commit':doc['resolver_commit'],'implementation_sha256':doc['resolver_implementation_sha256']}
-            with patch.object(release.launch,'reviews_root',return_value=root),patch.object(release.launch,'jobs_root',return_value=jobs),patch.object(release.evidence_checks,'verify',return_value=verified),patch.object(release.clean_work_live,'check',return_value=census),patch.object(release,'resolver_identity',return_value=identity):
+            with patch.dict(os.environ,{'PLANAR_EVALS_OUTPUT_ROOT':str(root)}): selected_context=release.launch.context()
+            with patch.object(release.launch,'context',return_value=selected_context),patch.object(release.launch,'reviews_root',return_value=root),patch.object(release.launch,'jobs_root',return_value=jobs),patch.object(release.evidence_checks,'verify',return_value=verified),patch.object(release.clean_work_live,'check',return_value=census),patch.object(release,'resolver_identity',return_value=identity):
                 with codex_run.admission_scope() as records:
+                    self.assertEqual(records,root/'planar-account-admission-v1'/'records')
                     start=records/(eid+'.start.json'); start.write_text(json.dumps({'case':'clean-work-review','execution_id':eid}))
                 with patch.object(release.os,'link',side_effect=OSError('injected publication failure')):
                     with self.assertRaises(OSError): release.publish(evidence,review)

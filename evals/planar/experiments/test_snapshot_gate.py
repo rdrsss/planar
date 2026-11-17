@@ -1,5 +1,6 @@
 """Offline snapshot gate checks; no auth or host processes."""
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -79,6 +80,8 @@ class CodexDispatchTest(unittest.TestCase):
         import codex_run
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
+            with patch.dict(os.environ,{'PLANAR_EVALS_OUTPUT_ROOT':str(root)}): selected=launch.context()
+            context_patch=patch.object(launch,'context',return_value=selected); context_patch.start(); self.addCleanup(context_patch.stop)
             base = launch.config_for('comparison', root, launch.CASES['plugin-smoke'])
             base['agents'] = [launch.config_for('comparison', root, launch.CASES['plugin-smoke'], e)['agents'][0] for e in ('medium', 'high')]
             from harbor.models.task.task import Task

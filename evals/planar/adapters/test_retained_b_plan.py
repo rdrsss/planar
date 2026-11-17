@@ -1,5 +1,6 @@
 import os
 import json
+import subprocess
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -8,7 +9,7 @@ import launch
 
 class RetainedPlanControls(unittest.TestCase):
     def setUp(self):
-        self.tmp=TemporaryDirectory(dir=launch.PROJECT/'reviews'); self.addCleanup(self.tmp.cleanup)
+        self.tmp=TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
         root=Path(self.tmp.name); self.packet=root/'packet'; self.packet.mkdir()
         self.env=patch.dict(os.environ,{'PLANAR_EVALS_OUTPUT_ROOT':str(root)}); self.env.start(); self.addCleanup(self.env.stop)
         self.source=patch('retained_b_support.source',return_value={'source_packet_sha256':'a'*64,'assessment':{'status':'pass'}}); self.source.start(); self.addCleanup(self.source.stop)
@@ -44,11 +45,16 @@ class RetainedPlanControls(unittest.TestCase):
         snapshot=launch.plan('retained-a-fresh-b',**self.kw)
         case=self.kw['case_root']; task=Task(case)
         gate={key:snapshot[key] for key in ('implementation_sha256','candidate_sha256','configuration_sha256','case','case_sha256','image_id')}
+        gate['selection_context']=snapshot['prerequisites']['selection_context']
         gate.update(verdict='approve',purpose='one-diagnostic-attempt',max_attempts=1,
                     verifier_image_id=task.config.verifier.environment.docker_image)
         review=Path(self.tmp.name)/'gate.json'; review.write_text(json.dumps(gate))
         records=Path(self.tmp.name)/'planar-account-admission-v1'/'records'; records.mkdir(parents=True)
-        def inspect(args, **kwargs): return SimpleNamespace(returncode=0,stdout=args[-1]+'\n')
+        real_run=subprocess.run
+        def inspect(args, **kwargs):
+            if args[0]=='git': return real_run(args,**kwargs)
+            if args[:3] != ['docker','image','inspect']: raise AssertionError('unexpected subprocess')
+            return SimpleNamespace(returncode=0,stdout=args[-1]+'\n')
         with patch('retained_b_support.validate_gate'), patch.object(launch.shutil,'which',return_value='/usr/bin/docker'), patch.object(launch.subprocess,'run',side_effect=inspect):
             with self.assertRaises(FileNotFoundError):
                 launch._execute_inner(Path('/definitely-absent-planar-auth'),review,'retained-a-fresh-b',_retained_records=records,**self.kw)
@@ -60,6 +66,7 @@ class RetainedPlanControls(unittest.TestCase):
         snapshot=launch.plan('retained-a-fresh-b',**self.kw); prereq=snapshot['prerequisites']
         policy=json.loads((self.kw['case_root']/'source-policy.json').read_text()); task=launch.Task(self.kw['case_root'])
         gate={key:snapshot[key] for key in ('implementation_sha256','candidate_sha256','configuration_sha256','case','case_sha256','image_id')}
+        gate['selection_context']=prereq['selection_context']
         gate.update(verdict='approve',purpose='one-diagnostic-attempt',max_attempts=1,execution_id=self.kw['execution_id'],absolute_deadline=self.kw['absolute_deadline'],effective_configuration_sha256=prereq['effective_configuration_sha256'],source_packet_sha256=prereq['source_packet_sha256'],source_packet_root=prereq['source_packet_root'],source_execution_id=policy['execution'],source_online_status='behavioral_failure',source_online_reward=0,source_assessor_image=policy['assessor_image'],source_assessment_sha256=policy['files']['evidence/corrected-assessment.txt']['sha256'],source_semantic_audit_sha256=policy['files']['evidence/semantic-audit.md']['sha256'],verifier_image_id=task.config.verifier.environment.docker_image,account_scope_id=str(Path(self.tmp.name)/'planar-account-admission-v1'),runtime_budget_seconds=1050,step_agent_seconds=400,step_verifier_seconds=60,cleanup_grace_seconds=15,result_boundary='incomplete-pending-independent-bound-raw-audit',auth_path='/definitely-absent-planar-auth')
         review=Path(self.tmp.name)/'gate.json'; review.write_text(json.dumps(gate)); records=Path(self.tmp.name)/'planar-account-admission-v1'/'records'; records.mkdir(parents=True)
         count=0
@@ -68,7 +75,11 @@ class RetainedPlanControls(unittest.TestCase):
             count+=1
             if count==2: review.write_text(json.dumps({**gate,'purpose':'changed'}))
             return {'source_packet_sha256':'a'*64,'assessment':{'status':'pass'}}
-        def inspect(args, **kwargs): return SimpleNamespace(returncode=0,stdout=args[-1]+'\n')
+        real_run=subprocess.run
+        def inspect(args, **kwargs):
+            if args[0]=='git': return real_run(args,**kwargs)
+            if args[:3] != ['docker','image','inspect']: raise AssertionError('unexpected subprocess')
+            return SimpleNamespace(returncode=0,stdout=args[-1]+'\n')
         with patch('retained_b_support.source',side_effect=source), patch.object(launch.shutil,'which',return_value='/usr/bin/docker'), patch.object(launch.subprocess,'run',side_effect=inspect):
             with self.assertRaisesRegex(ValueError,'changed before consumption'):
                 launch._execute_inner(Path(gate['auth_path']),review,'retained-a-fresh-b',_retained_records=records,**self.kw)

@@ -24,8 +24,16 @@ from smoke_codex import CANDIDATE, CONFIG, MANIFEST, ROOT, HOME, CACHE, validate
 from supervise import supervise
 from recover import recover_projects, jobs_root, output_roots
 
-PROJECT = ROOT.parent
-REVIEWS = PROJECT / 'reviews'
+from eval_context import resolve as resolve_context
+
+
+def context():
+    return resolve_context(ROOT, historical=os.environ.get('PLANAR_EVALS_LAYOUT_KIND') in ('legacy-reviews', 'override-jobs'))
+
+
+def project_dir():
+    return Path(context().project_dir)
+
 EVALS = ROOT / 'evals'
 CASE = EVALS / 'planar/cases/plugin-smoke'
 CASES = {name: EVALS / 'planar/cases' / name for name in ('plugin-smoke', 'native-lineage-smoke', 'native-lineage-current', 'fresh-interrupted-review', 'clean-revision', 'clean-work-review', 'retained-a-fresh-b', 'clean-retained-a-continuation')}
@@ -110,7 +118,7 @@ def validate_write_destination(path):
 
 
 def reviews_root():
-    return output_roots()[0] if os.environ.get('PLANAR_EVALS_OUTPUT_ROOT') else REVIEWS
+    return Path(context().output_root)
 
 
 def plan(case_name='plugin-smoke', *, candidate_root=None, case_root=None, trial_deadline=1500, effort='medium', source_packet=None, execution_id=None, absolute_deadline=None):
@@ -140,11 +148,11 @@ def plan(case_name='plugin-smoke', *, candidate_root=None, case_root=None, trial
     case = Path(case_root).resolve(strict=True) if case_root is not None else CASES[case_name]
     if Path.cwd().resolve() != ROOT.resolve():
         raise ValueError('launch must run from the repository root')
-    for label, path in (('repository', ROOT), ('package', candidate), ('case', case), ('project', ROOT if os.environ.get('PLANAR_EVALS_OUTPUT_ROOT') else PROJECT),):
+    selected_context = context()
+    if selected_context.layout_kind != 'new': raise ValueError('historical layout cannot plan new work')
+    for label, path in (('repository', ROOT), ('package', candidate), ('case', case), ('project', Path(selected_context.project_dir)),):
         if not path.is_dir():
             raise ValueError(f'{label} root is unavailable: {path}')
-    if not os.environ.get('PLANAR_EVALS_OUTPUT_ROOT') and not REVIEWS.is_dir():
-        raise ValueError(f'evidence root is unavailable: {REVIEWS}')
     git_marker = ROOT / '.git'
     if git_marker.is_dir():
         git_dir = git_marker
@@ -178,7 +186,7 @@ def plan(case_name='plugin-smoke', *, candidate_root=None, case_root=None, trial
             raise ValueError('v2 recovery packet incompatible with selected candidate')
     identity = {'configuration': config, 'output_root': str(reviews_root()),
                 'jobs_root': str(jobs_root()), 'consumed_root': str(output_roots()[2])}
-    digest_input = identity if os.environ.get('PLANAR_EVALS_OUTPUT_ROOT') else config
+    digest_input = {**identity, 'selection_context': selected_context.identity(), 'selection_context_sha256': selected_context.digest()}
     if candidate_root is not None or trial_deadline != 1500:
         digest_input = {'base': digest_input, 'candidate_root': str(candidate), 'case_root': str(case), 'trial_deadline': trial_deadline}
     if retained:
@@ -227,7 +235,7 @@ def plan(case_name='plugin-smoke', *, candidate_root=None, case_root=None, trial
         effective_hash=hashlib.sha256(json.dumps(effective,sort_keys=True,separators=(',',':')).encode()).hexdigest()
     prerequisites = {'cwd': str(Path.cwd().resolve()), 'repository_root': str(ROOT),
         'package_read_root': str(candidate), 'case_read_root': str(case),
-        'project_root': str(PROJECT), 'evidence_write_root': str(jobs_root()),
+        'project_root': selected_context.project_dir, 'selection_context': selected_context.identity(), 'selection_context_sha256': selected_context.digest(), 'evidence_write_root': str(jobs_root()),
         'write_destinations': write_roots,
         'isolated_remote_roots': {'home': HOME, 'config': HOME + '/config.toml',
             'cache': CACHE, 'workspace': '/workspace',
@@ -276,8 +284,13 @@ def plan(case_name='plugin-smoke', *, candidate_root=None, case_root=None, trial
             'harbor_version': '0.26.0', 'codex_version': '0.169.0', 'configuration': config}
 
 
-def consume_review_once(review_path, consumed_root, *, reviewed_bytes=None):
+def consume_review_once(review_path, consumed_root, *, reviewed_bytes=None, expected_context=None):
     """Reserve the exact reviewed gate once; never retry it implicitly."""
+    selected = context()
+    if expected_context is None or selected.identity() != expected_context:
+        raise ValueError('selection context changed before consumption')
+    if Path(consumed_root) != Path(selected.consumed_root):
+        raise ValueError('consumption root does not match selected context')
     raw = review_path.read_bytes()
     if reviewed_bytes is not None and raw != reviewed_bytes: raise ValueError('reviewed gate changed before consumption')
     gate = json.loads(raw)
@@ -359,7 +372,7 @@ def _execute_inner(auth_path, review_path, case_name='plugin-smoke', *, candidat
     required = {'verdict': 'approve', 'purpose': 'one-diagnostic-attempt', 'max_attempts': 1,
                 'implementation_sha256': snapshot['implementation_sha256'],
                 'candidate_sha256': snapshot['candidate_sha256'],
-                'configuration_sha256': snapshot['configuration_sha256'], 'case': case_name,
+                'configuration_sha256': snapshot['configuration_sha256'], 'selection_context': snapshot['prerequisites']['selection_context'], 'case': case_name,
                 'case_sha256': snapshot['case_sha256'], 'image_id': snapshot['image_id']}
     if not portable and any(gate.get(key) != value or ((clean_work or retained_clean) and type(gate.get(key)) is not type(value)) for key, value in required.items()):
         raise ValueError('diagnostic review is missing, stale, or not approved')
@@ -428,7 +441,7 @@ def _execute_inner(auth_path, review_path, case_name='plugin-smoke', *, candidat
             from retained_b_support import validate_gate, source as validate_retained_source
         validate_gate(gate,snapshot,policy,execution_id,absolute_deadline,auth_path,_retained_records.parent,verifier_image)
         if retained_clean:
-            load_case_module(case,'source_account').check(source_packet,Path(candidate_root),PROJECT/'reviews')
+            load_case_module(case,'source_account').check(source_packet,Path(candidate_root),project_dir()/'reviews')
         planned_evidence=jobs_root()/execution_id
         if planned_evidence.exists() or planned_evidence.is_symlink(): raise ValueError('retained execution already exists')
         planned_config=config_for(execution_id,planned_evidence,case,effort)
@@ -437,7 +450,7 @@ def _execute_inner(auth_path, review_path, case_name='plugin-smoke', *, candidat
             raise ValueError('retained effective JobConfig drift')
         if validate_retained_source(case,source_packet,Path(candidate_root))['source_packet_sha256']!=snapshot['prerequisites']['source_packet_sha256']:
             raise ValueError('retained source changed before admission')
-        consume_review_once(review, reviews_root()/'harbor-t044-consumed', reviewed_bytes=gate_bytes)
+        consume_review_once(review, reviews_root()/'harbor-t044-consumed', reviewed_bytes=gate_bytes, expected_context=snapshot['prerequisites']['selection_context'])
         marker=_retained_records/(execution_id+'.start.json')
         fd=os.open(marker,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
         with os.fdopen(fd,'w') as output:
@@ -449,7 +462,7 @@ def _execute_inner(auth_path, review_path, case_name='plugin-smoke', *, candidat
     if case_name in ('clean-revision','clean-work-review'):
         # The selected multi-step case consumes its reviewed one-use gate before
         # resolving or reading the authentication file.
-        consume_review_once(review, reviews_root() / 'harbor-t044-consumed', reviewed_bytes=gate_bytes if clean_work else None)
+        consume_review_once(review, reviews_root() / 'harbor-t044-consumed', reviewed_bytes=gate_bytes if clean_work else None, expected_context=snapshot['prerequisites']['selection_context'])
         if clean_work:
             marker=_retained_records/(execution_id+'.start.json')
             fd=os.open(marker,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
@@ -475,7 +488,7 @@ def _execute_inner(auth_path, review_path, case_name='plugin-smoke', *, candidat
     del auth
     remaining()
     if case_name not in ('clean-revision', 'clean-work-review', 'native-lineage-portable', 'retained-a-fresh-b', 'clean-retained-a-continuation'):
-        consume_review_once(review, reviews_root() / 'harbor-t044-consumed')
+        consume_review_once(review, reviews_root() / 'harbor-t044-consumed', expected_context=snapshot['prerequisites']['selection_context'])
     run_id = execution_id or 'planar-t044-' + uuid.uuid4().hex
     evidence = jobs_root() / run_id
     evidence.mkdir(parents=True, exist_ok=False, mode=0o700)
@@ -495,7 +508,7 @@ def _execute_inner(auth_path, review_path, case_name='plugin-smoke', *, candidat
         config_path.write_text(json.dumps(job_config, indent=2, sort_keys=True) + '\n')
     launcher_record = {'execution_id': run_id, 'started_at': datetime.now(timezone.utc).isoformat(), 'case': case_name, 'case_sha256': snapshot['case_sha256'], 'image_id': image_id, 'configuration_sha256': snapshot['configuration_sha256'], 'implementation_sha256': snapshot['implementation_sha256'], 'candidate_sha256': snapshot['candidate_sha256'], 'harbor_version': '0.26.0', 'codex_version': '0.169.0', 'prerequisites': snapshot['prerequisites'], 'review_sha256': gate_hash, 'job_config_sha256': hashlib.sha256(config_path.read_bytes()).hexdigest()}
     if portable:
-        launcher_record.update({'runnable_contract':'planar-schema2-runnable-v1','verifier_image_id':verifier_image,'effective_verifier_environment':binding['effective_verifier_environment']})
+        launcher_record.update({'runnable_contract':'planar-schema2-runnable-context-v2','verifier_image_id':verifier_image,'effective_verifier_environment':binding['effective_verifier_environment']})
     (evidence / 'launcher.json').write_text(json.dumps(launcher_record, indent=2, sort_keys=True) + '\n')
     if retained:
         admission={'execution_id':run_id,'gate_path':str(review),'gate_raw_sha256':gate_hash,'gate_authority':gate,
@@ -505,16 +518,23 @@ def _execute_inner(auth_path, review_path, case_name='plugin-smoke', *, candidat
             'verifier_image_id':verifier_image}
         fd=os.open(evidence/'retained-admission.json',os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
         with os.fdopen(fd,'w') as output: json.dump(admission,output,sort_keys=True); output.write('\n'); output.flush(); os.fsync(output.fileno())
+    if context().identity() != snapshot['prerequisites']['selection_context']:
+        raise ValueError('selection context changed before child dispatch')
     # Docker uses the current user's context; no API-key or host configuration
     # variables are inherited by the Harbor process.
     directories = [str(Path(docker).resolve().parent), str(Path(sys.executable).parent), '/usr/bin', '/bin', '/usr/sbin', '/sbin']
     env = {'PATH': portable_path if portable else os.pathsep.join(directories), 'HOME': str(Path.home()),
            'PYTHONPATH': str(Path(__file__).resolve().parent),
            'PLANAR_T044_EVIDENCE_DIR': str(evidence),
-           'PLANAR_EVALS_OUTPUT_ROOT': os.environ.get('PLANAR_EVALS_OUTPUT_ROOT', ''),
+           'PLANAR_EVALS_OUTPUT_ROOT': context().output_root if context().selection_source == 'explicit override' else '',
+           'PLANAR_EVALS_PROJECT_DIR': context().project_dir,
+           'PLANAR_EVALS_LAYOUT_KIND': context().layout_kind,
+           'PLANAR_EVALS_CONTEXT': json.dumps(context().identity(), sort_keys=True),
            'PLANAR_T044_EXPECTED_IMAGE_ID': image_id, 'PLANAR_T044_CASE': case_name,
            'PLANAR_T044_DEADLINE_SECONDS': str(trial_deadline), 'PLANAR_T044_EFFORT': effort,
            'CODEX_AUTH_JSON_PATH': str(auth_path), 'OPENAI_API_KEY': '', 'CODEX_API_KEY': ''}
+    if context().settings_home_source == 'explicit':
+        env['PLANAR_HOME'] = context().settings_home
     if verifier_image:
         env['PLANAR_T045_VERIFIER_IMAGE_ID'] = verifier_image
     if retained:

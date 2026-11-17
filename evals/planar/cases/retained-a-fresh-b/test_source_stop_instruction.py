@@ -27,7 +27,7 @@ class SourceStopInstruction(unittest.TestCase):
         self.assertEqual(config['agents'][0]['model_name'],'gpt-6.1-terra')
         self.assertEqual(config['agents'][0]['kwargs']['reasoning_effort'],'medium')
     def test_consumed_old_gate_refuses_changed_case_identity(self):
-        old=launch.PROJECT/'reviews/t045-retained-b-final-prep-20261117/output/approved-review.json'
+        old=launch.project_dir()/'reviews/t045-retained-b-final-prep-20261117/output/approved-review.json'
         if not old.is_file(): self.skipTest('historical gate unavailable')
         gate=json.loads(old.read_text()); policy=json.loads((CASE/'source-policy.json').read_text())
         self.assertEqual(gate['case_sha256'],OLD_CASE)

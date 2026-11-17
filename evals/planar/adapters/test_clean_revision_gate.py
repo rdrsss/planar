@@ -1,5 +1,6 @@
 """No-auth control for the selected case's one-use gate ordering."""
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -24,12 +25,15 @@ class GateOrderTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             review = root / 'review.json'
+            with patch.dict(os.environ,{'PLANAR_EVALS_OUTPUT_ROOT':str(root)}): ctx=launch.context()
+            snapshot['prerequisites']={'selection_context':ctx.identity()}
+            gate['selection_context']=ctx.identity()
             review.write_text(json.dumps(gate))
             case = root / 'case'; case.mkdir()
             jobs = root / 'jobs'; jobs.mkdir()
             task = SimpleNamespace(config=SimpleNamespace(environment=SimpleNamespace(docker_image=image), verifier=SimpleNamespace(environment=SimpleNamespace(docker_image=image))))
             result = SimpleNamespace(returncode=0, stdout=image+'\n')
-            with patch.object(launch, 'plan', return_value=snapshot), \
+            with patch.object(launch, 'context', return_value=ctx), patch.object(launch, 'plan', return_value=snapshot), \
                  patch.object(launch, 'reviews_root', return_value=root), \
                  patch.object(launch, 'jobs_root', return_value=jobs), \
                  patch.object(launch, 'Task', return_value=task), \

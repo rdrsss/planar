@@ -11,14 +11,14 @@ import retained_b_early_release as release
 import retained_b_early_evidence as ev
 
 CLEANUP_CHECK=release.cleanup_check
-REAL_WRAPPER=launch.PROJECT/'reviews'/release.WRAPPER_AUDIT
+REAL_WRAPPER=launch.project_dir()/'reviews'/release.WRAPPER_AUDIT
 
 class EarlyRelease(TestCase):
     def setUp(self):
         if not REAL_WRAPPER.is_file(): self.skipTest('reviewed wrapper evidence unavailable')
         self.tmp=TemporaryDirectory(); self.addCleanup(self.tmp.cleanup); self.root=Path(self.tmp.name).resolve(); self.project=self.root/'project'; self.reviews=self.project/'reviews'; self.reviews.mkdir(parents=True); self.scope=self.reviews/'output'; self.scope.mkdir(); self.job=self.scope/'jobs'/ev.EID; self.job.mkdir(parents=True); self.records=self.scope/'planar-account-admission-v1/records'; self.records.mkdir(parents=True)
         self.env=patch.dict(os.environ,{'PLANAR_EVALS_OUTPUT_ROOT':str(self.scope)}); self.env.start(); self.addCleanup(self.env.stop)
-        self.project_patch=patch.object(launch,'PROJECT',self.project); self.project_patch.start(); self.addCleanup(self.project_patch.stop)
+        self.project_patch=patch.object(launch,'project_dir',return_value=self.project); self.project_patch.start(); self.addCleanup(self.project_patch.stop)
         self.gate={'case_sha256':ev.CASE_SHA,'candidate_sha256':ev.CANDIDATE_SHA,'source_packet_sha256':ev.SOURCE_SHA,'configuration_sha256':'c'*64,'implementation_sha256':'d'*64}; (self.scope/'approved-review.json').write_text(json.dumps(self.gate))
         (self.records/(ev.EID+'.start.json')).write_text(json.dumps({'case':'retained-a-fresh-b','execution_id':ev.EID,'gate_sha256':ev.GATE_SHA,'gate_authority':self.gate}))
         self.wrapper=self.reviews/release.WRAPPER_AUDIT; self.wrapper.write_bytes(REAL_WRAPPER.read_bytes())

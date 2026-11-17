@@ -1,5 +1,6 @@
 import hashlib
 import json
+import subprocess
 import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -28,7 +29,12 @@ class Resolution(TestCase):
         self.doc={'execution_id':self.eid,'decision':'release-account','behavior':'incomplete','gate_sha256':resolver.digest(self.gate),'source_packet_sha256':self.source,'verifier_status_sha256':resolver.digest(self.status),'reward_sha256':resolver.digest(self.status.with_name('reward.txt')),'reason':'reviewed cleanup and retained evidence'}
         self.audit.write_text(json.dumps(self.doc))
         self.runtime=patch.object(resolver,'verify_runtime'); self.runtime.start(); self.addCleanup(self.runtime.stop)
-        self.docker=patch.object(resolver.subprocess,'run',return_value=SimpleNamespace(returncode=0,stdout='')); self.docker_mock=self.docker.start(); self.addCleanup(self.docker.stop)
+        real_run=subprocess.run
+        def inspect(argv, **kwargs):
+            if argv[0]=='git': return real_run(argv, **kwargs)
+            if argv[0]!='docker': raise AssertionError('unexpected subprocess')
+            return self.docker_mock.return_value
+        self.docker=patch.object(resolver.subprocess,'run',side_effect=inspect,return_value=SimpleNamespace(returncode=0,stdout='')); self.docker_mock=self.docker.start(); self.addCleanup(self.docker.stop)
     def call(self): return resolver.resolve(self.evidence,self.root,self.root,self.audit)
     def test_explicit_bound_release_keeps_incomplete(self):
         self.assertEqual(self.call()['behavior'],'incomplete')

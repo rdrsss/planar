@@ -30,7 +30,7 @@ async def prepare_target(environment, case, packet, candidate, evidence, source_
         raise ValueError('source packet mismatch')
     import launch
     account=load_case_module(case,'source_account')
-    account.check(packet,candidate,launch.PROJECT/'reviews')
+    account.check(packet,candidate,launch.project_dir()/'reviews')
     target=evidence/'retained-clean'
     if target.exists() or target.is_symlink(): raise ValueError('target boundary exists')
     with tempfile.TemporaryDirectory(prefix='retained-clean-',dir=evidence) as tmp:

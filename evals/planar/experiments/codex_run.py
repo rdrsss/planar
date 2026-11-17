@@ -27,17 +27,26 @@ _ACTIVE_ADMISSION = ContextVar("planar_account_admission", default=None)
 @contextmanager
 def admission_scope():
     """One conservative account scope per configured output root."""
-    root = launch.reviews_root().resolve()
-    root.mkdir(parents=True, exist_ok=True)
+    context = launch.context()
+    root = Path(context.output_root)
+    historical = context.layout_kind in ('legacy-reviews','override-jobs')
+    if historical:
+        if not root.is_dir(): raise ValueError('historical output root unavailable')
+    else:
+        root.mkdir(parents=True, exist_ok=True)
     scope = root / 'planar-account-admission-v1'
     if scope.is_symlink():
         raise ValueError('admission scope cannot be a symlink')
-    scope.mkdir(mode=0o700, exist_ok=True)
+    if historical:
+        if not scope.is_dir(): raise ValueError('historical account scope unavailable')
+    else: scope.mkdir(mode=0o700, exist_ok=True)
     records = scope / 'records'
     if records.is_symlink():
         raise ValueError('admission records cannot be a symlink')
-    records.mkdir(mode=0o700, exist_ok=True)
-    with (scope / 'lock').open('a+') as lock:
+    if historical:
+        if not records.is_dir() or (scope/'lock').is_symlink() or not (scope/'lock').is_file(): raise ValueError('historical account records or lock unavailable')
+    else: records.mkdir(mode=0o700, exist_ok=True)
+    with (scope / 'lock').open('r+' if historical else 'a+') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         token = _ACTIVE_ADMISSION.set(records.resolve())
         try: yield records
@@ -55,6 +64,9 @@ def shared_pending(records):
                 from clean_work_release import validate_published
                 release=json.loads(resolved.read_text(),object_pairs_hook=__import__('terminal_failure_schema').unique)
                 return validate_published(start,resolved,release)
+            if data.get('runnable_contract')=='planar-schema2-runnable-context-v2':
+                # Marker presence alone is not a context-bound disposition.
+                return False
             if data.get('runnable_contract')=='planar-schema2-runnable-v1':
                 eid=data.get('execution_id')
                 if not isinstance(eid,str): return False
@@ -91,7 +103,7 @@ def shared_pending(records):
                 return validate_published(start, resolved, release)
             if release.get('type')=='aborted-before-work':
                 gate=data.get('gate_authority',{})
-                review=Path(release['release_path']); project_reviews=(launch.PROJECT/'reviews').resolve(strict=True)
+                review=Path(release['release_path']); project_reviews=(launch.project_dir()/'reviews').resolve(strict=True)
                 if review.is_symlink() or not review.is_file() or not review.resolve().is_relative_to(project_reviews): return False
                 review_bytes=review.read_bytes()
                 if hashlib.sha256(review_bytes).hexdigest()!=release['release_sha256']: return False

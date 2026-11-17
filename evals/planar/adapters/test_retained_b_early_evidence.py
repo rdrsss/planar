@@ -8,7 +8,7 @@ from unittest.mock import patch
 import launch
 import retained_b_early_evidence as evidence
 
-PROJECT=launch.PROJECT
+PROJECT=launch.project_dir()
 PREP=PROJECT/'reviews/t045-retained-b-final-prep-20261117'
 JOB=PREP/'output/jobs'/evidence.EID
 CASE=PREP/'source/evals/planar/cases/retained-a-fresh-b'
@@ -19,7 +19,7 @@ AUDIT=PROJECT/'reviews/t045-retained-b-live-root-audit-evidence-20261117.json'
 class EarlyEvidence(TestCase):
     def setUp(self):
         if not AUDIT.is_file(): self.skipTest('retained reviewed evidence unavailable')
-        self.env=patch.dict(os.environ,{'PLANAR_EVALS_OUTPUT_ROOT':str(PREP/'output')}); self.env.start(); self.addCleanup(self.env.stop)
+        self.env=patch.dict(os.environ,{'PLANAR_EVALS_OUTPUT_ROOT':str(PREP/'output'),'PLANAR_EVALS_LAYOUT_KIND':'override-jobs'}); self.env.start(); self.addCleanup(self.env.stop)
         self.source=patch.object(evidence,'source',return_value={'source_packet_sha256':evidence.SOURCE_SHA}); self.source.start(); self.addCleanup(self.source.stop)
     def inspect(self): return evidence.inspect(JOB,CASE,CANDIDATE,PACKET,AUDIT)
     def test_actual_closed_evidence_remains_pending(self):

@@ -6,7 +6,7 @@ from unittest.mock import patch
 import retained_b_early_trace as trace
 import launch
 
-PATH=launch.PROJECT/'reviews/t045-retained-b-final-prep-20261117/output/jobs/planar-t044-aeaec469c5c549ee96f3ce7729dc4c2e/retained-b/logs/revision/codex.txt'
+PATH=launch.project_dir()/'reviews/t045-retained-b-final-prep-20261117/output/jobs/planar-t044-aeaec469c5c549ee96f3ce7729dc4c2e/retained-b/logs/revision/codex.txt'
 
 class EarlyTrace(TestCase):
     def setUp(self):

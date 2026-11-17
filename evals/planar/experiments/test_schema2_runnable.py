@@ -1,4 +1,6 @@
 import copy
+import os
+import subprocess
 import json
 from pathlib import Path
 import unittest
@@ -28,7 +30,10 @@ def pair(path): return {'raw':str(path),'resolved':str(path.resolve())}
 class RunnableReview(unittest.TestCase):
     def setUp(self):
         fixture.SchemaTwo.setUp(self)
-        self.reviews=self.base/'reviews'; self.jobs=self.base/'jobs'; self.reviews.mkdir(); self.jobs.mkdir()
+        self.reviews=self.base; self.jobs=self.base/'jobs'; self.jobs.mkdir()
+        self.selection_env=patch.dict(os.environ, {'PLANAR_EVALS_OUTPUT_ROOT':str(self.base)})
+        self.selection_env.start(); self.addCleanup(self.selection_env.stop)
+        self.context=launch.context()
         roots={'experiment':pair(self.root),'reviews':pair(self.reviews),'jobs':pair(self.jobs),'consumed':pair(self.reviews/'harbor-t044-consumed')}
         case=self.root/'variants/a/case-instance'
         dummy='f'*32
@@ -36,6 +41,9 @@ class RunnableReview(unittest.TestCase):
         _,normalized=projection.normalize(reference,execution_id=dummy,evidence_raw=str(self.jobs/('planar-t044-'+dummy)),case_raw=str(case),effort='medium')
         m=self.manifest
         m['runnable_contract']=runnable.CONTRACT
+        m['configuration']['selection_context']=self.context.identity()
+        m['configuration']['selection_context_sha256']=self.context.digest()
+        m['configuration']['account_scope_id']=self.context.account_scope
         m['configuration']['config']['native_config']={'policy_version':1,'harbor_version':'0.26.0','projection_version':1,'normalized_job_config':normalized,'roots':roots}
         m['configuration_sha256']=schema2.object_hash(m['configuration'])
         for v in m['variants']:
@@ -56,10 +64,10 @@ class RunnableReview(unittest.TestCase):
         bindings={**roots,'candidate':pair(self.root/'variants/a/candidate'),'case_instance':pair(case),'evidence':pair(self.jobs/('planar-t044-'+eid))}
         binding={'binding_version':1,'projection_version':1,'job_config':full,'effective_verifier_environment':projection.project(projection.effective_verifier_environment(self.original,v['verifier_image_id'])),'path_bindings':bindings,'caps':m['configuration']['config']['caps'],'verifier_preparation':prep}
         binding['concrete_job_config_sha256']=runnable.digest(binding)
-        self.r.update({'runnable_contract':runnable.CONTRACT,'concrete_binding':binding})
+        self.r.update({'runnable_contract':runnable.CONTRACT,'concrete_binding':binding,'selection_context_sha256':self.context.digest(),'selection_source':self.context.selection_source})
         self.path=self.root/'reservations'/f'{eid}.json'; self.path.write_bytes(pv.canonical(self.r))
         self.gate={k:self.r[k] for k in schema2.GATE_FIELDS if k in self.r}
-        self.gate.update({'schema_version':2,'purpose':'one-experiment-trial','verdict':'approve','max_attempts':1,'reservation_sha256':schema2.h(self.path.read_bytes()),'reviewer':'independent','report':'synthetic','reviewed_at':fixture.timestamp(-1),'runnable_contract':runnable.CONTRACT,'concrete_job_config_sha256':binding['concrete_job_config_sha256']})
+        self.gate.update({'schema_version':2,'purpose':'one-experiment-trial','verdict':'approve','max_attempts':1,'reservation_sha256':schema2.h(self.path.read_bytes()),'reviewer':'independent','report':'synthetic','reviewed_at':fixture.timestamp(-1),'runnable_contract':runnable.CONTRACT,'concrete_job_config_sha256':binding['concrete_job_config_sha256'],'selection_context_sha256':self.context.digest(),'selection_source':self.context.selection_source})
     def check(self): return runnable.check(self.root,self.identity,self.r['reservation_id'],self.gate,job=self.job,original_verifier_environment=self.original,preparation_evidence=self.evidence)
     def test_explicit_runnable_plan_and_wrong_policy(self):
         out=self.base/'runnable-plan'; reviews=self.reviews; jobs=self.jobs
@@ -83,7 +91,10 @@ class RunnableReview(unittest.TestCase):
             prep={'schema_version':1,'build_method':'docker-build-no-pull-network-none-v1','build_log_sha256':schema2.h(b'synthetic build\n'),'case_instance_sha256':v['case_instance_sha256'],'trusted_inputs_sha256':v['trusted_inputs_sha256'],'verifier_code_sha256':v['verifier_code_sha256'],'build_context_sha256':pv.tree_hash(instance/'tests'),'base_image_id':'sha256:'+'f'*64,'verifier_image_id':v['verifier_image_id'],'agent_image_id':v['image_id']}
             source=reviews/'preparation.json'; source.with_name(source.name+'.build.log').write_bytes(b'synthetic build\n'); source.write_bytes(pv.canonical(prep))
             from types import SimpleNamespace
-            def inspect(argv,**kwargs): return SimpleNamespace(returncode=0,stdout=argv[-1]+'\n')
+            real_run=subprocess.run
+            def inspect(argv,**kwargs):
+                if argv[0]=='git': return real_run(argv,**kwargs)
+                return SimpleNamespace(returncode=0,stdout=argv[-1]+'\n')
             with patch('shutil.which',return_value='/usr/bin/docker'), patch('subprocess.run',side_effect=inspect):
                 reserved=runnable.reserve(out,manifest['identity'],'a:1',expires_at=fixture.timestamp(1500),preparation_evidence=source)
             self.assertEqual(reserved['runnable_contract'],runnable.CONTRACT)
@@ -103,7 +114,7 @@ class RunnableReview(unittest.TestCase):
             self.assertEqual(report['runnable_contract'],runnable.CONTRACT)
             self.assertEqual(report['groups'][0]['primary_not_started'],1)
             gate={k:reserved[k] for k in schema2.GATE_FIELDS if k in reserved}
-            gate.update({'schema_version':2,'purpose':'one-experiment-trial','verdict':'approve','max_attempts':1,'reservation_sha256':schema2.h((out/'reservations'/f"{reserved['reservation_id']}.json").read_bytes()),'reviewer':'synthetic','report':'synthetic','reviewed_at':fixture.timestamp(-1),'runnable_contract':runnable.CONTRACT,'concrete_job_config_sha256':reserved['concrete_binding']['concrete_job_config_sha256']})
+            gate.update({'selection_context_sha256':reserved['selection_context_sha256'],'selection_source':reserved['selection_source'],'schema_version':2,'purpose':'one-experiment-trial','verdict':'approve','max_attempts':1,'reservation_sha256':schema2.h((out/'reservations'/f"{reserved['reservation_id']}.json").read_bytes()),'reviewer':'synthetic','report':'synthetic','reviewed_at':fixture.timestamp(-1),'runnable_contract':runnable.CONTRACT,'concrete_job_config_sha256':reserved['concrete_binding']['concrete_job_config_sha256']})
             self.assertEqual(runnable.check_gate(out,manifest['identity'],reserved['reservation_id'],gate,preparation_evidence=source)['authorization'],'not granted')
             wrong_gate=dict(gate,concrete_job_config_sha256='0'*64)
             with self.assertRaises(schema2.Invalid): runnable.check_gate(out,manifest['identity'],reserved['reservation_id'],wrong_gate,preparation_evidence=source)
@@ -134,6 +145,7 @@ class RunnableReview(unittest.TestCase):
             marker=reviews/'harbor-t044-consumed'/marker_hash
             real_write=schema2.write_new
             def now_inspect(argv,**kwargs):
+                if argv[0]=='git': return real_run(argv,**kwargs)
                 return SimpleNamespace(returncode=0,stdout=('codex-cli 0.169.0\n' if argv[-1]=='--version' else argv[-1]+'\n'))
             for boundary in ('shared','local'):
                 target=shared if boundary=='shared' else folder/'start.json'
@@ -225,6 +237,7 @@ class RunnableReview(unittest.TestCase):
             self.assertFalse(shared.exists()); self.assertFalse(marker.exists())
             entered=threading.Event(); release=threading.Event()
             def actual(argv,**kwargs):
+                if argv[0]=='git': return real_run(argv,**kwargs)
                 if argv[-1]=='--version':
                     entered.set()
                     if not release.wait(5): raise RuntimeError('test synchronization timed out')
@@ -456,6 +469,85 @@ class RunnableReview(unittest.TestCase):
     def test_review_only(self):
         self.assertEqual(self.check()['authorization'],'not granted')
         self.assertEqual(list((self.root/'executions').iterdir()),[])
+    def test_context_and_mixed_legacy_gate_refuse(self):
+        self.assertEqual(self.check()['authorization'],'not granted')
+        original=dict(self.gate)
+        for field,value in (('selection_context_sha256','0'*64),
+                            ('selection_source','project default'),
+                            ('runnable_contract',runnable.LEGACY_CONTRACT)):
+            with self.subTest(field=field):
+                self.gate={**original,field:value}
+                with self.assertRaises(schema2.Invalid): self.check()
+        self.gate=original
+        self.assertEqual(list((self.root/'executions').iterdir()),[])
+
+    def test_historical_lock_open_never_creates_missing_lock(self):
+        path=self.root/'controller.lock'
+        self.assertFalse(path.exists())
+        with self.assertRaises(FileNotFoundError):
+            with schema2_execution._controller_lock(self.root,create=False):
+                self.fail('missing historical lock was opened')
+        self.assertFalse(path.exists())
+        with schema2_execution._controller_lock(self.root):
+            self.assertTrue(path.is_file())  # new v2 behavior remains available
+
+    def test_historical_missing_start_or_marker_never_mutates(self):
+        # Convert this disposable, source-derived fixture to exact v1 shapes.
+        m=copy.deepcopy(self.manifest)
+        m['runnable_contract']=runnable.LEGACY_CONTRACT
+        for key in ('selection_context','selection_context_sha256'): m['configuration'].pop(key)
+        m['configuration_sha256']=schema2.object_hash(m['configuration'])
+        for v in m['variants']:
+            v['configuration']={**m['configuration'],'task':{'case':'planar/native-lineage-portable','contract_version':2},'variant_id':v['variant_id'],'effort':v['effort'],'image_id':v['image_id'],'verifier_image_id':v['verifier_image_id'],'host_version':v['host_version']}
+            v['configuration_sha256']=schema2.object_hash(v['configuration'])
+        m['identity']=schema2.object_hash({k:v for k,v in m.items() if k!='identity'})
+        (self.root/'manifest.json').write_bytes(pv.canonical(m))
+        r=copy.deepcopy(self.r)
+        for key in ('selection_context_sha256','selection_source'): r.pop(key)
+        r.update(runnable_contract=runnable.LEGACY_CONTRACT,experiment_identity=m['identity'],configuration_sha256=m['variants'][0]['configuration_sha256'])
+        self.path.write_bytes(pv.canonical(r))
+        gate={k:r[k] for k in schema2.GATE_FIELDS if k in r}
+        gate.update(schema_version=2,purpose='one-experiment-trial',verdict='approve',max_attempts=1,
+                    reservation_sha256=schema2.h(self.path.read_bytes()),reviewer='synthetic',report='synthetic',
+                    reviewed_at=fixture.timestamp(-1),runnable_contract=runnable.LEGACY_CONTRACT,
+                    concrete_job_config_sha256=r['concrete_binding']['concrete_job_config_sha256'])
+        gate_path=self.base/'legacy-gate.json'; gate_path.write_bytes(pv.canonical(gate))
+        marker_id=hashlib.sha256(json.dumps(gate,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+        consumed=self.base/'harbor-t044-consumed'; consumed.mkdir(); marker=consumed/marker_id
+        scope=self.base/'planar-account-admission-v1'; records=scope/'records'; records.mkdir(parents=True); (scope/'lock').touch()
+        shared=records/(r['execution_id']+'.start.json')
+        shared.write_bytes(pv.canonical({'experiment':str(self.root.resolve()),'execution_id':r['execution_id'],
+            'runnable_contract':runnable.LEGACY_CONTRACT,'reservation_sha256':schema2.h(self.path.read_bytes()),
+            'gate_marker_sha256':marker_id,'gate_raw_sha256':schema2.h(gate_path.read_bytes())}))
+        (self.root/'controller.lock').touch()
+        folder=self.root/'executions'/r['execution_id']; start=folder/'start.json'
+        local={'execution_id':r['execution_id'],'reservation_id':r['reservation_id'],'logical_id':r['logical_id'],
+            'variant_id':r['variant_id'],'repetition':r['repetition'],'predecessor_execution_id':r['predecessor_execution_id'],
+            'reservation_sha256':schema2.h(self.path.read_bytes()),'gate_marker_sha256':marker_id,
+            'concrete_job_config_sha256':r['concrete_binding']['concrete_job_config_sha256']}
+        def snapshot():
+            return {str(p.relative_to(self.base)): (p.read_bytes() if p.is_file() else None)
+                    for p in self.base.rglob('*') if not p.is_symlink()}
+        real_read=schema2.read_record
+        for has_start,has_marker in ((False,False),(False,True),(True,False)):
+            with self.subTest(start=has_start,marker=has_marker):
+                if has_start:
+                    folder.mkdir(exist_ok=True); start.write_bytes(pv.canonical(local))
+                elif folder.exists():
+                    start.unlink(missing_ok=True); folder.rmdir()
+                if has_marker: marker.write_bytes(b'reserved\n')
+                else: marker.unlink(missing_ok=True)
+                before=snapshot(); observed=[]
+                def read(path):
+                    observed.append(Path(path)); return real_read(path)
+                with patch.dict(os.environ,{'PLANAR_EVALS_LAYOUT_KIND':'override-jobs'}), \
+                     patch.object(schema2,'read_record',side_effect=read), \
+                     patch.object(schema2,'write_new',side_effect=AssertionError('historical write')), \
+                     patch.object(launch,'execute',side_effect=AssertionError('dispatch')):
+                    self.assertIsNone(schema2_execution.reconcile_runnable(self.root,m['identity'],r['execution_id'],gate_path))
+                self.assertIn(shared,observed)  # reached the actual validated authority boundary
+                self.assertEqual(snapshot(),before)
+
     def test_old_gate_and_record_refuse(self):
         self.gate.pop('runnable_contract')
         with self.assertRaises(schema2.Invalid): self.check()

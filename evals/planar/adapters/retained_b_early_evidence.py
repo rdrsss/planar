@@ -51,7 +51,7 @@ def read_safe(path, root, limit=4*1024*1024):
 
 
 def inspect(evidence,case,candidate,packet,audit):
-    reviews=(launch.PROJECT/'reviews').resolve(strict=True); scope=launch.reviews_root().resolve(strict=True); evidence=Path(evidence)
+    reviews=(launch.project_dir()/'reviews').resolve(strict=True); scope=launch.reviews_root().resolve(strict=True); evidence=Path(evidence)
     if evidence.is_symlink() or evidence.resolve(strict=True).parent!=launch.jobs_root().resolve() or evidence.name!=EID:
         raise ValueError('unexpected execution evidence')
     raw=read_safe(audit,reviews)

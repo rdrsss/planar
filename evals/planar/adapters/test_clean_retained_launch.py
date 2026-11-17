@@ -1,4 +1,5 @@
 import hashlib
+import os
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -14,15 +15,17 @@ class Admission(unittest.TestCase):
         case=root/'case';case.mkdir(); jobs=root/'jobs';jobs.mkdir(); packet=root/'packet';packet.mkdir(); review=root/'review.json'
         policy={'execution':'source','assessor_image':'source-image','worker_role_delivery':'unverified','source_semantics':'packet-read-causal-write-completion-only','files':{'evidence/semantic-audit.md':{'sha256':'audit'},'evidence/offline-regrade.json':{'sha256':'regrade'}}}; (case/'source-policy.json').write_text(json.dumps(policy))
         effective=launch.config_for(eid,jobs/eid,case,'medium'); digest=hashlib.sha256(json.dumps(effective,sort_keys=True,separators=(',',':')).encode()).hexdigest()
-        snapshot={'implementation_sha256':'impl','candidate_sha256':'candidate','configuration_sha256':'config','case_sha256':'case','image_id':image,'prerequisites':{'effective_configuration_sha256':digest,'source_packet_sha256':'packet','source_packet_root':str(packet),'source_account_scope_id':str(root/'original/planar-account-admission-v1')}}
+        with patch.dict(os.environ,{'PLANAR_EVALS_OUTPUT_ROOT':str(root)}): ctx=launch.context()
+        snapshot={'implementation_sha256':'impl','candidate_sha256':'candidate','configuration_sha256':'config','case_sha256':'case','image_id':image,'prerequisites':{'effective_configuration_sha256':digest,'source_packet_sha256':'packet','source_packet_root':str(packet),'source_account_scope_id':str(root/'original/planar-account-admission-v1'),'selection_context':ctx.identity()}}
         expiry='2100-01-01T00:00:00+00:00'; gate={'verdict':'approve','purpose':'one-diagnostic-attempt','case':'clean-retained-a-continuation','max_attempts':1,'execution_id':eid,'absolute_deadline':expiry,'candidate_sha256':'candidate','case_sha256':'case','implementation_sha256':'impl','configuration_sha256':'config','effective_configuration_sha256':digest,'source_packet_sha256':'packet','source_packet_root':str(packet),'source_account_scope_id':snapshot['prerequisites']['source_account_scope_id'],'source_execution_id':'source','source_online_status':'behavioral_failure','source_online_reward':0,'source_assessor_image':'source-image','source_assessment_sha256':'regrade','source_semantic_audit_sha256':'audit','worker_role_delivery':'unverified','source_semantics':'packet-read-causal-write-completion-only','handoff':'no-fault','model_name':'gpt-6.1-terra','reasoning_effort':'medium','image_id':image,'verifier_image_id':image,'account_scope_id':str(records.parent),'runtime_budget_seconds':1050,'step_agent_seconds':400,'step_verifier_seconds':60,'cleanup_grace_seconds':15,'result_boundary':'incomplete-pending-independent-bound-raw-audit','auth_path':str(root/'missing-auth')}
+        gate['selection_context']=ctx.identity()
         review.write_text(json.dumps(gate)); task=SimpleNamespace(config=SimpleNamespace(environment=SimpleNamespace(docker_image=image),verifier=SimpleNamespace(environment=SimpleNamespace(docker_image=image))))
-        return eid,image,records,case,jobs,packet,review,snapshot,gate,task
+        return eid,image,records,case,jobs,packet,review,snapshot,gate,task,ctx
 
     def run_admission(self,root,fixture):
-        eid,image,records,case,jobs,packet,review,snapshot,gate,task=fixture
+        eid,image,records,case,jobs,packet,review,snapshot,gate,task,ctx=fixture
         account=SimpleNamespace(check=lambda *args:None)
-        with patch.object(launch,'plan',return_value=snapshot),patch.object(launch,'reviews_root',return_value=root),patch.object(launch,'jobs_root',return_value=jobs),patch.object(launch,'Task',return_value=task),patch.object(launch.shutil,'which',return_value='/usr/bin/docker'),patch.object(launch.subprocess,'run',return_value=SimpleNamespace(returncode=0,stdout=image+'\n')),patch('clean_revision_support.load_case_module',return_value=account),patch('retained_b_support.source',return_value={'source_packet_sha256':'packet'}):
+        with patch.object(launch,'context',return_value=ctx),patch.object(launch,'plan',return_value=snapshot),patch.object(launch,'reviews_root',return_value=root),patch.object(launch,'jobs_root',return_value=jobs),patch.object(launch,'Task',return_value=task),patch.object(launch.shutil,'which',return_value='/usr/bin/docker'),patch.object(launch.subprocess,'run',return_value=SimpleNamespace(returncode=0,stdout=image+'\n')),patch('clean_revision_support.load_case_module',return_value=account),patch('retained_b_support.source',return_value={'source_packet_sha256':'packet'}):
             return launch._execute_inner(root/'missing-auth',review,'clean-retained-a-continuation',case_root=case,candidate_root=root,source_packet=packet,trial_deadline=1050,absolute_deadline=gate['absolute_deadline'],execution_id=eid,_retained_records=records)
 
     def test_consumes_exact_gate_before_auth(self):

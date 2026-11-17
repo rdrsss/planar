@@ -1,6 +1,7 @@
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -71,7 +72,8 @@ class Publication(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             root=Path(tmp).resolve(); jobs=root/'jobs';jobs.mkdir(); doc=document(root); eid=doc['execution_id']; evidence=jobs/eid;evidence.mkdir(); review=root/'review.json';review.write_text(json.dumps(doc))
             census={'execution_id':eid,'native_group':'absent','matching_commands':0,'unresolved':0}
-            with patch.object(release.launch,'reviews_root',return_value=root),patch.object(release.launch,'jobs_root',return_value=jobs), \
+            with patch.dict(os.environ,{'PLANAR_EVALS_OUTPUT_ROOT':str(root)}): selected_context=release.launch.context()
+            with patch.object(release.launch,'context',return_value=selected_context),patch.object(release.launch,'reviews_root',return_value=root),patch.object(release.launch,'jobs_root',return_value=jobs), \
                  patch.object(release,'verify',return_value={'trial_name':'trial','trial':{}}),patch.object(release,'live_check',return_value=census), \
                  patch.object(release,'resolver_identity',return_value={'commit':doc['resolver_commit'],'implementation_sha256':doc['resolver_implementation_sha256']}):
                 with codex_run.admission_scope() as records: (records/(eid+'.start.json')).write_text(json.dumps({'case':'clean-retained-a-continuation','execution_id':eid}))
@@ -100,7 +102,7 @@ class Publication(unittest.TestCase):
             put(evidence/'retained-admission.json',{'gate_path':str(gate)});put(evidence/'verifier-network.json',{'execution_id':eid,'container_id':'a'*12,'network_mode':'none','image_id':'image'})
             seen=[]
             def run(args,**kw): seen.append(args[-1]); return SimpleNamespace(returncode=0,stdout='')
-            with patch.object(release.launch,'PROJECT',project),patch.object(release.os,'killpg',side_effect=ProcessLookupError),patch.object(retained_b_census,'check',return_value={'matching_commands':0,'unresolved':0}):
+            with patch.object(release.launch,'project_dir',return_value=project),patch.object(release.os,'killpg',side_effect=ProcessLookupError),patch.object(retained_b_census,'check',return_value={'matching_commands':0,'unresolved':0}):
                 result=release.live_check(evidence,trial_name,{'step_results':None},run=run); self.assertEqual(set(result['queried_projects']),names);self.assertEqual(len(seen),6)
                 (evidence/'planar-terminal.json').write_text(json.dumps({'execution_id':eid,'status':'shell_completed','return_code':False}))
                 with self.assertRaises(ValueError): release.live_check(evidence,trial_name,{},run=run)
@@ -128,7 +130,7 @@ class StaticBindings(unittest.TestCase):
                   'source_packet_sha256':doc['source_packet_sha256'],'worker_role_delivery':'unverified','source_semantics':'packet-read-causal-write-completion-only',
                   'source_online_status':'behavioral_failure','source_online_reward':0,'handoff':'no-fault','account_scope_id':str(records.parent)}
             raw=json.dumps(gate).encode();gate_path.write_bytes(raw);doc['gate_sha256']=release.digest(raw); start.write_text(json.dumps({'execution_id':eid,'case':'clean-retained-a-continuation','gate_sha256':doc['gate_sha256'],'gate_authority':gate,'status':'awaiting-independent-bound-raw-audit'}));doc['start_sha256']=release.digest(start.read_bytes())
-            with patch.object(release.launch,'PROJECT',project),patch.object(release.launch,'reviews_root',return_value=reviews),patch.object(release.launch,'jobs_root',return_value=jobs):
+            with patch.object(release.launch,'project_dir',return_value=project),patch.object(release.launch,'reviews_root',return_value=reviews),patch.object(release.launch,'jobs_root',return_value=jobs):
                 for key in ('case_sha256','source_packet_sha256','execution_id','gate_sha256','start_sha256'):
                     changed=copy.deepcopy(doc);changed[key]='bad'
                     with self.subTest(key=key),self.assertRaises(ValueError): release.verify(changed,evidence,start)
@@ -140,7 +142,8 @@ class StaticBindings(unittest.TestCase):
             def swapped(*args):
                 review.write_bytes(review.read_bytes()+b' ')
                 return {'execution_id':eid,'native_group':'absent','matching_commands':0,'unresolved':0}
-            with patch.object(release.launch,'reviews_root',return_value=root),patch.object(release.launch,'jobs_root',return_value=jobs),patch.object(release,'verify',return_value={'trial_name':'trial','trial':{}}),patch.object(release,'live_check',side_effect=swapped),patch.object(release,'resolver_identity',return_value={'commit':doc['resolver_commit'],'implementation_sha256':doc['resolver_implementation_sha256']}):
+            with patch.dict(os.environ,{'PLANAR_EVALS_OUTPUT_ROOT':str(root)}): selected_context=release.launch.context()
+            with patch.object(release.launch,'context',return_value=selected_context),patch.object(release.launch,'reviews_root',return_value=root),patch.object(release.launch,'jobs_root',return_value=jobs),patch.object(release,'verify',return_value={'trial_name':'trial','trial':{}}),patch.object(release,'live_check',side_effect=swapped),patch.object(release,'resolver_identity',return_value={'commit':doc['resolver_commit'],'implementation_sha256':doc['resolver_implementation_sha256']}):
                 with codex_run.admission_scope() as records: (records/(eid+'.start.json')).write_text(json.dumps({'case':'clean-retained-a-continuation','execution_id':eid}))
                 with self.assertRaisesRegex(ValueError,'review bytes changed'): release.publish(evidence,review)
                 self.assertFalse((records/(eid+'.resolved.json')).exists())
@@ -209,12 +212,14 @@ class Reconciliation(unittest.TestCase):
                 elif len(args)==3 and args[1]=='show': value=b'reviewed source'
                 else: raise AssertionError(args)
                 return SimpleNamespace(stdout=value)
-            with patch.object(release.launch,'reviews_root',return_value=root),patch.object(release.launch,'jobs_root',return_value=jobs), \
+            with patch.dict(os.environ,{'PLANAR_EVALS_OUTPUT_ROOT':str(root)}): selected_context=release.launch.context()
+            with patch.object(release.launch,'context',return_value=selected_context),patch.object(release.launch,'reviews_root',return_value=root),patch.object(release.launch,'jobs_root',return_value=jobs), \
                  patch.object(release,'verify',return_value={'trial_name':'trial','trial':{}}),patch.object(release,'live_check',return_value=census), \
                  patch.object(release,'resolver_identity',return_value=identity),patch.object(release.subprocess,'run',side_effect=git), \
                  patch.object(release,'_DRIFT_EID',eid),patch.object(release,'_DRIFT_REVIEW',review_hash), \
                  patch.object(release,'_DRIFT_OLD',doc['resolver_commit']),patch.object(release,'_DRIFT_OLD_IMPL',doc['resolver_implementation_sha256']):
                 with codex_run.admission_scope() as records:
+                    self.assertEqual(records,root/'planar-account-admission-v1'/'records')
                     start=records/(eid+'.start.json'); start.write_text(json.dumps({'case':'clean-retained-a-continuation','execution_id':eid}))
                     census_path=records/(eid+'.retained-clean-census-'+census_hash+'.json'); census_path.write_bytes(release.canonical(census)+b'\n')
                     marker={'schema':'planar-retained-clean-account-marker-v1','type':'retained-clean-account-v1','execution_id':eid,'review_path':str(review),'review_sha256':review_hash,'census_path':str(census_path),'census_sha256':census_hash,'review_binding':doc}

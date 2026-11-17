@@ -78,7 +78,7 @@ def live_check(evidence,trial_name):
 
 def validate_published(start,marker_path,marker):
     try:
-        scope=Path(start).parent.parent.parent; reviews=(launch.PROJECT/'reviews').resolve(strict=True)
+        scope=Path(start).parent.parent.parent; reviews=(launch.project_dir()/'reviews').resolve(strict=True)
         expected={'schema','type','execution_id','job_id','trial_id','gate_sha256','source_packet_sha256','case_sha256','candidate_sha256','configuration_sha256','effective_configuration_sha256','historical_implementation_sha256','resolver_commit','resolver_implementation_sha256','authority_sha256','status_sha256','reward_sha256','exception_sha256','review_path','review_sha256','census_path','census_sha256','observed_status','observed_reason','observed_reward'}
         if not isinstance(marker,dict) or set(marker)!=expected or marker['schema']!='planar-terminal-failure-marker-v1' or marker['type']!='terminal-failure-v1': return False
         if type(marker['observed_reward']) is not int or marker['observed_reward']!=0 or marker['observed_status']!='incomplete' or marker['observed_reason']!='unsafe packet root': return False
@@ -110,7 +110,7 @@ def verify_evidence(doc,evidence,start):
     from harbor.models.job.config import JobConfig
     from candidate import inventory
     from retained_b_support import source
-    reviews=(launch.PROJECT/'reviews').resolve(strict=True); scope=launch.reviews_root().resolve(strict=True)
+    reviews=(launch.project_dir()/'reviews').resolve(strict=True); scope=launch.reviews_root().resolve(strict=True)
     evidence=Path(evidence)
     if (evidence.is_symlink() or evidence.resolve(strict=True).parent!=launch.jobs_root().resolve()
         or evidence.name!=doc['execution_id'] or not re.fullmatch(r'planar-t044-[0-9a-f]{32}',evidence.name)):
@@ -187,7 +187,7 @@ def publish(evidence,review):
     try:
         import codex_run
         from retained_b_early_release import resolver_identity
-        reviews=(launch.PROJECT/'reviews').resolve(strict=True); scope=launch.reviews_root().resolve(strict=True)
+        reviews=(launch.project_dir()/'reviews').resolve(strict=True); scope=launch.reviews_root().resolve(strict=True)
         evidence=Path(evidence); review=Path(review)
         if review.resolve(strict=True).is_relative_to(launch.jobs_root().resolve()): raise ValueError('review inside job evidence')
         area=scope/'planar-account-admission-v1'

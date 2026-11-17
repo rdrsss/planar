@@ -28,6 +28,12 @@ and session-audit matrices, and Claude/cross-vendor runtime proof remain open.
 Fresh cases and runtime integrations under development are not authorized by
 this inventory.
 
+`make evals-test` runs portable synthetic controls with a disposable project;
+it reports the retained checks selected separately. Run
+`make evals-evidence-test EVALS_PROJECT_DIR="/path/to/selected/project"` for
+the 24 read-only retained-evidence checks. Missing retained inputs fail that
+target. The portable suite cannot establish original trace or gate integrity.
+
 ## Historical smoke evidence
 
 The diagnostic is one Harbor 0.26.0 Docker job using Codex CLI 0.169.0, one
@@ -161,7 +167,8 @@ this case without authentication or model work, use reviewed snapshots with the
 direct launcher:
 
 ```sh
-PLANAR_EVALS_OUTPUT_ROOT="$PWD/evals/results" \
+PLANAR_EVALS_PROJECT_DIR="/path/to/selected/project" \
+PLANAR_EVALS_OUTPUT_ROOT="/path/to/owned/output" \
   uv run --project evals --locked python evals/planar/adapters/launch.py \
   --case clean-revision --trial-deadline 1050 \
   --snapshot-candidate /path/to/frozen/plugins/planar \

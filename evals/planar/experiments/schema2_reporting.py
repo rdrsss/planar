@@ -19,8 +19,9 @@ def report(root, identity):
     runnable = manifest.get('runnable_contract') is not None
     if runnable:
         import schema2_runnable
-        if manifest['runnable_contract'] != schema2_runnable.CONTRACT: raise schema2.Invalid('unknown runnable contract')
+        if manifest['runnable_contract'] not in (schema2_runnable.CONTRACT,schema2_runnable.LEGACY_CONTRACT): raise schema2.Invalid('unknown runnable contract')
         schema2_runnable.closed(manifest,schema2_runnable.MANIFEST_FIELDS)
+        if manifest['runnable_contract'] == schema2_runnable.CONTRACT: schema2_runnable.validate_context(manifest)
     trials = {t['logical_id']: {**t, 'attempts': []} for t in manifest['trials']}
     for path in sorted((root/'reservations').iterdir()):
         if path.suffix != '.json' or path.is_symlink() or not path.is_file():
@@ -37,6 +38,9 @@ def report(root, identity):
             'implementation_sha256':manifest['implementation_sha256'], 'account_scope_id':manifest['configuration']['account_scope_id'],
             'canonical_output_root':manifest['configuration']['canonical_output_root'], 'schema_version':2, 'state':'planned'}
         allowed = RESERVATION_FIELDS | ({'runnable_contract','concrete_binding'} if runnable else set())
+        if runnable and manifest['runnable_contract']==schema2_runnable.CONTRACT:
+            allowed |= schema2_runnable.CONTEXT_FIELDS
+            expected.update({'selection_context_sha256':manifest['configuration']['selection_context_sha256'],'selection_source':manifest['configuration']['selection_context']['selection_source']})
         if set(r) != allowed or type(r['schema_version']) is not int or type(r['repetition']) is not int or any(r[k] != v for k,v in expected.items()):
             raise schema2.Invalid(f'reservation contradicts frozen experiment: {path.name}')
         if runnable:
@@ -46,7 +50,7 @@ def report(root, identity):
             import schema2_projection
             from harbor.models.job.config import JobConfig
             from harbor.models.task.task import Task
-            if r['runnable_contract'] != schema2_runnable.CONTRACT: raise schema2.Invalid('reservation contract mismatch')
+            if r['runnable_contract'] != manifest['runnable_contract']: raise schema2.Invalid('reservation contract mismatch')
             policy=manifest['configuration']['config']['native_config']; schema2_runnable.closed(policy,schema2_runnable.POLICY_FIELDS)
             binding=r['concrete_binding']; schema2_runnable.closed(binding,schema2_runnable.BINDING_FIELDS)
             paths=binding['path_bindings']; schema2_runnable.closed(paths,schema2_runnable.PATHS)
@@ -130,7 +134,8 @@ def report(root, identity):
                             if receipt['status']!='incomplete' or attempt['native_start_record_present_unverified']: raise ValueError('invalid pre-dispatch receipt')
                             attempt['started']=False
                         records=Path(manifest['configuration']['account_scope_id'])/'records'
-                        shared={'experiment':str(root.resolve()),'execution_id':eid,'runnable_contract':'planar-schema2-runnable-v1','reservation_sha256':schema2.h(path.read_bytes()),'gate_marker_sha256':marker_hash,'gate_raw_sha256':schema2.h(gate.read_bytes())}
+                        shared={'experiment':str(root.resolve()),'execution_id':eid,'runnable_contract':r['runnable_contract'],'reservation_sha256':schema2.h(path.read_bytes()),'gate_marker_sha256':marker_hash,'gate_raw_sha256':schema2.h(gate.read_bytes())}
+                        if r['runnable_contract']==schema2_runnable.CONTRACT: shared.update({k:r[k] for k in schema2_runnable.CONTEXT_FIELDS})
                         if records.is_symlink() or schema2.read_record(records/f'{eid}.start.json')!=shared: raise ValueError('shared admission mismatch')
                         if not receipt['stop_account']:
                             closed=records/f'{eid}.closed.json'
