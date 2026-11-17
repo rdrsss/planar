@@ -50,7 +50,11 @@ def shared_pending(records):
         resolved=start.with_name(start.name.replace('.start.json','.resolved.json'))
         try:
             data=json.loads(start.read_text())
-            if data.get('case') == 'clean-work-review': return False  # no reviewed release contract yet
+            if data.get('case') == 'clean-work-review':
+                if _ACTIVE_ADMISSION.get()!=records.resolve() or closed.exists() or closed.is_symlink() or resolved.is_symlink() or not resolved.is_file(): return False
+                from clean_work_release import validate_published
+                release=json.loads(resolved.read_text(),object_pairs_hook=__import__('terminal_failure_schema').unique)
+                return validate_published(start,resolved,release)
             if data.get('case') != 'retained-a-fresh-b': return closed.exists() or resolved.exists()
             if closed.exists() or closed.is_symlink() or resolved.is_symlink() or not resolved.is_file(): return False
             import retained_b_release_schema

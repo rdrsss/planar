@@ -27,13 +27,21 @@ GATE_SHA='8a7d024b4f8ec14983f700e352deeddfeeb9209fb28a4d9545fd6336132afe86'
 SNAPSHOT_SHA={'restored-pre':'5f0c625c9d861508bfd44f504e442f1083badf99bd10fb216fd36d846664b3fb','post':'16636a725be887664e74eb04053d12612c4f91c937ff6a3172fef4797eabc821','final':'16636a725be887664e74eb04053d12612c4f91c937ff6a3172fef4797eabc821'}
 
 
-def read_safe(path, root, limit=4*1024*1024):
+def safe_path(path, root):
     path,root=Path(path),Path(root).resolve(strict=True)
-    if not path.is_absolute() or not path.is_relative_to(root): raise ValueError('evidence path outside root')
+    if not path.is_absolute() or '..' in path.parts or not path.is_relative_to(root):
+        raise ValueError('evidence path outside root')
     part=root
     for name in path.relative_to(root).parts:
         part=part/name
         if part.is_symlink(): raise ValueError('evidence path link')
+    resolved=path.resolve(strict=True)
+    if resolved != path or not resolved.is_relative_to(root): raise ValueError('evidence path outside root')
+    return resolved
+
+
+def read_safe(path, root, limit=4*1024*1024):
+    path=safe_path(path,root)
     info=path.lstat()
     if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1 or info.st_size>limit: raise ValueError('unsafe evidence file')
     fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)

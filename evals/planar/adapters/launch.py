@@ -97,7 +97,9 @@ def plan(case_name='plugin-smoke', *, candidate_root=None, case_root=None, trial
     if not retained and source_packet is not None: raise ValueError('source packet is retained-case only')
     if retained and (trial_deadline != 1050 or effort != 'medium' or not candidate_root or not case_root or not source_packet or not execution_id or not re.fullmatch(r'planar-t044-[0-9a-f]{32}',execution_id)):
         raise ValueError('retained case requires frozen inputs, reserved execution and fixed budgets')
-    if retained:
+    if case_name == 'clean-work-review' and (not execution_id or not re.fullmatch(r'planar-t044-[0-9a-f]{32}', execution_id)):
+        raise ValueError('clean-work case requires reserved execution ID')
+    if retained or case_name == 'clean-work-review':
         try:
             expiry=datetime.fromisoformat(absolute_deadline)
             if expiry.tzinfo is None or expiry <= datetime.now(timezone.utc): raise ValueError()
@@ -194,6 +196,9 @@ def plan(case_name='plugin-smoke', *, candidate_root=None, case_root=None, trial
         validate_recovery_selection((case/'instruction.md').read_text(),config['agents'][0]['model_name'],config['agents'][0]['kwargs']['reasoning_effort'])
         effective=config_for(execution_id,jobs_root()/execution_id,case,effort)
         effective_hash=hashlib.sha256(json.dumps(effective,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+    if case_name == 'clean-work-review':
+        effective=config_for(execution_id,jobs_root()/execution_id,case,effort)
+        effective_hash=hashlib.sha256(json.dumps(effective,sort_keys=True,separators=(',',':')).encode()).hexdigest()
     prerequisites = {'cwd': str(Path.cwd().resolve()), 'repository_root': str(ROOT),
         'package_read_root': str(candidate), 'case_read_root': str(case),
         'project_root': str(PROJECT), 'evidence_write_root': str(jobs_root()),
@@ -216,7 +221,11 @@ def plan(case_name='plugin-smoke', *, candidate_root=None, case_root=None, trial
         prerequisites['execution_gate'] = 'requires independent review, matching expiry and one-use gate before authentication'
         prerequisites['budgets_seconds']['step_agent'] = [400,400]
         prerequisites['fixture'] = ('clean projected fixture with no state fault' if case_name=='clean-work-review' else 'clean projected fixture and host-owned controlled state fault')
-        if case_name=='clean-work-review': prerequisites['account_scope_id']=str(reviews_root().resolve()/'planar-account-admission-v1')
+        if case_name=='clean-work-review':
+            prerequisites['account_scope_id']=str(reviews_root().resolve()/'planar-account-admission-v1')
+            prerequisites['reserved_execution_id']=execution_id
+            prerequisites['absolute_deadline']=absolute_deadline
+            prerequisites['effective_configuration_sha256']=effective_hash
     if case_name == 'fresh-interrupted-review':
         prerequisites['execution_gate'] = 'requires independent review and matching one-use gate before execution'
         prerequisites['fixture'] = 'portable source-derived fixture; applicability requires independent review'
@@ -309,14 +318,18 @@ def _execute_inner(auth_path, review_path, case_name='plugin-smoke', *, candidat
     if not review.is_relative_to(reviews_root().resolve()):
         raise ValueError('review evidence must reside under the project reviews directory')
     gate_bytes = review.read_bytes()
-    gate = json.loads(gate_bytes)
+    if clean_work:
+        from terminal_failure_schema import unique
+        gate = json.loads(gate_bytes, object_pairs_hook=unique)
+    else:
+        gate = json.loads(gate_bytes)
     gate_hash = hashlib.sha256(gate_bytes).hexdigest()
     required = {'verdict': 'approve', 'purpose': 'one-diagnostic-attempt', 'max_attempts': 1,
                 'implementation_sha256': snapshot['implementation_sha256'],
                 'candidate_sha256': snapshot['candidate_sha256'],
                 'configuration_sha256': snapshot['configuration_sha256'], 'case': case_name,
                 'case_sha256': snapshot['case_sha256'], 'image_id': snapshot['image_id']}
-    if not portable and any(gate.get(key) != value for key, value in required.items()):
+    if not portable and any(gate.get(key) != value or (clean_work and type(gate.get(key)) is not type(value)) for key, value in required.items()):
         raise ValueError('diagnostic review is missing, stale, or not approved')
     if case_name in ('clean-revision','clean-work-review'):
         if not absolute_deadline or gate.get('absolute_deadline') != absolute_deadline:
@@ -328,7 +341,15 @@ def _execute_inner(auth_path, review_path, case_name='plugin-smoke', *, candidat
         except (TypeError, ValueError):
             raise ValueError('clean revision gate expiry is invalid or expired') from None
     if clean_work:
+        if gate.get('model_name')!='gpt-6.1-terra' or gate.get('reasoning_effort')!='medium': raise ValueError('clean-work gate model selection mismatch')
         if not execution_id or gate.get('execution_id')!=execution_id or gate.get('account_scope_id')!=str(_retained_records.parent): raise ValueError('clean-work gate identity or account scope mismatch')
+        if gate.get('effective_configuration_sha256') != snapshot['prerequisites']['effective_configuration_sha256']:
+            raise ValueError('clean-work effective JobConfig mismatch')
+        effective=config_for(execution_id,jobs_root()/execution_id,case,effort)
+        actual_hash=hashlib.sha256(json.dumps(effective,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+        if actual_hash != gate['effective_configuration_sha256']:
+            raise ValueError('clean-work effective JobConfig drift')
+        planned_config=effective
         if (datetime.fromisoformat(absolute_deadline)-datetime.now(timezone.utc)).total_seconds()<1050: raise ValueError('clean-work gate lacks whole-job budget')
     image_id = reservation['image_id'] if portable else gate.get('image_id')
     if not isinstance(image_id, str) or len(image_id) != 71 or not image_id.startswith('sha256:') or image_id != Task(case).config.environment.docker_image:
@@ -393,7 +414,7 @@ def _execute_inner(auth_path, review_path, case_name='plugin-smoke', *, candidat
             marker=_retained_records/(execution_id+'.start.json')
             fd=os.open(marker,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
             with os.fdopen(fd,'w') as output:
-                json.dump({'execution_id':execution_id,'case':case_name,'gate_sha256':gate_hash,'status':'awaiting-independent-bound-raw-audit'},output,sort_keys=True); output.write('\n'); output.flush(); os.fsync(output.fileno())
+                json.dump({'execution_id':execution_id,'case':case_name,'gate_sha256':gate_hash,'gate_path':str(review),'gate_authority':gate,'status':'awaiting-independent-bound-raw-audit'},output,sort_keys=True); output.write('\n'); output.flush(); os.fsync(output.fileno())
             directory=os.open(_retained_records,os.O_RDONLY|os.O_DIRECTORY)
             try: os.fsync(directory)
             finally: os.close(directory)
@@ -418,7 +439,7 @@ def _execute_inner(auth_path, review_path, case_name='plugin-smoke', *, candidat
     run_id = execution_id or 'planar-t044-' + uuid.uuid4().hex
     evidence = jobs_root() / run_id
     evidence.mkdir(parents=True, exist_ok=False, mode=0o700)
-    job_config = planned_config if (portable or retained) else config_for(run_id, evidence, case, effort)
+    job_config = planned_config if (portable or retained or clean_work) else config_for(run_id, evidence, case, effort)
     if portable:
         # Revalidate the gate and compare the actual concrete object after all
         # launcher mutations before passing it to native_job.

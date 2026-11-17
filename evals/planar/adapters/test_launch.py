@@ -128,7 +128,7 @@ class LaunchControls(unittest.TestCase):
             with self.subTest(case=name):
                 if name == 'retained-a-fresh-b': continue  # Reserved-ID/source binding is covered by test_retained_b_plan.
                 self.case_name = name
-                planned = (launch.plan(name, candidate_root=launch.CANDIDATE, case_root=case, trial_deadline=1050) if name in ('clean-revision','clean-work-review') else launch.plan(name))['configuration']
+                planned = (launch.plan(name, candidate_root=launch.CANDIDATE, case_root=case, trial_deadline=1050, **({'execution_id':'planar-t044-'+'1'*32, 'absolute_deadline':'2100-01-01T00:00:00+00:00'} if name == 'clean-work-review' else {})) if name in ('clean-revision','clean-work-review') else launch.plan(name))['configuration']
                 actual = launch.config_for('actual-run', Path('/tmp/actual-run'), case)
                 for key in ('job_name', 'jobs_dir'):
                     planned.pop(key); actual.pop(key)
