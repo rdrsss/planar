@@ -44,7 +44,7 @@ async def main(output,packet,candidate):
     jobs=output/'jobs'; jobs.mkdir(); evidence=jobs/('planar-t044-'+uuid.uuid4().hex); evidence.mkdir(mode=0o700)
     source_hash=source(case,packet,candidate)['source_packet_sha256']; deadline=(datetime.now(timezone.utc)+timedelta(hours=1)).isoformat()
     image=json.loads((case/'source-policy.json').read_text())['assessor_image']
-    verifier='sha256:57327fb9cea7c3349f859e28e3d3924129133d8672f30edf880eb7c039dfbbc7'
+    verifier='sha256:dfb35074f960ff34dfa1c1181079ad034df08ae2c8adc04871824ce0d249eb82'
     os.environ.update({'PLANAR_EVALS_OUTPUT_ROOT':str(output),'PLANAR_T044_EVIDENCE_DIR':str(evidence),'PLANAR_T044_CASE':'clean-retained-a-continuation',
         'PLANAR_T044_CASE_SNAPSHOT':str(case),'PLANAR_T044_CANDIDATE_SNAPSHOT':str(candidate),'PLANAR_T045_SOURCE_PACKET':str(packet),
         'PLANAR_T045_SOURCE_SHA256':source_hash,'PLANAR_T045_NOAUTH_CONTROL':'1','PLANAR_T044_ABSOLUTE_DEADLINE':deadline,
