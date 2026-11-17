@@ -56,6 +56,7 @@ def assess_worker(files):
                 match = re.match(r'^\s*([A-Za-z][A-Za-z ]*):\s*(.*?)\s*$', part)
                 if not match: continue
                 key = match.group(1).lower()
+                if key == 'invocation id': key = 'invocation'
                 if key in ('task','attempt','step','role','invocation','parent','phase','packet','result','base'):
                     if key in fields: raise Contradiction('duplicate observation field')
                     fields[key] = match.group(2)
@@ -70,13 +71,18 @@ def assess_worker(files):
         raise Incomplete('packet driver observation link missing or ambiguous')
     driver, driver_file, _ = driver_links[0]
     fields = observation_fields(driver_file)
-    expected = {'task':'T-001', 'attempt':'1', 'step':'packet-rendered', 'invocation':driver,
+    expected = {'task':'T-001', 'attempt':'1', 'invocation':driver,
                 'packet':'worker-packet-1.md', 'result':'worker-packet-1.md', 'base':BASE}
     for key, value in expected.items():
         if key not in fields: raise Incomplete('packet driver observation field missing')
         if fields[key] != value: raise Contradiction('packet driver observation field mismatch')
-    if fields.get('role') not in ('driver', 'session driver') or fields.get('phase', '').split(',',1)[0].strip().lower() != 'started':
-        raise Contradiction('packet driver observation role or phase mismatch')
+    if fields.get('step', '').lower() not in ('packet-rendered', 'render worker packet'):
+        raise Incomplete('unsupported packet driver observation step')
+    if fields.get('role') not in ('driver', 'session driver'):
+        raise Contradiction('packet driver observation role mismatch')
+    driver_phase = fields.get('phase', '').split(',',1)[0].strip().lower()
+    if driver_phase not in ('start', 'started'):
+        raise Incomplete('unsupported packet driver observation phase')
     if packet_index >= rows.index(starts[0]): raise Contradiction('packet driver ordering')
     start_links = links(starts[0])
     if len(start_links) != 1 or start_links[0][2] != 1:
@@ -106,11 +112,13 @@ def assess_worker(files):
     parent = None; completion = []
     for index, filename, number in linked:
         fields = observation_fields(filename)
-        expected = {'task':'T-001', 'attempt':'1', 'step':'worker-done', 'role':'worker',
+        expected = {'task':'T-001', 'attempt':'1', 'role':'worker',
                     'invocation':invocation, 'packet':'worker-packet-1.md', 'base':BASE}
         for key, value in expected.items():
             if key not in fields: raise Incomplete('worker observation field missing')
             if fields[key] != value: raise Contradiction('worker observation field mismatch')
+        if fields.get('step', '').lower() not in ('worker-done', 'worker dispatch'):
+            raise Incomplete('unsupported worker observation step')
         if 'parent' not in fields or not fields['parent']: raise Incomplete('worker parent missing')
         if fields['parent'] != driver and not re.fullmatch(r'unavailable(?: \([^)]*\))?', fields['parent'], re.I):
             raise Contradiction('worker parent does not match packet driver')
@@ -124,12 +132,17 @@ def assess_worker(files):
             raise Contradiction('worker report digest mismatch')
         phase = fields.get('phase', '').split(',',1)[0].strip().lower()
         if number == 1:
-            if phase != 'started': raise Contradiction('worker start phase mismatch')
-        elif phase in ('completion', 'completed'):
+            if phase not in ('start', 'started'):
+                if phase in ('accepted', 'dispatch accepted', 'completion', 'completed', 'completed (child return)'):
+                    raise Contradiction('worker start phase mismatch')
+                raise Incomplete('unsupported worker observation phase')
+        elif phase in ('completion', 'completed', 'completed (child return)'):
             completion.append(filename)
-        elif phase != 'dispatch accepted':
-            raise Contradiction('worker observation phase mismatch')
+        elif phase not in ('accepted', 'dispatch accepted'):
+            if phase in ('start', 'started'): raise Contradiction('worker observation phase mismatch')
+            raise Incomplete('unsupported worker observation phase')
     if len(completion) != 1: raise Incomplete('worker completion observation missing or ambiguous')
+    if completion[0] != linked[-1][1]: raise Contradiction('worker completion observation ordering')
     evidence = re.findall(r'(?:^|;\s*)evidence=([^;\s]+)', done[0][5])
     if len(evidence) > 1 or (evidence and evidence[0] != completion[0]):
         raise Contradiction('worker completion evidence conflict')

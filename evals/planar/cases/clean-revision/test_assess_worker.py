@@ -40,9 +40,50 @@ def retained():
         files[TASK+path.name] = path.read_bytes()
     return files
 
+def retained_aliases():
+    files = retained()
+    driver = TASK+'session-I-001-1.md'
+    files[driver] = (files[driver].replace(b'step: packet-rendered', b'step: render worker packet')
+                     .replace(b'Invocation: I-001', b'Invocation ID: I-001')
+                     .replace(b'phase: started', b'phase: start'))
+    for number in (1, 2, 3):
+        key = TASK+f'session-I-002-{number}.md'
+        files[key] = (files[key].replace(b'step: worker-done', b'step: worker dispatch')
+                      .replace(b'invocation: I-002', b'Invocation ID: I-002' if number == 1 else b'invocation: I-002')
+                      .replace(b'phase: started', b'phase: start')
+                      .replace(b'phase: dispatch accepted', b'phase: accepted')
+                      .replace(b'phase: completed', b'phase: completed (child return)'))
+    return files
+
 class RetainedBoundaryTests(unittest.TestCase):
     def test_actual_record_and_observations(self):
         self.assertEqual(assess_worker(retained())['boundary'], 'worker-done')
+
+    def test_canonical_combined_aliases_and_duplicate_keys(self):
+        files = retained_aliases()
+        self.assertEqual(assess_worker(files)['boundary'], 'worker-done')
+        key = TASK+'session-I-002-1.md'
+        files[key] = files[key].replace(b'Invocation ID: I-002', b'Invocation ID: I-002; invocation: I-003')
+        with self.assertRaises(Contradiction): assess_worker(files)
+
+    def test_unknown_alias_is_incomplete(self):
+        for key, before, after in ((TASK+'session-I-001-1.md', b'step: render worker packet', b'step: unknown'),
+                                   (TASK+'session-I-002-2.md', b'phase: accepted', b'phase: unknown'),
+                                   (TASK+'session-I-002-3.md', b'phase: completed (child return)', b'phase: completed (other)'),
+                                   (TASK+'session-I-002-1.md', b'Invocation ID:', b'Identity:')):
+            files = retained_aliases(); files[key] = files[key].replace(before, after)
+            with self.subTest(key=key), self.assertRaises(Incomplete): assess_worker(files)
+
+    def test_annotated_completion_at_start_is_conflicting(self):
+        files = retained_aliases(); key = TASK+'session-I-002-1.md'
+        files[key] = files[key].replace(b'phase: start', b'phase: completed (child return)')
+        with self.assertRaises(Contradiction): assess_worker(files)
+
+    def test_acceptance_after_annotated_completion_conflicts(self):
+        files = retained_aliases(); accept = TASK+'session-I-002-2.md'; complete = TASK+'session-I-002-3.md'
+        files[accept] = files[accept].replace(b'phase: accepted', b'phase: completed (child return)')
+        files[complete] = files[complete].replace(b'phase: completed (child return)', b'phase: accepted')
+        with self.assertRaises(Contradiction): assess_worker(files)
 
     def test_missing_and_duplicate_links(self):
         for before, after in ((b'I-002: session-I-002-1.md', b'no-start-link'),

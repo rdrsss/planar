@@ -3,8 +3,8 @@ from pathlib import Path
 import subprocess
 import sys
 
-IMAGE = 'sha256:2e71e9516f89d29471438dbd7286932520364c47e5785553375f94303a27fdf2'
-ORACLE = 't045-a-linked-observations-v3'
+IMAGE = 'sha256:61d601922852f3e15221feb89be232185b758188c9b70f381bc2e5c9d0a03349'
+ORACLE = 't045-a-linked-observations-v5'
 
 def main():
     if len(sys.argv) != 2: raise SystemExit('usage: regrade_retained_a.py EVIDENCE_ROOT')
