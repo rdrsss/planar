@@ -10,6 +10,7 @@ def example():
     record = record.replace('state: review-packet-rendered', 'state: worker-done')+'\n'
     return {TASK+'record.md':record.encode(), TASK+'worker-report-1.md':b'# Work\n\nstatus: done\n',
             TASK+'worker-packet-1.md':b'packet',
+            TASK+'session-packet-1-1.md':(fixture/'tasks/T-001/session-packet-1-1.md').read_bytes(),
             TASK+'session-worker-1-1.md':(fixture/'tasks/T-001/session-worker-1-1.md').read_bytes(),
             TASK+'session-worker-1-2.md':(fixture/'tasks/T-001/session-worker-1-2.md').read_bytes(),
             'repository/RESULT.txt':b'2\n', 'repository/STATE.txt':b'correct\n',
@@ -29,6 +30,46 @@ class WorkerBoundaryTests(unittest.TestCase):
         files = example(); files[TASK+'record.md'] = files[TASK+'record.md'].replace(b'state: worker-done', b'state: worker-done\nstate: reviewed')
         with self.assertRaises(Contradiction): assess_worker(files)
         files = example(); files['home/projects/revision-fault/tasks.md'] = files['home/projects/revision-fault/tasks.md'].replace(b'- [ ] **T-001**',b'- [x] **T-001**')
+        with self.assertRaises(Contradiction): assess_worker(files)
+
+def retained():
+    files = example()
+    for name in list(files):
+        if name.startswith(TASK): del files[name]
+    for path in (CASE/'fixtures/retained-a').iterdir():
+        files[TASK+path.name] = path.read_bytes()
+    return files
+
+class RetainedBoundaryTests(unittest.TestCase):
+    def test_actual_record_and_observations(self):
+        self.assertEqual(assess_worker(retained())['boundary'], 'worker-done')
+
+    def test_missing_and_duplicate_links(self):
+        for before, after in ((b'I-002: session-I-002-1.md', b'no-start-link'),
+                              (b'I-002: session-I-002-3.md', b'no-completion-link'),
+                              (b'I-002: session-I-002-3.md', b'I-002: session-I-002-3.md; I-002: session-I-002-3.md')):
+            files = retained(); key = TASK+'record.md'; files[key] = files[key].replace(before, after)
+            with self.assertRaises((Incomplete, Contradiction)): assess_worker(files)
+
+    def test_orphan_acceptance_and_shared_wrong_parent(self):
+        files = retained(); key = TASK+'record.md'
+        files[key] = b'\n'.join(line for line in files[key].split(b'\n') if b'I-002: session-I-002-2.md' not in line)
+        with self.assertRaises((Incomplete, Contradiction)): assess_worker(files)
+        files = retained()
+        for number in (1, 2, 3):
+            key = TASK+f'session-I-002-{number}.md'
+            files[key] = files[key].replace(b'parent: I-001', b'parent: I-009')
+        with self.assertRaises(Contradiction): assess_worker(files)
+
+    def test_conflicting_observation_identity_and_result(self):
+        changes = [(b'Task: T-001', b'Task: T-002'), (b'attempt: 1', b'attempt: 2'),
+                   (b'role: worker', b'role: reviewer'), (b'invocation: I-002', b'invocation: I-003'),
+                   (b'parent: I-001', b'parent: I-009'), (b'worker-report-1.md, SHA-256', b'other.md, SHA-256'),
+                   (b'status: done', b'status: failed'), (b'phase: completed', b'phase: started')]
+        for before, after in changes:
+            files = retained(); key = TASK+'session-I-002-3.md'; files[key] = files[key].replace(before, after)
+            with self.subTest(change=before), self.assertRaises((Incomplete, Contradiction)): assess_worker(files)
+        files = retained(); key = TASK+'worker-report-1.md'; files[key] += b'mutated'
         with self.assertRaises(Contradiction): assess_worker(files)
 
 if __name__ == '__main__': unittest.main()

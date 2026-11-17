@@ -1,5 +1,6 @@
 """Structural first-step boundary only; host capture and audit are prerequisites."""
 import re
+import hashlib
 
 BASE = '08bacc341a31f32c14a1695b5b2de5c44b3a3e56'
 TASK = 'home/projects/revision-fault/tasks/T-001/'
@@ -20,7 +21,7 @@ def assess_worker(files):
     head = record[4:].split('\n---\n', 1)[0].splitlines()
     required = {'task':'T-001', 'state':'worker-done', 'attempt':'1', 'base':BASE, 'profile':'revision-fault', 'rung':'1'}
     for key, expected in required.items():
-        values = [line[len(key)+1:].strip() for line in head if line.startswith(key+':')]
+        values = [m.group(1).strip() for line in head if (m := re.fullmatch(re.escape(key)+r':\s*(.*)', line, re.I))]
         if not values: raise Incomplete('record field missing')
         if values != [expected]: raise Contradiction('record field mismatch')
     rows = [line.split(' | ') for line in record.split('\n## Log\n',1)[1].splitlines() if line.startswith('- ')]
@@ -38,18 +39,100 @@ def assess_worker(files):
         raise Contradiction('activity after worker completion')
     starts = [row for row in rows if row[1] == 'started' and row[3].startswith('worker ')]
     if len(starts) != 1: raise Incomplete('worker start missing or ambiguous')
-    found = re.findall(r'\binvocation ([A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*)', starts[0][5])
-    if len(found) != 1: raise Incomplete('worker invocation missing')
-    invocation = found[0]
-    first = f'session-{invocation}-1.md'
-    if first not in starts[0][5]: raise Incomplete('worker start observation link missing')
+    # Only the two documented result-field link forms are recognized.  The
+    # observation itself must agree; filenames alone are never proof.
+    link = re.compile(r'(?:\binvocation\s+([A-Za-z0-9_-]+)\s*;\s*|\b([A-Za-z0-9_-]+):\s*)(session-([A-Za-z0-9_-]+)-([1-9][0-9]*)\.md)')
+    def links(row):
+        result = []
+        for m in link.finditer(row[5]):
+            identity = m.group(1) or m.group(2)
+            if identity != m.group(4): raise Contradiction('observation link identity mismatch')
+            result.append((identity, m.group(3), int(m.group(5))))
+        return result
+    def observation_fields(filename):
+        fields = {}
+        for line in read(TASK+filename).splitlines():
+            for part in line.lstrip('- ').split(';'):
+                match = re.match(r'^\s*([A-Za-z][A-Za-z ]*):\s*(.*?)\s*$', part)
+                if not match: continue
+                key = match.group(1).lower()
+                if key in ('task','attempt','step','role','invocation','parent','phase','packet','result','base'):
+                    if key in fields: raise Contradiction('duplicate observation field')
+                    fields[key] = match.group(2)
+        return fields
+    packets = [row for row in rows if row[1] == 'packet-rendered']
+    if len(packets) != 1: raise Incomplete('packet rendering missing or ambiguous')
+    packet_index = rows.index(packets[0])
+    drivers = [row for row in rows[:packet_index] if row[1] == 'started' and not row[3].startswith('worker ')]
+    if len(drivers) != 1: raise Incomplete('packet driver start missing or ambiguous')
+    driver_links = links(drivers[0])
+    if len(driver_links) != 1 or driver_links[0][2] != 1:
+        raise Incomplete('packet driver observation link missing or ambiguous')
+    driver, driver_file, _ = driver_links[0]
+    fields = observation_fields(driver_file)
+    expected = {'task':'T-001', 'attempt':'1', 'step':'packet-rendered', 'invocation':driver,
+                'packet':'worker-packet-1.md', 'result':'worker-packet-1.md', 'base':BASE}
+    for key, value in expected.items():
+        if key not in fields: raise Incomplete('packet driver observation field missing')
+        if fields[key] != value: raise Contradiction('packet driver observation field mismatch')
+    if fields.get('role') not in ('driver', 'session driver') or fields.get('phase', '').split(',',1)[0].strip().lower() != 'started':
+        raise Contradiction('packet driver observation role or phase mismatch')
+    if packet_index >= rows.index(starts[0]): raise Contradiction('packet driver ordering')
+    start_links = links(starts[0])
+    if len(start_links) != 1 or start_links[0][2] != 1:
+        raise Incomplete('worker start observation link missing or ambiguous')
+    invocation, first, _ = start_links[0]
+    if rows.index(starts[0]) >= rows.index(done[0]): raise Contradiction('worker start ordering')
+    linked = [(rows.index(starts[0]), first, 1)]
+    for index, row in enumerate(rows):
+        if row[1] != 'session-observed': continue
+        for identity, filename, number in links(row):
+            if identity != invocation and row[3].startswith('worker '):
+                raise Contradiction('conflicting worker invocation link')
+            if identity == invocation:
+                if not rows.index(starts[0]) < index < rows.index(done[0]):
+                    raise Contradiction('worker observation ordering')
+                linked.append((index, filename, number))
+    if len({item[1] for item in linked}) != len(linked):
+        raise Contradiction('duplicate worker observation link')
+    numbers = [item[2] for item in linked]
+    if numbers != list(range(1, len(numbers)+1)):
+        raise Contradiction('worker observation sequence')
+    present = {name[len(TASK):] for name in files if re.fullmatch(re.escape(TASK)+'session-'+re.escape(invocation)+r'-[1-9][0-9]*\.md', name)}
+    if present != {item[1] for item in linked}:
+        raise Contradiction('unlinked worker observation')
+    report_bytes = files.get(TASK+'worker-report-1.md')
+    if not isinstance(report_bytes, bytes): raise Incomplete('missing worker report')
+    parent = None; completion = []
+    for index, filename, number in linked:
+        fields = observation_fields(filename)
+        expected = {'task':'T-001', 'attempt':'1', 'step':'worker-done', 'role':'worker',
+                    'invocation':invocation, 'packet':'worker-packet-1.md', 'base':BASE}
+        for key, value in expected.items():
+            if key not in fields: raise Incomplete('worker observation field missing')
+            if fields[key] != value: raise Contradiction('worker observation field mismatch')
+        if 'parent' not in fields or not fields['parent']: raise Incomplete('worker parent missing')
+        if fields['parent'] != driver and not re.fullmatch(r'unavailable(?: \([^)]*\))?', fields['parent'], re.I):
+            raise Contradiction('worker parent does not match packet driver')
+        if parent is None: parent = fields['parent']
+        elif parent != fields['parent']: raise Contradiction('worker parent mismatch')
+        if 'result' not in fields: raise Incomplete('worker result missing')
+        result = fields['result']
+        if not re.fullmatch(r'worker-report-1\.md(?:, SHA-256 [0-9a-f]{64}, status: done)?', result, re.I):
+            raise Contradiction('worker result mismatch')
+        if ',' in result and hashlib.sha256(report_bytes).hexdigest() not in result:
+            raise Contradiction('worker report digest mismatch')
+        phase = fields.get('phase', '').split(',',1)[0].strip().lower()
+        if number == 1:
+            if phase != 'started': raise Contradiction('worker start phase mismatch')
+        elif phase in ('completion', 'completed'):
+            completion.append(filename)
+        elif phase != 'dispatch accepted':
+            raise Contradiction('worker observation phase mismatch')
+    if len(completion) != 1: raise Incomplete('worker completion observation missing or ambiguous')
     evidence = re.findall(r'(?:^|;\s*)evidence=([^;\s]+)', done[0][5])
-    if len(evidence) != 1 or not re.fullmatch(r'session-'+re.escape(invocation)+r'-(?:[2-9]|[1-9][0-9]+)\.md', evidence[0]):
-        raise Incomplete('worker completion observation link missing')
-    for filename, phase in ((first, 'started'), (evidence[0], 'completion')):
-        observation = read(TASK+filename)
-        for field in (f'invocation: {invocation}', 'task: T-001', 'attempt: 1', 'worker-packet-1.md', 'worker-report-1.md', f'phase: {phase}'):
-            if field not in observation: raise Incomplete('worker observation incomplete')
+    if len(evidence) > 1 or (evidence and evidence[0] != completion[0]):
+        raise Contradiction('worker completion evidence conflict')
     read(TASK+'worker-packet-1.md')
     report = read(TASK+'worker-report-1.md')
     if report.splitlines()[-1:] != ['status: done']: raise Incomplete('worker report incomplete')
