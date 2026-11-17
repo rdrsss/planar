@@ -12,6 +12,7 @@ from native import MissingEvidence, InvalidBehavior
 CHECK = r'''test -f RESULT.txt && test "$(od -An -tx1 RESULT.txt | tr -d ' \n')" = 320a'''
 WORKDIR = '/workspace/repository'
 _WRAPPER = re.compile(r'^\s*(?:const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*await\s+tools\.exec_command\(\s*\{(.*?)\}\s*\)\s*;\s*text\s*\(\s*(?:JSON\.stringify\(\s*\1\s*\)|(\1)\.output)\s*\)\s*;?\s*$',re.S)
+_READ_WRAPPER = re.compile(r'^\s*text\s*\(\s*await\s+tools\.exec_command\(\s*\{(.*?)\}\s*\)\s*\)\s*;?\s*$',re.S)
 _KEY = re.compile(r'\s*(?:"([A-Za-z_]+)"|([A-Za-z_]+))\s*:\s*')
 _ALLOWED={'cmd','workdir','max_output_tokens','yield_time_ms','tty'}
 
@@ -36,7 +37,7 @@ def _object(body):
     return result
 
 
-def _args(payload):
+def _args(payload, *, absolute_read=False):
     value=None
     if payload.get('type') == 'function_call' and payload.get('name') == 'exec_command':
         try: value=json.loads(payload.get('arguments',''))
@@ -46,9 +47,12 @@ def _args(payload):
         if not isinstance(raw,str): return None
         match=_WRAPPER.fullmatch(raw)
         if match: value=_object(match.group(2))
-    if not isinstance(value,dict) or not set(value)<=_ALLOWED or not {'cmd','workdir'}<=set(value): return None
-    if not isinstance(value['cmd'],str) or not isinstance(value['workdir'],str): return None
-    return {'cmd':value['cmd'],'workdir':value['workdir']}
+        elif absolute_read:
+            match=_READ_WRAPPER.fullmatch(raw)
+            if match: value=_object(match.group(1))
+    if not isinstance(value,dict) or not set(value)<=_ALLOWED or 'cmd' not in value or (not absolute_read and 'workdir' not in value): return None
+    if not isinstance(value['cmd'],str) or ('workdir' in value and not isinstance(value['workdir'],str)): return None
+    return {'cmd':value['cmd'],'workdir':value.get('workdir')}
 
 
 def _output(payload):

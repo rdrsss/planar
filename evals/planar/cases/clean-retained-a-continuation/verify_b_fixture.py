@@ -44,6 +44,8 @@ def evidence():
             row('review-packet-rendered','reviewer-packet-1.md')+row('started','review session-R-1-1.md', 'reviewer gpt-6.1-sol/medium'))
     suffix=(row('session-observed','session-R-1-2.md')+row('session-observed','session-R-1-3.md')+
             row('reviewed','review-1-all.md: approve')+row('approved','task approved'))
+    final[TASK+'session-F-1-1.md']=check_obs.replace(b'checks-done',b'final checks').replace(b'C-1',b'F-1').replace(b'checks-1.md',b'reviews/final-checks.md')
+    suffix+=row('started','final check session-F-1-1.md')
     final[TASK+'record.md']=(head+prefix+suffix).encode()
     final['home/projects/revision-fault/tasks.md']=pre['home/projects/revision-fault/tasks.md'].replace(b'- [ ] **T-001**',b'- [x] **T-001**')
     dispatch=copy.deepcopy(final); dispatch[TASK+'record.md']=(head.replace('state: approved','state: review-packet-rendered')+prefix).encode()
@@ -54,6 +56,10 @@ def evidence():
     command={'timestamp':'2026-01-01T00:00:15.500000Z','type':'response_item','payload':{'type':'custom_tool_call','name':'exec','call_id':'check-command','input':script}}
     result={'timestamp':'2026-01-01T00:00:15.600000Z','type':'response_item','payload':{'type':'custom_tool_call_output','call_id':'check-command','output':[{'type':'input_text','text':'Script completed\nWall time 0.1 seconds\nOutput:\n'},{'type':'input_text','text':json.dumps({'exit_code':0,'output':'','wall_time_seconds':0.1})}]}}
     parents[1].insert(1,command); parents[1].insert(2,result)
+    final_command=copy.deepcopy(command); final_result=copy.deepcopy(result)
+    final_command['payload']['call_id']='final-check'; final_result['payload']['call_id']='final-check'
+    final_command['timestamp']='2026-01-01T00:00:16.500000Z'; final_result['timestamp']='2026-01-01T00:00:16.600000Z'
+    parents[1].extend((final_command,final_result))
     return pre,post,dispatch,final,parents,children
 
 

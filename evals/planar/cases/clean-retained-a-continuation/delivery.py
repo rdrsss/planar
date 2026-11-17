@@ -66,8 +66,8 @@ def verify_child_read(child, filename, packet, candidate):
             if not isinstance(key,str) or key in outputs: raise MissingEvidence('ambiguous child output')
             outputs[key]=(i,p)
     for key,(index,call) in sorted(calls.items(),key=lambda item:item[1][0]):
-        args=_args(call)
-        if not args or args['workdir']!=WORKDIR: raise MissingEvidence('unsupported pre-packet child tool call')
+        args=_args(call, absolute_read=True)
+        if not args or args['workdir'] not in (None, WORKDIR): raise MissingEvidence('unsupported pre-packet child tool call')
         expected=_cat_content(args['cmd'],filename,packet,candidate)
         if expected is None: raise MissingEvidence('unsupported pre-packet child read')
         if key not in outputs: raise MissingEvidence('child read output missing')

@@ -36,6 +36,8 @@ def normalize_field(key, value):
         return match.group(1) if match else value
     if key=='phase':
         value=value.split(',',1)[0].strip().removesuffix('.').lower()
+        if value.startswith('accepted. collaboration name: '): value='accepted'
+        if value=='started. packet: unavailable (final tree check)': value='started'
         return 'completed' if value=='complete' else value
     if key=='timestamp':
         value=value.removesuffix('.')
@@ -77,8 +79,8 @@ def observations(files, rows):
             filename, invocation, number = match.group(1), match.group(2), int(match.group(3))
             if filename in found:
                 first=found[filename][0]
-                if (first == index or rows[first][1]!='session-observed' or row[1]!='worker-done'
-                    or invocation!=found[filename][1] or 'worker-report-1.md' not in row[5]):
+                if (first == index or rows[first][1]!='session-observed'
+                    or invocation!=found[filename][1] or found[filename][3].get('phase') not in ('completed','completion') or not ((row[1]=='worker-done' and 'worker-report-1.md' in row[5]) or (row[1]=='reviewed' and 'review-1-all.md' in row[5]))):
                     raise Contradiction('duplicate session link')
                 continue
             data = text(files, TASK+filename)

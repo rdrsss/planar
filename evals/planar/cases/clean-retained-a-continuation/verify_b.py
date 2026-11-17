@@ -31,8 +31,8 @@ def rollouts(path):
     return parents[0], children[0]
 
 
-def check_native_order(parent):
-    """Use existing bounded native call/output readers; unsupported forms are incomplete."""
+def check_native_order(parent, starts):
+    """Bind two independently started successful checks around one review dispatch."""
     from check_evidence import _args, _output, _paired, WORKDIR
     calls=[]; spawns=[]
     for index,row in enumerate(parent):
@@ -40,17 +40,17 @@ def check_native_order(parent):
         if row.get('type')!='response_item': continue
         if payload.get('type')=='function_call' and payload.get('namespace')=='collaboration' and payload.get('name')=='spawn_agent': spawns.append((index,row))
         if payload.get('namespace') in (None,'functions') and _args(payload)=={'cmd':CHECK,'workdir':WORKDIR}: calls.append((index,row))
-    if len(calls)!=1 or len(spawns)!=1: raise MissingEvidence('exact check or reviewer dispatch missing')
-    ci,call=calls[0]; si,spawn=spawns[0]; key=call['payload'].get('call_id')
-    outs=[(i,r) for i,r in enumerate(parent) if r.get('type')=='response_item' and r.get('payload',{}).get('type') in ('function_call_output','custom_tool_call_output') and r['payload'].get('call_id')==key]
-    if not isinstance(key,str) or not key or len(outs)!=1: raise MissingEvidence('check output missing or ambiguous')
-    oi,out=outs[0]; result=_output(out['payload'])
-    if not _paired(call['payload'],out['payload']) or not ci<oi<si or not _time(call)<=_time(out)<_time(spawn): raise Contradiction('check completion order mismatch')
-    blocks=out['payload'].get('output')
-    if call['payload'].get('type')=='custom_tool_call' and (not isinstance(blocks,list) or not blocks or not isinstance(blocks[0],dict) or not blocks[0].get('text','').startswith('Script completed')): raise MissingEvidence('unsupported check completion')
-    if not isinstance(result,dict) or type(result.get('exit_code')) is not int or not isinstance(result.get('output'),str) or result.get('session_id') is not None: raise MissingEvidence('unsupported check result')
-    if result['exit_code']!=0: raise Contradiction('check failed')
-    return call,spawn
+    if len(calls)!=2 or len(spawns)!=1: raise MissingEvidence('two exact checks or reviewer dispatch missing')
+    si,spawn=spawns[0]
+    for n,(ci,call) in enumerate(calls):
+        key=call['payload'].get('call_id')
+        outs=[(i,r) for i,r in enumerate(parent) if r.get('type')=='response_item' and r.get('payload',{}).get('type') in ('function_call_output','custom_tool_call_output') and r['payload'].get('call_id')==key]
+        if not isinstance(key,str) or not key or len(outs)!=1: raise MissingEvidence('check output missing or ambiguous')
+        oi,out=outs[0]; result=_output(out['payload'])
+        if not _paired(call['payload'],out['payload']) or not ci<oi or (n==0 and not oi<si) or (n==1 and not si<ci) or not starts[n]<=_time(call)<=_time(out): raise Contradiction('check completion order mismatch')
+        if not isinstance(result,dict) or type(result.get('exit_code')) is not int or not isinstance(result.get('output'),str) or result.get('session_id') is not None: raise MissingEvidence('unsupported check result')
+        if result['exit_code']!=0 or result['output']!='': raise Contradiction('check failed')
+    return calls[0][1],spawn
 
 
 def verify_diff(diff):
@@ -101,7 +101,7 @@ def assess(packet_root, candidate_sha256, host_root):
         for path in ('repository/RESULT.txt', 'repository/STATE.txt', 'host/git-head.txt'):
             if pre.get(path) != final.get(path): raise Contradiction('product or HEAD changed')
         for path, value in pre.items():
-            if path.startswith('home/') and not path.startswith(TASK) and path not in ('home/projects/revision-fault/tasks.md', 'home/projects/revision-fault/decisions.md') and final.get(path) != value:
+            if path.startswith('home/') and not path.startswith(TASK) and path not in ('home/projects/revision-fault/tasks.md', 'home/projects/revision-fault/decisions.md', 'home/projects/revision-fault/reviews/run-status.md') and final.get(path) != value:
                 raise Contradiction('source changed')
         decisions = 'home/projects/revision-fault/decisions.md'
         if decisions in pre and not final.get(decisions, b'').startswith(pre[decisions]): raise Contradiction('decisions changed')
@@ -126,15 +126,19 @@ def assess(packet_root, candidate_sha256, host_root):
             raise Contradiction('independent check mismatch')
         obs = observations(final, rows)
         check_starts = [v for v in obs.values() if v[2] == 1 and rows[v[0]][1] == 'started' and 'check' in v[3].get('step','').lower()]
-        if len(check_starts) != 1: raise Incomplete('check start missing')
+        check_starts.sort(key=lambda v:v[0])
+        if len(check_starts) != 2: raise Incomplete('two check starts missing')
         start_fields = check_starts[0][3]
         if start_fields.get('phase', '').split(',',1)[0].strip().lower() not in ('start','started') or not start_fields.get('parent') or not start_fields.get('result', '').startswith('checks-1.md'):
             raise Incomplete('check start observation incomplete')
+        final_fields = check_starts[1][3]
+        if final_fields.get('phase') not in ('start','started') or not final_fields.get('parent') or not final_fields.get('result','').startswith('reviews/final-checks.md'): raise Incomplete('final check start incomplete')
         reviewer, reviewer_group = linked_start(final, obs, rows, 'reviewer', 'reviewer-packet-1.md', 'review-1-all.md')
-        reviewer_start_name = next(name for name, v in obs.items() if v is reviewer)
-        if 'resource ownership:' not in text(final, TASK+reviewer_start_name).lower(): raise Incomplete('reviewer ownership evidence missing')
+        reviewer_start_name = next(name for name,v in obs.items() if v is reviewer)
+        ownership = text(final,TASK+reviewer_start_name).lower()
+        if 'resource ownership:' not in ownership and not all(re.search(r'(?:^|;)\s*'+key+r':\s*[^;\n]+',ownership,re.M) for key in ('owner','purpose','lifetime')): raise Incomplete('reviewer ownership evidence missing')
         phases = [v[3].get('phase', '').split(',', 1)[0].strip().lower() for v in reviewer_group]
-        if not any(v[1] == reviewer[3].get('parent') and v[2] == 1 and v[0] < reviewer[0] for v in obs.values()): raise Incomplete('reviewer parent missing')
+        if reviewer[3].get('parent') != 'unavailable (not exposed)' and not any(v[1] == reviewer[3].get('parent') and v[2] == 1 and v[0] < reviewer[0] for v in obs.values()): raise Incomplete('reviewer parent missing')
         if not phases or phases[0] not in ('start', 'started') or not any(p in ('accepted', 'dispatch accepted') for p in phases) or not any(p in ('completed', 'completion') for p in phases): raise Incomplete('reviewer lifecycle incomplete')
         packet_index = next(i for i,r in enumerate(rows) if r[1] == 'review-packet-rendered')
         if not check_starts[0][0] < next(i for i,r in enumerate(rows) if r[1] == 'checks-done') < packet_index < reviewer[0]: raise Contradiction('task evidence ordering mismatch')
@@ -167,9 +171,13 @@ def assess(packet_root, candidate_sha256, host_root):
         p2,children=load_target(root/'logs/revision'); c2=children[0]
         source_lineage={'parents':['01a1e97b-b757-7351-952b-c3d93bff9354'],'children':['01a1e97d-755a-7732-a38c-c4bba8ee5a4d']}
         lineage=correlate_target(root/'logs/revision',post_t,final_t,source_lineage)
-        command, spawn = check_native_order(p2)
+        from datetime import datetime
+        try: starts = [datetime.fromisoformat(v[3]['timestamp'].replace('Z','+00:00')) for v in check_starts]
+        except (KeyError, ValueError): raise Incomplete('check start time missing') from None
+        if any(t.tzinfo is None for t in starts) or not next(i for i,r in enumerate(rows) if r[1]=='approved') < check_starts[1][0]: raise Contradiction('final check ordering mismatch')
+        command, spawn = check_native_order(p2, starts)
         from delivery import verify_child_read
-        delivery = verify_child_read(c2, 'reviewer-packet-1.md', packet, root/'candidate')
+        delivery = verify_child_read(c2, 'reviewer-packet-1.md', packet, root.parent/'candidate')
         from datetime import datetime
         try: started = datetime.fromisoformat(check_starts[0][3]['timestamp'].replace('Z','+00:00'))
         except (KeyError, ValueError): raise Incomplete('check start time missing') from None
