@@ -31,6 +31,27 @@ CASE = EVALS / 'planar/cases/plugin-smoke'
 CASES = {name: EVALS / 'planar/cases' / name for name in ('plugin-smoke', 'native-lineage-smoke', 'native-lineage-current', 'fresh-interrupted-review', 'clean-revision', 'clean-work-review', 'retained-a-fresh-b')}
 
 
+def portable_native_path(docker, expected_version):
+    """Construct the portable child's restricted path from inspected binaries."""
+    codex=shutil.which('codex')
+    if not codex: raise ValueError('portable Codex executable unavailable')
+    try:
+        docker_path=Path(docker).resolve(strict=True); codex_path=Path(codex).resolve(strict=True)
+    except (OSError,RuntimeError): raise ValueError('portable executable unavailable') from None
+    if not docker_path.is_file() or not codex_path.is_file() or not os.access(docker_path,os.X_OK) or not os.access(codex_path,os.X_OK):
+        raise ValueError('portable executable unavailable')
+    version=subprocess.run([str(codex_path),'--version'],capture_output=True,text=True,timeout=15,env={'PATH':os.defpath})
+    if version.returncode or version.stdout.strip()!=expected_version:
+        raise ValueError('portable Codex version mismatch')
+    directories=[str(docker_path.parent),str(codex_path.parent),str(Path(sys.executable).parent),'/usr/bin','/bin','/usr/sbin','/sbin']
+    path=os.pathsep.join(directories)
+    for name,expected in (('docker',docker_path),('codex',codex_path)):
+        selected=shutil.which(name,path=path)
+        if not selected or Path(selected).resolve()!=expected:
+            raise ValueError('portable native executable selection mismatch')
+    return path
+
+
 def case_inventory(case):
     entries = []
     for path in sorted(case.rglob('*')):
@@ -385,6 +406,7 @@ def _execute_inner(auth_path, review_path, case_name='plugin-smoke', *, candidat
         budgets=snapshot['prerequisites']['budgets_seconds']
         if trial_deadline > caps['trial_seconds'] or budgets['agent'] > caps['session_seconds'] or budgets['verifier'] > caps['verifier_seconds']:
             raise ValueError('portable runtime exceeds reviewed caps')
+        portable_path=portable_native_path(docker,reservation['host_version'])
     if retained:
         from retained_b_support import validate_gate, source as validate_retained_source
         policy=json.loads((case/'source-policy.json').read_text())
@@ -468,7 +490,7 @@ def _execute_inner(auth_path, review_path, case_name='plugin-smoke', *, candidat
     # Docker uses the current user's context; no API-key or host configuration
     # variables are inherited by the Harbor process.
     directories = [str(Path(docker).resolve().parent), str(Path(sys.executable).parent), '/usr/bin', '/bin', '/usr/sbin', '/sbin']
-    env = {'PATH': os.pathsep.join(directories), 'HOME': str(Path.home()),
+    env = {'PATH': portable_path if portable else os.pathsep.join(directories), 'HOME': str(Path.home()),
            'PYTHONPATH': str(Path(__file__).resolve().parent),
            'PLANAR_T044_EVIDENCE_DIR': str(evidence),
            'PLANAR_EVALS_OUTPUT_ROOT': os.environ.get('PLANAR_EVALS_OUTPUT_ROOT', ''),
