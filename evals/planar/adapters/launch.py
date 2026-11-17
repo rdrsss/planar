@@ -219,7 +219,7 @@ def plan(case_name='plugin-smoke', *, candidate_root=None, case_root=None, trial
         prerequisites['execution_gate'] = 'requires independent review and matching one-use gate before execution'
         prerequisites['fixture'] = 'portable source-derived fixture; applicability requires independent review'
     if retained:
-        prerequisites['execution_gate']='disabled pending protected runtime integration and independent review'
+        prerequisites['execution_gate']='requires an independently reviewed, exact source-bound one-use gate before authentication'
         prerequisites['source_packet_root']=str(Path(source_packet).resolve(strict=True))
         prerequisites['source_packet_sha256']=source_identity['source_packet_sha256']
         prerequisites['reserved_execution_id']=execution_id

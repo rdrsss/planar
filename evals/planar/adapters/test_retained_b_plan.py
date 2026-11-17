@@ -21,6 +21,7 @@ class RetainedPlanControls(unittest.TestCase):
         self.assertNotEqual(a['configuration_sha256'],b['configuration_sha256'])
         self.assertNotEqual(a['prerequisites']['effective_configuration_sha256'],b['prerequisites']['effective_configuration_sha256'])
         self.assertEqual(a['prerequisites']['source_packet_sha256'],'a'*64)
+        self.assertEqual(a['prerequisites']['execution_gate'],'requires an independently reviewed, exact source-bound one-use gate before authentication')
     def test_missing_source_id_expiry_or_budget_fail(self):
         for key,value in (('source_packet',None),('execution_id',None),('absolute_deadline',None),('trial_deadline',1049)):
             args=dict(self.kw); args[key]=value
