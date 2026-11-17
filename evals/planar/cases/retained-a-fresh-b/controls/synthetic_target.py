@@ -66,24 +66,14 @@ def main(packet,candidate,destination):
         name=f'session-{identity}-1.md'; obs=f'Task: T-001; attempt: {n}; step: checks-done; role: session driver; invocation: {identity}; phase: started\n'
         observations[n]=(name,obs); final[TASK+name]=obs.encode()
     final[TASK+'record.md']=record.encode()
-    def start_snapshot(n):
-        row=starts[n]; end=record.index(row)+len(row); snap=dict(source); snap[TASK+'record.md']=record[:end].encode()
-        for i in range(1,n+1):
-            name,obs=observations[i]; snap[TASK+name]=obs.encode()
-        save(destination/f'check-start-{n}',snap)
-    def packet_snapshot(stage,name):
-        snap=dict(source); snap[TASK+name]=final[TASK+name]; save(destination/stage,snap)
     parent=[event('session_meta',{'id':'b','source':'exec','originator':'codex_exec'})]; children=[]
-    start_snapshot(1); parent += [call('synth-check-1',CHECK),output('synth-check-1','')]
-    packet_snapshot('packet-review-1','reviewer-packet-1.md')
+    parent += [call('synth-check-1',CHECK),output('synth-check-1','')]
     children.append(spawn(parent,'r1','gpt-6.1-sol','reviewer-packet-1.md',final[TASK+'reviewer-packet-1.md'].decode(),candidate))
-    packet_snapshot('packet-worker-2','worker-packet-2.md')
     children.append(spawn(parent,'w2','gpt-6.1-terra','worker-packet-2.md',final[TASK+'worker-packet-2.md'].decode(),candidate))
-    start_snapshot(2); parent += [call('synth-check-2',CHECK),output('synth-check-2','')]
-    packet_snapshot('packet-review-2','reviewer-packet-2.md')
+    parent += [call('synth-check-2',CHECK),output('synth-check-2','')]
     children.append(spawn(parent,'r2','gpt-6.1-sol','reviewer-packet-2.md',final[TASK+'reviewer-packet-2.md'].decode(),candidate))
     parent.append(event('event_msg',{'type':'task_complete'}))
-    logs=destination/'logs/revision/sessions/synthetic'; logs.mkdir(parents=True)
+    logs=destination/'logs/revision/sessions/2026/11/17'; logs.mkdir(parents=True)
     for i,rows in enumerate([parent,*children]): (logs/f'rollout-{i}.jsonl').write_text(''.join(json.dumps(row)+'\n' for row in rows))
     save(destination/'final',final)
     return {'mode':'synthetic-target-only','destination':str(destination),'real_target_execution':False}

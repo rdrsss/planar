@@ -14,7 +14,7 @@ class CandidateVerifierControls(unittest.TestCase):
         for item in self.patches: item.start(); self.addCleanup(item.stop)
     def test_no_reward_without_target_host_gate(self):
         result=target_verifier.assess('packet','candidate','target')
-        self.assertEqual(result['status'],'incomplete'); self.assertIn('host gate',result['reason'])
+        self.assertEqual(result['status'],'incomplete'); self.assertIn('independent bound raw audit',result['reason'])
     def test_missing_native_evidence_never_passes(self):
         with patch('check_binding.verify',side_effect=MissingEvidence('check missing')):
             self.assertEqual(target_verifier.assess('packet','candidate','target')['status'],'incomplete')

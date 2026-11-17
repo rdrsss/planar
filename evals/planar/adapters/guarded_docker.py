@@ -27,8 +27,17 @@ class GuardedDocker(DockerEnvironment):
         if not re.fullmatch(r'planar-t044-(?:noauth-)?[0-9a-f]{32}', run_id):
             raise ValueError('invalid launcher execution identity')
         case_name = os.environ.get('PLANAR_T044_CASE', 'plugin-smoke')
-        if case_name not in ('plugin-smoke', 'native-lineage-smoke', 'native-lineage-current', 'fresh-interrupted-review', 'clean-revision', 'native-lineage-portable'):
+        if case_name not in ('plugin-smoke', 'native-lineage-smoke', 'native-lineage-current', 'fresh-interrupted-review', 'clean-revision', 'native-lineage-portable', 'retained-a-fresh-b'):
             raise ValueError('unsupported diagnostic case')
+        if case_name == 'retained-a-fresh-b':
+            if os.environ.get('PLANAR_T045_NOAUTH_CONTROL') == '1':
+                if any(os.environ.get(key) for key in ('CODEX_AUTH_JSON_PATH','CODEX_FORCE_AUTH_JSON','OPENAI_API_KEY','CODEX_API_KEY')):
+                    raise ValueError('retained noauth control cannot carry credentials')
+            else:
+                if any(not os.environ.get(key) for key in ('PLANAR_T044_CASE_SNAPSHOT','PLANAR_T045_SOURCE_PACKET','PLANAR_T044_CANDIDATE_SNAPSHOT')):
+                    raise ValueError('retained host admission missing')
+                from retained_b_support import verify_runtime
+                verify_runtime(evidence,os.environ['PLANAR_T044_CASE_SNAPSHOT'],os.environ['PLANAR_T045_SOURCE_PACKET'],os.environ['PLANAR_T044_CANDIDATE_SNAPSHOT'])
         self._case_name = case_name
         self._evidence_root = evidence
         raw_session = kwargs.get('session_id')
@@ -105,7 +114,7 @@ class GuardedDocker(DockerEnvironment):
         return capabilities
 
     async def start(self, force_build):
-        if self._static_verifier and self._case_name == 'native-lineage-portable' and force_build:
+        if self._static_verifier and self._case_name in ('native-lineage-portable','retained-a-fresh-b') and force_build:
             raise ValueError('portable verifier cannot rebuild')
         await super().start(force_build)
         if self._static_verifier:
@@ -113,7 +122,7 @@ class GuardedDocker(DockerEnvironment):
             result = subprocess.run(['docker', 'inspect', '--format', '{{.HostConfig.NetworkMode}}', cid], capture_output=True, text=True, check=True, timeout=15)
             if result.stdout.strip() != 'none':
                 raise RuntimeError('verifier container is not network-disabled')
-            if self._case_name in ('clean-revision', 'native-lineage-portable'):
+            if self._case_name in ('clean-revision', 'native-lineage-portable', 'retained-a-fresh-b'):
                 expected = os.environ.get('PLANAR_T045_VERIFIER_IMAGE_ID')
                 noauth = os.environ.get('PLANAR_T045_NOAUTH_CONTROL') == '1'
                 if noauth and any(os.environ.get(key) for key in ('CODEX_AUTH_JSON_PATH','CODEX_FORCE_AUTH_JSON','OPENAI_API_KEY','CODEX_API_KEY')):
@@ -124,7 +133,7 @@ class GuardedDocker(DockerEnvironment):
             evidence = Path(os.environ['PLANAR_T044_EVIDENCE_DIR']).resolve(strict=True)
             name = 'verifier-network-'+self._verifier_step+'.json' if self._verifier_step else 'verifier-network.json'
             record = {'execution_id': evidence.name, 'container_id': cid, 'network_mode': 'none'}
-            if self._case_name == 'native-lineage-portable':
+            if self._case_name in ('native-lineage-portable','retained-a-fresh-b'):
                 record['image_id'] = actual
             if self._verifier_step:
                 record['step'] = self._verifier_step
@@ -132,7 +141,7 @@ class GuardedDocker(DockerEnvironment):
             (evidence / name).write_text(json.dumps(record))
 
     async def _run_docker_compose_command(self, command, check=True, timeout_sec=None, stdin_data=None, on_output=None):
-        if self._static_verifier and self._case_name == 'native-lineage-portable':
+        if self._static_verifier and self._case_name in ('native-lineage-portable','retained-a-fresh-b'):
             if command and command[0] in ('build', 'pull'):
                 raise ValueError('portable verifier cannot build or pull at runtime')
             if command and command[0] == 'up':
@@ -182,6 +191,10 @@ class GuardedDocker(DockerEnvironment):
             archive = await self._archive(source_dir + '/.')
             logs = select_native_logs(archive)
             write_tree(Path(target_dir), logs)
+            if self._case_name == 'retained-a-fresh-b':
+                destination=self._evidence_root/'retained-b/logs/revision'
+                if destination.exists() or destination.is_symlink(): raise ValueError('target logs already collected')
+                write_tree(destination,logs)
             if self._case_name == 'clean-revision':
                 clean = self._evidence_root/'clean-revision'
                 active = json.loads((clean/'active.json').read_text())
@@ -190,6 +203,38 @@ class GuardedDocker(DockerEnvironment):
                 destination = clean/'logs'/step
                 if destination.exists() or destination.is_symlink(): raise ValueError('clean step logs already collected')
                 write_tree(destination, logs)
+        elif source_dir == '/workspace/home' and not self._static_verifier and self._case_name == 'retained-a-fresh-b':
+            from clean_revision_support import load_case_module
+            from retained_b_support import source as validate_source
+            from candidate import inventory
+            case=Path(os.environ['PLANAR_T044_CASE_SNAPSHOT']); candidate=Path(os.environ['PLANAR_T044_CANDIDATE_SNAPSHOT'])
+            packet=Path(os.environ['PLANAR_T045_SOURCE_PACKET'])
+            binding=validate_source(case,packet,candidate)
+            if binding['source_packet_sha256'] != os.environ.get('PLANAR_T045_SOURCE_SHA256'):
+                raise ValueError('retained source identity changed before verifier handoff')
+            expected=json.loads((case/'candidate.json').read_text())
+            if inventory(candidate)!=expected: raise ValueError('candidate changed before verifier handoff')
+            capture=load_case_module(case,'capture'); target=self._evidence_root/'retained-b'
+            identity=json.loads((target/'container.json').read_text())
+            cid=await self._platform._resolve_service_container('main')
+            actual=subprocess.run(['docker','inspect','--format','{{.Id}}',cid],check=True,capture_output=True,text=True,timeout=15).stdout.strip()
+            if actual!=identity.get('container_id'): raise ValueError('retained target container identity changed')
+            if not (target/'logs/revision').is_dir(): raise ValueError('retained target logs missing')
+            snapshot=await capture.collect(self,actual,identity.get('baseline'),failure_evidence=target)
+            capture.save(target/'final',snapshot)
+            home={name[5:]:value for name,value in snapshot.items() if name.startswith('home/')}
+            write_tree(Path(target_dir),home)
+            host=Path(target_dir)/'_planar_host'
+            if host.exists() or host.is_symlink(): raise ValueError('host evidence destination exists')
+            host.mkdir(mode=0o700)
+            shutil.copytree(packet,host/'source-packet',symlinks=True)
+            shutil.copytree(candidate,host/'candidate',symlinks=True)
+            shutil.copytree(target,host/'target',symlinks=True,ignore=shutil.ignore_patterns('rejected-home.tar','rejected-home.json'))
+            for item in (host,*host.rglob('*')):
+                if item.is_symlink(): raise ValueError('symlink in retained verifier input')
+                if item.is_dir(): item.chmod(0o755)
+                elif item.is_file(): item.chmod(0o644)
+                else: raise ValueError('special retained verifier input')
         elif source_dir == '/workspace/home' and not self._static_verifier and self._case_name == 'clean-revision':
             from clean_revision_support import load_case_module
             case = Path(os.environ.get('PLANAR_T044_CASE_SNAPSHOT') or Path(__file__).resolve().parents[1]/'cases/clean-revision')

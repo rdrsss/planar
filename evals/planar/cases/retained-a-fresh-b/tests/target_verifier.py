@@ -27,7 +27,7 @@ def assess(packet, candidate, target):
         lineage=correlate_target(target/'logs/revision',post_time,final_time,source_binding['assessment']['lineage'])
         parent,children=load_target(target/'logs/revision')
         checks=verify_checks(parent,final,children,target,candidate,post_time)
-        return {'status':'incomplete', 'reason':'target host gate and provenance integration required',
+        return {'status':'incomplete', 'reason':'target host provenance and independent bound raw audit required',
                 'source_packet_sha256':source_binding['source_packet_sha256'], 'target_lineage':lineage,
                 'structural_checks':checks, 'file_structure':structure['file_structure'], 'semantic_audit':'required'}
     except (Incomplete,MissingEvidence,FileNotFoundError,OSError,UnicodeError,KeyError) as error:

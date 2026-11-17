@@ -1,4 +1,8 @@
-"""Bind host-captured start/packet snapshots and native child delivery."""
+"""Bind cooperative record observations to native checks and child delivery.
+
+Final records are not host attestations of intermediate writes. An independent
+raw trace audit must establish check-start and packet-write timing.
+"""
 import json
 import re
 
@@ -79,58 +83,33 @@ def _native_ns(event):
     return int(_time(event).timestamp()*1_000_000_000)
 
 
-def _stage(target, name):
-    from capture import load
-    from chronology import receipt
-    return load(target/name), receipt(target,name)
-
-
 def verify(parent, final, children, target, candidate, post_time):
-    """Bind host snapshots, raw check results and the linked children's reads.
+    """Check cooperative record structure, native checks, and child reads.
 
-    Host integration must create the five snapshots/receipts while its target
-    is paused, and must protect this evidence from the agent. A file authored
-    by the agent or an unauthenticated timestamp cannot substitute. This helper
-    does not prove the host envelope or issue a reward.
+    No intermediate host capture is asserted. Final file order and observations
+    are agent-authored; an independent bound raw audit remains mandatory before
+    acceptance and must establish the relevant pre-check/pre-dispatch writes.
     """
-    from pathlib import Path
-    from chronology import order
     from native import _completion
     from delivery import verify_child_read
-    target=Path(target)
     if not isinstance(children,list) or len(children)!=3: raise MissingEvidence('target child traces missing')
-    record=_text(final,TASK+'record.md'); final_log=record.split('\n## Log\n',1)[1]
+    record=_text(final,TASK+'record.md'); rows=_rows(record)
     calls,outputs,spawns=_event_calls(parent)
     checked=verify_two(parent,[(0,spawns[0]),(spawns[1],spawns[2])])
     check_calls=[calls[key][0] for key in checked['call_ids']]
-    check_outputs=[outputs[key][0] for key in checked['call_ids']]
     for attempt in (1,2):
-        snap,stamp=_stage(target,f'check-start-{attempt}')
-        order(post_time,stamp)
-        snap_record=_text(snap,TASK+'record.md')
-        snap_log=snap_record.split('\n## Log\n',1)[1] if '\n## Log\n' in snap_record else ''
-        if not snap_log or not final_log.startswith(snap_log): raise InvalidBehavior('check-start log prefix changed')
-        name,obs,_row=_start_observation(snap,attempt,_rows(snap_record))
-        if _text(final,TASK+name)!=obs: raise InvalidBehavior('check-start observation changed')
-        if stamp['wall_ns'] >= _native_ns(parent[check_calls[attempt-1]]):
-            raise MissingEvidence('check-start capture not before check')
-        if attempt==2 and stamp['wall_ns'] <= _native_ns(_completion(children[1])):
-            raise InvalidBehavior('second check start predates repair completion')
-    packet_specs=[('packet-review-1','reviewer-packet-1.md',0),('packet-worker-2','worker-packet-2.md',1),('packet-review-2','reviewer-packet-2.md',2)]
+        _name,_obs,start_row=_start_observation(final,attempt,rows)
+        start_indices=[i for i,row in enumerate(rows) if ' | '.join(row)==start_row]
+        done_indices=[i for i,row in enumerate(rows) if row[1]=='checks-done' and row[2]==f'attempt {attempt}']
+        if len(start_indices)!=1 or len(done_indices)!=1: raise MissingEvidence('check record ordering ambiguous')
+        if start_indices[0] >= done_indices[0]: raise InvalidBehavior('check start logged after completion')
+    packet_specs=[('reviewer-packet-1.md',0),('worker-packet-2.md',1),('reviewer-packet-2.md',2)]
     deliveries=[]
-    for stage,filename,index in packet_specs:
-        snap,stamp=_stage(target,stage); order(post_time,stamp)
+    for filename,index in packet_specs:
         packet=_text(final,TASK+filename)
-        if _text(snap,TASK+filename)!=packet: raise InvalidBehavior('pre-dispatch packet changed')
-        if stamp['wall_ns'] >= _native_ns(parent[spawns[index]]):
-            raise MissingEvidence('packet capture not before dispatch')
-        if index==0 and stamp['wall_ns'] <= _native_ns(parent[check_outputs[0]]):
-            raise MissingEvidence('first packet capture predates check completion')
-        if index==1 and stamp['wall_ns'] <= _native_ns(_completion(children[0])):
-            raise InvalidBehavior('repair packet predates first review completion')
-        if index==2 and stamp['wall_ns'] <= _native_ns(parent[check_outputs[1]]):
-            raise MissingEvidence('second packet capture predates check completion')
         deliveries.append(verify_child_read(children[index],filename,packet,candidate))
-    if _native_ns(parent[check_calls[1]]) < _native_ns(_completion(children[1])):
+    if _native_ns(parent[check_calls[1]]) <= _native_ns(_completion(children[1])):
         raise InvalidBehavior('second check predates repair completion')
-    return {**checked,'child_packet_reads':deliveries}
+    return {**checked,'child_packet_reads':deliveries,
+            'check_starts':'cooperative-final-record',
+            'pre_dispatch_writes':'independent-raw-audit-required'}

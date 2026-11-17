@@ -40,9 +40,20 @@ def admission_scope():
 
 
 def shared_pending(records):
-    return [p for p in sorted(records.glob('*.start.json'))
-            if not p.with_name(p.name.replace('.start.json', '.closed.json')).exists()
-            and not p.with_name(p.name.replace('.start.json', '.resolved.json')).exists()]
+    def released(start):
+        closed=start.with_name(start.name.replace('.start.json','.closed.json'))
+        resolved=start.with_name(start.name.replace('.start.json','.resolved.json'))
+        try:
+            data=json.loads(start.read_text())
+            if data.get('case') != 'retained-a-fresh-b': return closed.exists() or resolved.exists()
+            if closed.exists() or closed.is_symlink() or resolved.is_symlink() or not resolved.is_file(): return False
+            release=json.loads(resolved.read_text())
+            fields={'execution_id','behavior','audit_sha256','gate_sha256','source_packet_sha256','verifier_status_sha256','reward_sha256'}
+            return (set(release)==fields and release['execution_id']==data['execution_id'] and release['behavior']=='incomplete'
+                    and release['gate_sha256']==data['gate_sha256'] and release['source_packet_sha256']==data['gate_authority']['source_packet_sha256']
+                    and all(isinstance(release[k],str) and len(release[k])==64 and all(c in '0123456789abcdef' for c in release[k]) for k in ('audit_sha256','gate_sha256','source_packet_sha256','verifier_status_sha256','reward_sha256')))
+        except (OSError,ValueError,TypeError,KeyError,AttributeError): return False
+    return [p for p in sorted(records.glob('*.start.json')) if not released(p)]
 
 
 def preflight_one(root, identity, logical_id):

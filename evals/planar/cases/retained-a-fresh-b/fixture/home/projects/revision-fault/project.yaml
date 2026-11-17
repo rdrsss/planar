@@ -1,0 +1,19 @@
+version: 1
+name: revision-fault
+naming: operator
+created: 2026-11-16
+repository:
+  path: /workspace/repository
+spec_set:
+  status: approved
+  checked: null
+  reviewed: null
+  spec_lenses: []
+  approved: 2026-11-16
+  digests:
+    prd.md: 7c310ac22d158a333d4f08188ddbc7108d47158e2ba9b8ca0f7ab9bd61f42f80
+    tech-spec.md: 88c116dbb0e7dae6852591ff063bb6aa94f122cd3dff57be7c41c685b1e73346
+    layout.md: 2f50dc3199977f72ab99a2d15a6e4ac6ef712f69fd191e5735852c0305827533
+    testing-spec.md: 0e341e9b824facd4608b5b35f62bc72fdfb1f4cb17f037d8aa7c685e5e34cfd9
+    tasks.md: 1bb41dfe92b8afee371a18a9a1ddeb3ef38a1e9c5cb56bd7708f90c216fddb6a
+  amendments: []

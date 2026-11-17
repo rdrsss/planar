@@ -10,6 +10,14 @@ from recover import recover_projects
 from supervise import supervise
 
 
+def process_record(evidence, pid, deadline):
+    record = {'pid': pid, 'execution_id': evidence.name}
+    if os.environ.get('PLANAR_T044_CASE') in ('clean-revision', 'retained-a-fresh-b'):
+        record.update({'started_monotonic_ns': time.monotonic_ns(), 'deadline_seconds': deadline,
+                       'absolute_deadline': os.environ.get('PLANAR_T044_ABSOLUTE_DEADLINE')})
+    return record
+
+
 def main():
     evidence=Path(os.environ['PLANAR_T044_EVIDENCE_DIR']).resolve(strict=True)
     parent=int(os.environ['PLANAR_T044_PARENT_PID'])
@@ -18,10 +26,7 @@ def main():
         raise RuntimeError('durable recovery marker missing')
     command=[sys.executable, str(Path(__file__).with_name('native_job.py')), str(evidence/'job-config.json'), str(evidence)]
     def on_start(pid):
-        record = {'pid':pid, 'execution_id':evidence.name}
-        if os.environ.get('PLANAR_T044_CASE') == 'clean-revision':
-            record.update({'started_monotonic_ns':time.monotonic_ns(), 'deadline_seconds':deadline,
-                           'absolute_deadline':os.environ.get('PLANAR_T044_ABSOLUTE_DEADLINE')})
+        record = process_record(evidence, pid, deadline)
         (evidence/'harbor-process.json').write_text(json.dumps(record))
     def cleanup():
         recover_projects(evidence)
