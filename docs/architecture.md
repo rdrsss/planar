@@ -117,7 +117,10 @@ project path.
         │   └── <task>/      one directory per task
         │       ├── record.md
         │       └── …        plan, symbol maps, packets, reports, check results, reviews
-        └── worktree/        the git worktree the work is done in
+        ├── scratch/
+        │   └── scratch-<purpose>/  local scratch
+        └── worktrees/
+            └── wt-<project>/  default named git worktree
 ```
 
 A project is one piece of work, not one repository: a repository can have
@@ -162,8 +165,10 @@ Settings cover:
 A **policy** is a named set of rules for what is allowed. The first rules
 are whether each approved task is committed and where the work is done. The
 built-in `default` policy commits each approved task, without pushing, and
-does the work in one git worktree per project, on its own branch, kept in
-the project directory. A project can name a different policy, for example
+does the work in a selected named git worktree on its own branch. Its parent
+resolves from project `worktrees_dir`, global `worktrees_dir`, then the project
+directory’s `worktrees/`; the default child is `wt-<project>`. Recorded trees,
+including legacy `worktree/`, are resumed without an implicit move. A project can name a different policy, for example
 one that works in the repository's own checkout. Planar never merges or
 pushes; the operator does.
 
@@ -239,7 +244,8 @@ refreshed as tasks complete and update the files. Replication is:
 - **a copy**: regular files, not links, with machine-specific paths replaced
   and nothing else changed;
 - **careful**: the copy leaves out `project.yaml`, which holds a local path,
-  and the project's worktree, and will not overwrite a directory that is
+  scratch, default and legacy worktrees, and configured or recorded local
+  worktrees, and will not overwrite a directory that is
   not already a Planar copy.
 
 The first copy is committed by itself when the spec set is approved. After

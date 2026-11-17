@@ -1,6 +1,6 @@
 ---
 name: replicate
-description: "Planar plugin: copy a project's Planar files into its repository as regular files, leaving out project.yaml and the worktree, writing a .planar-replica marker and replacing machine paths with placeholders. Used by the run and review steps when replication is on for the project, at approval of the spec set and when a task is approved; not called by the operator directly. Never copies back."
+description: "Planar plugin: copy a project's Planar files into its repository as regular files, excluding local configuration, scratch and worktrees, writing a .planar-replica marker and replacing machine paths with placeholders. Used by the run and review steps when replication is on for the project, at approval of the spec set and when a task is approved; not called by the operator directly. Never copies back."
 ---
 
 # Replicate a project into its repository
@@ -13,7 +13,7 @@ dispatch. If the file or a required capability is unavailable, stop and report
 it before the affected action.
 
 Implements PRD-R23 (replication) and PRD-Q23 (what is copied and committed),
-with TS-11.4 (the replicate step), TS-19.2 (the working tree it runs after)
+with TS-11.4 (the replicate step), TS-19.2 and TS-19.10 (working trees and exclusions)
 and TS-10; layout entry LAY-1.3.6. It is followed by the orchestrating actor
 (the `run` skill), or by `review` at approval. The settings and the project
 directory are defined in the references named below, which you read and
@@ -61,18 +61,13 @@ Do this before anything is written, and on every run of the step.
 ## 3. Copy
 
 Copy the project directory to `<tree>/<target>/` as regular files, never as
-links, leaving out `project.yaml` and `worktree/` (PRD-Q23). Run from the
-project directory, for example (`-h` makes `tar` follow symbolic links and
-store what they point to, so every copied entry is a regular file):
-
-```sh
-mkdir -p "<tree>/<target>"
-tar -h --exclude='./project.yaml' --exclude='./worktree' -cf - . | tar -C "<tree>/<target>" -xf -
-```
-
-Afterwards check that the copy holds no link, for example with
-`find "<tree>/<target>" -type l`; if it prints anything, replace each link
-with a copy of what it points to.
+links, leaving out `project.yaml`, `scratch/`, `worktrees/`, legacy
+`worktree/`, and every configured or recorded project-local worktree
+(PRD-Q23, TS-19.10). Resolve and canonicalize these exclusions before copying.
+Never traverse excluded trees through symlinks or recursively copy a destination
+inside them. Inspect symlink targets before following any included link; refuse
+the copy if it would traverse an exclusion or the destination. Copy only safe
+entries as regular files and verify the result contains no links.
 
 Then, on a first copy, write the marker `<tree>/<target>/.planar-replica`
 with one line, `project: <project>`.

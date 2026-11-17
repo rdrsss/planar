@@ -4,7 +4,7 @@ Implements PRD-R17 (spec location) and PRD-R25 (name collisions), TS-3
 (project directory, `project.yaml`, approval gate, `context.md`, naming,
 collisions), TS-21 (approval digests and amendments) and TS-23 (TS-23.3,
 TS-23.6 and TS-23.10), and the reference
-layout entry LAY-1.5.3 and the project directory layout LAY-3. This file is
+layout entry LAY-1.5.3 and the project directory layout LAY-3, including LAY-3.26 and TS-19.10. This file is
 the single definition of what a project directory holds, who writes each
 file, the `project.yaml` format, the approval gate, the digest commands and
 how an approved spec set is amended. Follow it whenever you create, read or
@@ -54,7 +54,10 @@ resolve it as the settings reference
 │       ├── checks-<n>-rerun-pending-<k>.md   when reruns are unavailable
 │       ├── reviewer-packet-<n>.md
 │       └── review-<n>-<focus>.md
-└── worktree/             the project's git worktree, by default
+├── scratch/
+│   └── scratch-<purpose>/  project-local scratch
+└── worktrees/
+    └── wt-<project>/     default named git worktree
 ```
 
 `<n>` is the attempt number, counting from 1. `<task-id>` is the task's ID,
@@ -81,11 +84,25 @@ Write each file only if you are its writer:
 | `tasks/<task-id>/worker-report-<n>.md` | `worker` |
 | `tasks/<task-id>/checks-<n>.md`, `checks-<n>-rerun.md` and their numbered pending batches | the orchestrating actor in skill mode, `check-runner` in workflow mode |
 | `tasks/<task-id>/review-<n>-<focus>.md` | `reviewer` |
-| `worktree/` | `review` at approval, or `run` |
+| `worktrees/wt-<project>/` (default) | `review` at approval, or `run` |
+| `scratch/scratch-<purpose>/` | creating actor with recorded lifecycle owner |
 
 The formats of `ids.md`, the spec files, `tasks.md`, task records, gaps and
 the other reports are defined in their own references; this file defines only
 the project directory, `project.yaml` and `context.md`.
+
+New project-local scratch, including disposable repositories, temporary homes
+and generated local eval outputs, belongs under the real project
+`scratch/scratch-<purpose>/`; canonicalize and refuse symlink escapes. Record
+lifecycle and cleanup ownership. An explicit external eval-output override is
+retained and recorded; canonical task, spec and review records stay in place.
+Existing roots are not silently moved: inventory owners, readers, processes,
+Git registration, frozen inputs and evidence; move only quiescent eligible
+roots, using `git worktree move` for registered trees and verifying branch,
+HEAD, index and status. Preserve evidence bytes and hashes, append a relocation
+map, and record blocked moves. Frozen absolute paths require fresh reviewed
+inputs before reuse; do not bulk rewrite history, delete evidence or introduce
+permanent root compatibility symlinks (TS-19.10).
 
 ## Naming a project
 

@@ -126,7 +126,7 @@ TS-3.3). Take each value from here:
 
 Write with quoted heredocs (`<<'PLANAR_CONTEXT'`) so that backticks and `$`
 in the operator's words are kept as they are. Create no other file: no
-`worktree/`, no spec, no `ids.md`, and nothing in the repository or in
+`worktrees/`, no scratch, no spec, no `ids.md`, and nothing in the repository or in
 `<home>` outside the project directory. Never write replication copies; the
 settings' `replication` is used by later steps.
 

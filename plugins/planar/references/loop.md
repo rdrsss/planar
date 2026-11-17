@@ -158,10 +158,17 @@ that does not, do no step of the loop; stop and say which.
 4. The working tree exists. It is prepared once, when the operator approves
    the spec set, or by the run skill if it does not exist yet, according to
    the policy's `worktree` rule:
-   - `project`: one git worktree for the project at `<project>/worktree/`
-     in the project directory, on a new branch `planar/<project>` cut from
-     the commit the repository has checked out. If the repository's checkout
-     has uncommitted changes, the operator is asked first, because those
+   - `project`: use the selected named worktree under the parent resolved by
+     settings (TS-4.7, TS-19.10); default `worktrees/wt-<project>/` on
+     `planar/<project>`, cut from the checked-out commit. Record its canonical
+     path, branch, repository identity and base before dispatch. Explicitly
+     selected siblings require distinct names and branches. Reject collisions,
+     unregistered or nonmatching directories and overlap with scratch, specs,
+     another worktree or the repository checkout before mutation. Resume the
+     verified recorded path and branch, including legacy `<project>/worktree/`;
+     report configuration changes without moving or creating a duplicate.
+     Multiple names do not change round isolation or authorize concurrent
+     writers. If the repository's checkout has uncommitted changes, the operator is asked first, because those
      changes will not be in the worktree.
    - `none`: the repository's own checkout on its current branch. When the
      project's run first starts, that is, when no task directory exists yet,

@@ -178,22 +178,23 @@ round", items 3 to 5, and the `worktree` rule in
 2. If the projects directory is inside the repository, it must be ignored
    by git (`git -C "<repository>" check-ignore -q "<projects directory>"`).
    If not, stop and say so.
-3. Under `worktree: project`, the working tree is
-   `<project directory>/worktree`, on branch `planar/<project>`:
-   - If it exists and `git -C "<project directory>/worktree" branch
-     --show-current` prints `planar/<project>`, use it as it is.
-   - If it does not exist: run `git -C "<repository>" status --porcelain`.
-     If that prints anything, ask the operator first, naming the paths:
-     those changes will not be in the worktree. Go on only on a yes. Then
-     create it from the commit the repository has checked out:
-
-     ```sh
-     git -C "<repository>" worktree add -b "planar/<project>" "<project directory>/worktree" HEAD
-     ```
-
-   - Anything else (the directory exists but is not that worktree, or the
-     branch exists without it): stop and put it to the operator. Remove
-     nothing.
+3. Under `worktree: project`, resolve the parent as settings specifies
+   (TS-4.7); refuse invalid configuration and collisions before mutation.
+   Select `wt-<project>` and branch `planar/<project>` by default. Another
+   `wt-*` name and distinct branch require explicit selection. Reject overlap
+   with scratch, specs, another worktree or the repository checkout, and reject
+   unregistered or nonmatching directories. Record the canonical path, branch,
+   repository identity and base before dispatch (TS-19.10).
+   - On resume verify and use the recorded path and branch, including legacy
+     `<project>/worktree/`. Report a changed configured parent; do not move
+     the tree or create a duplicate.
+   - For a new tree, check `git -C "<repository>" status --porcelain`. If
+     it prints anything, ask the operator first, naming the paths; those
+     changes will not be in the worktree. Continue only on a yes. Create the
+     selected tree from the checked-out commit with `git worktree add`,
+     quoting the resolved path. If the branch or path collides, stop and
+     report it; remove nothing. Multiple names do not change round isolation
+     or authorize simultaneous writers.
 4. Under `worktree: none`, the working tree is the repository's own
    checkout on its current branch. When the project directory has no
    `tasks/` directory yet, run `git -C "<repository>" status --porcelain`;
