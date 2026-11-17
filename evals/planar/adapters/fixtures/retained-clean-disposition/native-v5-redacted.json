@@ -1,0 +1,341 @@
+{
+  "data": {
+    "config": {
+      "agent_setup_timeout_multiplier": null,
+      "agent_timeout_multiplier": null,
+      "agents": [
+        {
+          "base_url": null,
+          "concurrency_group": null,
+          "extra_allowed_hosts": [],
+          "import_path": "native_noauth_probe:SyntheticClean",
+          "kwargs": {
+            "config": {
+              "features": {
+                "apps": false,
+                "multi_agent": true,
+                "remote_plugin": false
+              },
+              "plugins": {
+                "_default": {
+                  "enabled": false
+                }
+              },
+              "skills": {
+                "bundled": {
+                  "enabled": false
+                }
+              }
+            },
+            "reasoning_effort": "medium",
+            "version": "0.169.0"
+          },
+          "load_trajectory": null,
+          "max_timeout_sec": null,
+          "mcp_servers": [],
+          "model_api_format": null,
+          "model_api_key_name": null,
+          "model_name": "gpt-6.1-terra",
+          "n_concurrent": null,
+          "name": null,
+          "override_setup_timeout_sec": null,
+          "override_timeout_sec": null,
+          "resume_trajectory": false,
+          "skills": [],
+          "skip_model_parsing": false
+        }
+      ],
+      "artifacts": [],
+      "datasets": [],
+      "debug": false,
+      "environment": {
+        "cpu_enforcement_policy": "auto",
+        "delete": true,
+        "extra_allowed_hosts": [],
+        "extra_docker_compose": [],
+        "force_build": false,
+        "import_path": "guarded_docker:GuardedDocker",
+        "kwargs": {
+          "auto_mounting": false
+        },
+        "memory_enforcement_policy": "auto",
+        "mounts": null,
+        "override_cpus": null,
+        "override_gpus": null,
+        "override_memory_mb": null,
+        "override_storage_mb": null,
+        "override_tpu": null,
+        "stream": false,
+        "type": null
+      },
+      "environment_build_timeout_multiplier": null,
+      "extra_instruction_paths": [],
+      "extra_instructions": [],
+      "install_only": false,
+      "job_name": "planar-t044-9bbf9fd801524593b3af296c8774eaf8",
+      "jobs_dir": "/fixture",
+      "metrics": [],
+      "n_attempts": 1,
+      "n_concurrent_trials": 1,
+      "override_error_policy": {},
+      "quiet": true,
+      "retry": {
+        "exclude_exceptions": [
+          "APIResponseValidationError",
+          "AgentAuthenticationError",
+          "AgentSafetyRefusalError",
+          "AgentTimeoutError",
+          "ApiProviderResourceNotFoundError",
+          "AuthenticationError",
+          "BadRequestError",
+          "BudgetExceededError",
+          "CancelledError",
+          "ContentPolicyViolationError",
+          "ContextLengthExceededError",
+          "ContextWindowExceededError",
+          "DspyImportError",
+          "MissingExtraError",
+          "ModelNotFoundError",
+          "NonZeroAgentExitCodeError",
+          "NotFoundError",
+          "OutputLengthExceededError",
+          "OutputTokenExceededError",
+          "PermissionDeniedError",
+          "RegradeError",
+          "RewardFileEmptyError",
+          "RewardFileNotFoundError",
+          "ServiceOperationsUnsupportedError",
+          "UnprocessableEntityError",
+          "UnsupportedModelParametersError",
+          "UnsupportedParamsError",
+          "VercelScopeError",
+          "VerifierOutputParseError",
+          "VerifierTimeoutError"
+        ],
+        "include_exceptions": null,
+        "max_retries": 0,
+        "max_wait_sec": 60.0,
+        "min_wait_sec": 1.0,
+        "wait_multiplier": 1.0
+      },
+      "schema_version": 1,
+      "skip_credential_checks": false,
+      "source_jobs": [],
+      "tasks": [
+        {
+          "download_dir": null,
+          "git_commit_id": null,
+          "git_url": null,
+          "name": null,
+          "overwrite": false,
+          "path": "/fixture/case",
+          "ref": null,
+          "source": null
+        }
+      ],
+      "timeout_multiplier": 1.0,
+      "user_agent": null,
+      "verifier": {
+        "disable": false,
+        "max_timeout_sec": null,
+        "override_timeout_sec": null
+      },
+      "verifier_timeout_multiplier": null
+    },
+    "job": {
+      "finished_at": "2026-11-17T08:34:41.536883",
+      "id": "a87350a2-03ce-4adb-bbb8-dfe3cb788e08",
+      "n_total_trials": 1,
+      "schema_version": 1,
+      "started_at": "2026-11-17T08:34:03.590889",
+      "stats": {
+        "cost_usd": null,
+        "evals": {
+          "codex__gpt-6.1-terra__adhoc": {
+            "exception_stats": {},
+            "metrics": [
+              {
+                "mean": 0.0
+              }
+            ],
+            "n_errors": 0,
+            "n_trials": 1,
+            "pass_at_k": {},
+            "reward_stats": {
+              "reward": {
+                "0.0": [
+                  "case__t6MueKd"
+                ]
+              }
+            }
+          }
+        },
+        "n_cache_tokens": null,
+        "n_cancelled_trials": 0,
+        "n_completed_trials": 1,
+        "n_errored_trials": 0,
+        "n_input_tokens": null,
+        "n_output_tokens": null,
+        "n_pending_trials": 0,
+        "n_retries": 0,
+        "n_running_trials": 0
+      },
+      "updated_at": "2026-11-17T08:34:41.536883"
+    },
+    "trial": {
+      "agent_execution": {
+        "finished_at": "2026-11-17T13:34:23.961336Z",
+        "started_at": "2026-11-17T13:34:20.332004Z"
+      },
+      "agent_info": {
+        "model_info": {
+          "name": "gpt-6.1-terra",
+          "provider": "openai"
+        },
+        "name": "codex",
+        "version": "0.169.0"
+      },
+      "agent_result": {
+        "cost_usd": null,
+        "metadata": null,
+        "model_usage": null,
+        "n_cache_tokens": null,
+        "n_input_tokens": null,
+        "n_output_tokens": null,
+        "rollout_details": null
+      },
+      "agent_setup": {
+        "finished_at": "2026-11-17T13:34:20.330377Z",
+        "started_at": "2026-11-17T13:34:06.860700Z"
+      },
+      "config": {
+        "agent": {
+          "base_url": null,
+          "concurrency_group": null,
+          "extra_allowed_hosts": [],
+          "import_path": "native_noauth_probe:SyntheticClean",
+          "kwargs": {
+            "config": {
+              "features": {
+                "apps": false,
+                "multi_agent": true,
+                "remote_plugin": false
+              },
+              "plugins": {
+                "_default": {
+                  "enabled": false
+                }
+              },
+              "skills": {
+                "bundled": {
+                  "enabled": false
+                }
+              }
+            },
+            "reasoning_effort": "medium",
+            "version": "0.169.0"
+          },
+          "load_trajectory": null,
+          "max_timeout_sec": null,
+          "mcp_servers": [],
+          "model_api_format": null,
+          "model_api_key_name": null,
+          "model_name": "gpt-6.1-terra",
+          "n_concurrent": null,
+          "name": null,
+          "override_setup_timeout_sec": null,
+          "override_timeout_sec": null,
+          "resume_trajectory": false,
+          "skills": [],
+          "skip_model_parsing": false
+        },
+        "agent_setup_timeout_multiplier": null,
+        "agent_timeout_multiplier": null,
+        "artifacts": [],
+        "environment": {
+          "cpu_enforcement_policy": "auto",
+          "delete": true,
+          "extra_allowed_hosts": [],
+          "extra_docker_compose": [],
+          "force_build": false,
+          "import_path": "guarded_docker:GuardedDocker",
+          "kwargs": {
+            "auto_mounting": false
+          },
+          "memory_enforcement_policy": "auto",
+          "mounts": null,
+          "override_cpus": null,
+          "override_gpus": null,
+          "override_memory_mb": null,
+          "override_storage_mb": null,
+          "override_tpu": null,
+          "stream": false,
+          "type": null
+        },
+        "environment_build_timeout_multiplier": null,
+        "extra_instruction_paths": [],
+        "extra_instructions": [],
+        "install_only": false,
+        "job_id": "a87350a2-03ce-4adb-bbb8-dfe3cb788e08",
+        "override_error_policy": {},
+        "schema_version": 1,
+        "source_trial": null,
+        "task": {
+          "download_dir": null,
+          "git_commit_id": null,
+          "git_url": null,
+          "name": null,
+          "overwrite": false,
+          "path": "/fixture/case",
+          "ref": null,
+          "source": null
+        },
+        "timeout_multiplier": 1.0,
+        "trial_name": "case__t6MueKd",
+        "trials_dir": "/fixture/job",
+        "user_agent": null,
+        "verifier": {
+          "disable": false,
+          "max_timeout_sec": null,
+          "override_timeout_sec": null
+        },
+        "verifier_timeout_multiplier": null
+      },
+      "environment_setup": {
+        "finished_at": "2026-11-17T13:34:06.860527Z",
+        "started_at": "2026-11-17T13:34:04.073158Z"
+      },
+      "exception_info": null,
+      "finished_at": "2026-11-17T13:34:41.529856Z",
+      "id": "9d70e0fe-d1ee-423b-b872-02a84a797e5d",
+      "reward_valid": true,
+      "schema_version": 1,
+      "source": null,
+      "started_at": "2026-11-17T13:34:03.802485Z",
+      "step_results": null,
+      "task_checksum": "558cc7a3c99c6ea9d5ea78b1d9525d857bccf10c0f743cdbbfedf164c466a28b",
+      "task_id": {
+        "path": "/fixture/case"
+      },
+      "task_name": "planar/clean-retained-a-continuation",
+      "trial_name": "case__t6MueKd",
+      "trial_uri": "file:///fixture/trial",
+      "verifier": {
+        "finished_at": "2026-11-17T13:34:41.529769Z",
+        "started_at": "2026-11-17T13:34:32.034326Z"
+      },
+      "verifier_environment_mode": "separate",
+      "verifier_result": {
+        "rewards": {
+          "reward": 0.0
+        }
+      }
+    }
+  },
+  "source_sha256": {
+    "config": "c8ae3a9476396aaa0df08e2f5ff707762dd660715363b039c6650579ba62268d",
+    "job": "984b62720c042da362d5094350e7df812b9a3270358c066350c7b09e86562e7c",
+    "trial": "40fbec51340217629aa79aeeecf616d6d6ca9c69ddfe315bbc55ca93a78dbdc7"
+  },
+  "synthetic_noauth_only": true
+}

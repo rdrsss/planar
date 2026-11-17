@@ -21,7 +21,7 @@ def canonical(obj): return json.dumps(obj,sort_keys=True,separators=(',',':')).e
 
 
 def historical_inventory(commit,tree,expected, *, case='retained-a-fresh-b'):
-    if case not in ('retained-a-fresh-b','clean-work-review'):
+    if case not in ('retained-a-fresh-b','clean-work-review','clean-retained-a-continuation'):
         raise ValueError('unsupported historical case')
     paths=('evals/pyproject.toml','evals/uv.lock','evals/README.md','evals/planar/README.md','evals/planar/adapters','evals/planar/cases/'+case,'evals/planar/experiments/codex_run.py')
     actual=subprocess.run(['git','rev-parse',commit+'^{tree}'],cwd=launch.ROOT,capture_output=True,text=True,check=True,timeout=15).stdout.strip()

@@ -72,8 +72,11 @@ def shared_pending(records):
                     if _ACTIVE_ADMISSION.get()!=records.resolve() or closed.exists() or closed.is_symlink() or resolved.is_symlink() or not resolved.is_file(): return False
                     from schema2_pretrial_release import validate_published
                     return validate_published(start,resolved)
-            # This new case has no independently reviewed release protocol yet.
-            if data.get('case') == 'clean-retained-a-continuation': return False
+            if data.get('case') == 'clean-retained-a-continuation':
+                if _ACTIVE_ADMISSION.get()!=records.resolve() or closed.exists() or closed.is_symlink() or resolved.is_symlink() or not resolved.is_file(): return False
+                from clean_retained_release import validate_published
+                marker=json.loads(resolved.read_text(),object_pairs_hook=__import__('terminal_failure_schema').unique)
+                return validate_published(start,resolved,marker)
             if data.get('case') != 'retained-a-fresh-b': return closed.exists() or resolved.exists()
             if closed.exists() or closed.is_symlink() or resolved.is_symlink() or not resolved.is_file(): return False
             import retained_b_release_schema
