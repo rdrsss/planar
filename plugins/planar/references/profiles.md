@@ -33,6 +33,15 @@ never create or edit one unasked. Use lowercase letters and hyphens in a
 profile name. A name with any other character, such as a path separator, is
 not a profile name.
 
+A validation or refusal report identifies the actual resolved profile input
+path and, when established, its digest and selection source. Distinguish that
+input from the installed profile definition or reference path. For example, if
+`<home>/profiles/minimal.yaml` is selected, report that user path even when its
+bytes match the shipped `minimal.yaml`. If resolution is not established,
+report it as unresolved rather than guessing. A stop before dispatch does not
+require creating product or task files solely to make this provenance claim;
+the report can state the source and any limitations.
+
 ## Validating a profile
 
 `run`, `check` and `review` resolve and validate the profile before dispatch. Refuse the
