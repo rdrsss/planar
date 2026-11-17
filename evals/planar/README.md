@@ -1,4 +1,32 @@
-# Planar smoke — bounded diagnostic
+# Planar evaluations
+
+## Case and experiment status
+
+Run `make evals-test` from the repository root for the model-free adapter,
+recovery, revision and experiment-control suites. Docker/native integration
+controls are separate; synthetic reports and rollouts do not prove a model
+performed the workflow. Live execution needs the exact matching independent
+one-use gate and confirmed cleanup.
+
+| Case or path | Available evidence and scope |
+| --- | --- |
+| `cases/plugin-smoke` | Historical first diagnostic; original online infrastructure error/reward 0 and separate narrower cached assessment. |
+| `cases/native-lineage-smoke` | Historical frozen version-1 lineage/artifact contract with an independently audited online reward 1. |
+| `cases/native-lineage-current` | Separate frozen successor with one independently audited online reward 1 for its bounded lineage/artifact contract. Its name does not select an arbitrary current package. |
+| `cases/fresh-interrupted-review` | Recovery fixture, independent verifier and retained-export assessments; these do not establish every recovery scenario or a final-byte live pass. |
+| `cases/clean-revision` | Two fresh native parents in a persistent workspace, controlled post-worker STATE fault and separate verifiers. Actual trials have stopped at A with reward 0; corrected, versioned retained-A assessments do not establish B, repair or revision success. |
+| `cases/native-lineage-portable` | Opt-in schema-2 template/materializer with explicit inventory/execution data. The template's unbound placeholders are invalid inputs, not a runnable case. |
+| `experiments/cli.py` | Schema-1 controls and separately gated Codex execution; experimental schema-2 planning, image preparation, exact reservation/gate, execution, reconciliation and reporting routes. Schema-2 source/control review is complete; a gated native run remains unproven. |
+
+The current-lineage audit is project-local
+`reviews/t046-live-baseline-audit-20261117.md`; the retained-A semantic audit is
+`reviews/t045-b-alias-live-audit-20261117.md`. These reports are not included in
+a repository-only clone. Full TEST-S69/S70/S71/S72 acceptance, complete profile
+and session-audit matrices, and Claude/cross-vendor runtime proof remain open.
+Fresh cases and runtime integrations under development are not authorized by
+this inventory.
+
+## Historical smoke evidence
 
 The diagnostic is one Harbor 0.26.0 Docker job using Codex CLI 0.169.0, one
 attempt and concurrency one. It installs the frozen package in an isolated
@@ -27,8 +55,8 @@ The original online separate verifier ran without networking and reported
 was not implemented. A separately reviewed, network-isolated cached regrade
 passed its narrower dispatch scope against the retained execution. It does not
 change the online outcome or establish TEST-S69 or full T-044 acceptance.
-Claude, recovery, cross-vendor, quota and experiment capabilities also remain
-pending.
+This original smoke does not establish recovery, cross-vendor, quota or
+experiment acceptance. Later bounded work is distinguished above.
 
 The project's `reviews/harbor-t044-native-audit-20261116.md` and
 `reviews/harbor-t044-regrade-final-review-20261116.md` detail the evidence and
@@ -111,10 +139,40 @@ Remove the temporary snapshot when finished.
 
 The [fresh recovery mapping](cases/fresh-recovery-plan.md) describes the T-045 case; it is not an acceptance result.
 
-An [offline interrupted-review oracle draft](cases/fresh-interrupted-review/README.md)
+The [interrupted-review oracle](cases/fresh-interrupted-review/README.md)
 provides a bounded fresh-session recovery case. Its synthetic and no-auth
 controls are not a live pass; execution requires independent review and a new
 matching one-use gate. The case README states its evidence and limitations.
+
+### Clean revision inputs
+
+`clean-revision` requires paired frozen package/case snapshots and a
+1,050-second whole-job deadline. Each parent is capped at 400 seconds and each
+separate verifier at 60 seconds. The four expected children are graded after
+execution; they are not an enforced runtime child cap. A passing first verifier
+is required before injection and the second parent. Independent semantic audit
+of checks, findings, repair and fresh review is required in addition to reward.
+
+The Make plan/run wrappers pass the case selection, authentication and review
+paths; they do not supply specialized snapshot/deadline arguments. To inspect
+this case without authentication or model work, use reviewed snapshots with the
+direct launcher:
+
+```sh
+PLANAR_EVALS_OUTPUT_ROOT="$PWD/evals/results" \
+  uv run --project evals --locked python evals/planar/adapters/launch.py \
+  --case clean-revision --trial-deadline 1050 \
+  --snapshot-candidate /path/to/frozen/plugins/planar \
+  --snapshot-case /path/to/frozen/clean-revision
+```
+
+This command is only a plan. Live execution additionally needs its exact
+reviewed execution ID, absolute expiry, existing one-use gate and explicit
+subscription authentication path. Use the independently reviewed launch packet;
+do not generate approval or refreeze inputs during a run. Keep original online
+rewards and every versioned retained assessment separately. The
+[case README](cases/clean-revision/README.md) describes capture and verifier
+requirements.
 
 ### Experimental deterministic controls
 
@@ -143,7 +201,8 @@ evaluation output root. Separately configured output roots do not share this
 protection; use one root for the same account. Standalone T-044 diagnostic
 launches do not participate in this experiment admission lock and must not run
 concurrently against that account.
-Independent review of this integration is required before any live execution.
+Independent review of the exact integration, inputs and gate is required for
+each live execution; a prior baseline does not authorize another run.
 After verified native identity and cleanup, a behavioral outcome requires a
 valid separate-verifier binary reward, its retained reward file and matching
 structured `status.json`. Missing, conflicting or infrastructure evidence stays
@@ -151,3 +210,45 @@ incomplete; typed native errors take precedence. This narrow grading does not
 establish full test acceptance. Live crash reconciliation, verifier-versioned
 regrade and cross-vendor acceptance remain pending. No-model controls are not
 plugin behavior evidence.
+
+### Experimental schema-2 execution
+
+`plan-v2`, `preflight-v2`, `reserve-v2`, `check-gate-v2` and `report-v2`
+retain the offline planning/comparison routes. Planning freezes explicit
+candidate and case-instance inputs; a reservation alone does not establish
+that a native job started. Old opaque schema-2 records remain offline-only
+and cannot be upgraded in place or made runnable by adding a hash.
+
+New plans explicitly using `runnable_contract: planar-schema2-runnable-v1`
+can use the experimental runnable routes below. Inspect their exact arguments
+with the locked environment:
+
+```sh
+uv run --project evals --locked python evals/planar/experiments/cli.py --help
+```
+
+| Command | Boundary |
+| --- | --- |
+| `prepare-runnable-v2` | Build and inspect the separate verifier image without authentication or a model; retain fresh preparation evidence. |
+| `reserve-runnable-v2` | Bind one future execution to that preparation, frozen inputs, concrete JobConfig, images, account scope and deadline. |
+| `check-runnable-v2` | Compare an independently supplied exact gate without consuming it or authorizing a dispatch. |
+| `execute-runnable-v2` | Recheck under existing account/controller locks, consume one exact reviewed gate before authentication and run the guarded launcher once. Requires auth file, gate and preparation evidence. |
+| `reconcile-runnable-v2` | Assess retained native/cleanup evidence for an existing attempt without replaying authentication or starting another job. Missing or contradictory evidence stays blocked. |
+| `resolve-account-stop-v2` | Record an explicit reasoned resolution after matching the retained gate, account stop and confirmed cleanup. It preserves original stop/results and does not itself retry. |
+
+The source and model-free controls are independently reviewed. Actual no-auth
+Harbor/Docker evidence proves separate pinned verifier selection, network
+`none`, Compose no-build/no-pull and cleanup; its Nop result is an
+infrastructure nonpass, not a behavior pass. A gated schema-2 native model run
+is still unproven. Source, candidate, configuration or documentation changes
+require a fresh freeze, preparation, reservation and independently reviewed
+gate before such a run; historical reservations are not reusable approval.
+
+Planning bounds the immutable absolute deadline by `caps.job_seconds`;
+preparation and pauses consume that budget. Runtime activation requires enough
+remaining time for the reviewed trial. Quota/auth failures retain account
+stops; a confirmed clean native timeout is incomplete without an account stop.
+Cleanup ambiguity cannot be resolved automatically. Reports distinguish
+planned, started, reconciled and unknown outcomes, and keep retries separate
+from primary attempts. Schema-1 and historical online results remain separate;
+these controls do not establish full experiment or cross-vendor acceptance.

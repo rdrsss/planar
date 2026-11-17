@@ -72,16 +72,17 @@ scenarios are still pending verification.
 
 For Codex, `plugins/planar/plugin.json` is the portable root manifest alongside
 the Claude manifest; both package the same skills, agents, profiles and
-references. The documented installation experiment used codex-cli 0.169.0:
-a scratch plugin was listed and added from a local marketplace with
-`codex plugin list --available --json --marketplace <marketplace>` and
-`codex plugin add <plugin>@<marketplace> --json`, using process-local
-marketplace configuration. An explicitly supplied installed skill then read a
-bundled reference from the cache. This is a procedure for the scratch probe,
-not a verified installation recipe for this Planar package. Installed Planar
-discovery and role dispatch still need live checks. See the
-[host contract](plugins/planar/references/hosts.md) for the evidence and
-limits.
+references. With codex-cli 0.169.0, the actual repository `make install
+HOST=codex` and `make uninstall HOST=codex` targets passed in a disposable
+Codex home: the enabled package's complete inventory matched the candidate,
+and removal left no installed plugin or package cache. This CLI accepted the
+repository marketplace without a separate Codex marketplace descriptor.
+Bounded live diagnostics have also observed installed skill enumeration and
+fresh native child dispatch. These checks apply to frozen inputs; they do not
+establish automatic skill activation, complete role-prompt delivery or the full
+workflow/profile/cross-vendor acceptance matrices. See the
+[evaluation notes](evals/planar/README.md#case-and-experiment-status) and
+[host contract](plugins/planar/references/hosts.md) for scope and limits.
 
 The intended Codex scope is the serial minimal skill-mode loop: one pinned
 worker, independent checks and a separate pinned reviewer. The full Planar
@@ -115,6 +116,12 @@ selected root and use that same root for manual recovery. See the
 [evaluation workspace](evals/README.md) and [Planar evaluation notes](evals/planar/README.md)
 for gate preparation, recovery and diagnostic limits. These diagnostics do not
 establish full acceptance.
+
+Experimental schema-2 comparisons use the separate
+[experiment CLI](evals/planar/README.md#experimental-schema-2-execution), with
+image preparation, exact reservations and independent one-use gates. Its
+source and model-free controls are reviewed; a gated native schema-2 run
+remains unproven. The Make case targets do not substitute for that workflow.
 
 ## Acknowledgement
 

@@ -1,4 +1,17 @@
-# Evaluation workspace (T-044)
+# Evaluation workspace
+
+This workspace contains model-free controls and review-gated Harbor diagnostics
+for the subscription-backed Codex CLI. It is outside the installed plugin.
+Each result applies to its frozen case, candidate and verifier; a cached
+assessment does not replace an original online result. Claude and cross-vendor
+runtime acceptance remain deferred.
+
+The [Planar evaluation notes](planar/README.md#case-and-experiment-status)
+distinguish historical smoke cases, the current-lineage snapshot, revision
+controls and experimental schema-2 execution. A case name containing `current`
+still refers to a frozen inventory, not the latest working tree.
+
+## Historical first diagnostic
 
 This workspace contains a bounded Harbor Codex diagnostic, not a passing
 regression suite. A real Harbor execution observed installed skill enumeration,
@@ -17,10 +30,13 @@ are bounded diagnostic evidence, not adversarial attestation. No credentials
 belong in this directory.
 
 From the repository root, `make evals-setup` installs the locked dependencies,
-`make evals-test` (or `make evals`) runs the adapter, recovery-case and model-free experiment-control tests,
+`make evals-test` (or `make evals`) runs the adapter, recovery-case,
+clean-revision and model-free experiment-control tests,
 and `make evals-plan` preflights `CASE=fresh-interrupted-review` by default.
 Set `CASE` to select another supported case. A preflight can refuse a stale
-frozen candidate; it never refreezes or approves it.
+frozen candidate or missing case-specific inputs; it never refreezes or approves
+them. Specialized cases requiring paired snapshots and a fixed deadline use
+the [direct launcher procedure](planar/README.md#clean-revision-inputs).
 
 A live diagnostic requires a matching independent gate and explicit paths:
 
