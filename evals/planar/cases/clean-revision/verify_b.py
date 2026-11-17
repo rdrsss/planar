@@ -103,7 +103,7 @@ def assess(host_root):
         review = _text(final,TASK+'review-1-all.md')
         if not review.startswith('# Review: T-001, attempt 1, all\n') or not review.endswith('verdict: request-changes\nstatus: complete\n'):
             raise Contradiction('first review mismatch')
-        entries = re.findall(r'(?ms)^-\s+\*\*F[1-9][0-9]*\*\*\s+cites:\s*[^\n]*?\.(?=\s|$).*?(?=\n\s*\n|\nverdict:|\Z)', review)
+        entries = re.findall(r'(?ms)^-\s+\*\*F[1-9][0-9]*\*\*\s+(?:\(note\)\s+)?cites:\s*[^\n]*?\.(?=\s|$).*?(?=\n\s*\n|\nverdict:|\Z)', review)
         numbered = re.findall(r'(?m)^-\s+\*\*F[1-9][0-9]*\*\*', review)
         if len(numbered) != len(entries): raise Contradiction('malformed numbered finding')
         findings = [entry for entry in entries if re.match(r'^-\s+\*\*F[1-9][0-9]*\*\*\s+cites:\s*(?:[^.]*,\s*)?(?:PRD-R2|TS-1)(?:\s*,[^.]*)?\.',entry)]

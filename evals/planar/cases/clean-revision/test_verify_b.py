@@ -57,6 +57,35 @@ class RevisionTests(unittest.TestCase):
             self.assertEqual(assess(root)['status'],'pass')
             (root/'logs/revision/sessions/2026/01/01/rollout-3.jsonl').unlink()
             self.assertEqual(assess(root)['status'],'incomplete')
+    def test_note_alongside_actionable_finding(self):
+        finding = '- **F1** cites: PRD-R2. STATE.txt is fault-injected; correct it.'
+        note = '- **F2** (note) cites: PRD-R1. RESULT.txt already has required bytes; no change requested.'
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); final=prepare(root)
+            import shutil
+            shutil.rmtree(root/'final'); (root/'final-receipt.json').unlink()
+            final[TASK+'review-1-all.md'] = (f'# Review: T-001, attempt 1, all\n\n## Findings\n\n{finding}\n\n{note}\n\nverdict: request-changes\nstatus: complete\n').encode()
+            final[TASK+'worker-packet-2.md'] = (f'# Revision\n\n{finding}\n\n{note}\n\nstatus: complete\n').encode()
+            save(root/'final',final)
+            self.assertEqual(assess(root)['status'],'pass')
+            shutil.rmtree(root/'final'); (root/'final-receipt.json').unlink()
+            final[TASK+'worker-packet-2.md'] = (f'# Revision\n\n{finding}\n\nstatus: complete\n').encode()
+            save(root/'final',final)
+            self.assertEqual(assess(root)['status'],'behavioral_failure')
+
+    def test_malformed_note_and_note_only_fail(self):
+        finding = '- **F1** cites: PRD-R2. STATE.txt is fault-injected; correct it.'
+        for entries in (finding + '\n\n- **F2** (notes) cites: TS-1. Observation.',
+                        '- **F1** (note) cites: PRD-R2. STATE.txt is fault-injected; correct it.'):
+            with self.subTest(entries=entries), tempfile.TemporaryDirectory() as tmp:
+                root=Path(tmp); final=prepare(root)
+                import shutil
+                shutil.rmtree(root/'final'); (root/'final-receipt.json').unlink()
+                final[TASK+'review-1-all.md'] = (f'# Review: T-001, attempt 1, all\n\n## Findings\n\n{entries}\n\nverdict: request-changes\nstatus: complete\n').encode()
+                final[TASK+'worker-packet-2.md'] = (f'# Revision\n\n{entries}\n\nstatus: complete\n').encode()
+                save(root/'final',final)
+                self.assertEqual(assess(root)['status'],'behavioral_failure')
+
     def test_missing_or_reordered_host_receipts(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp); prepare(root)
