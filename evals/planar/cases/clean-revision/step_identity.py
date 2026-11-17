@@ -37,3 +37,14 @@ def identify(instruction, frozen):
     if len(matches) != 1:
         raise ValueError('instruction does not match one frozen step')
     return matches[0]
+
+
+def validate_selection(frozen, model, effort):
+    """Bind each factual instruction statement to the actual selected config."""
+    if model != 'gpt-6.1-terra' or effort != 'medium' or set(frozen) != set(NAMES):
+        raise ValueError('clean revision configured selection mismatch')
+    statement = (f'The launcher selected this fresh session with model `{model}` and reasoning effort `{effort}` '
+                 'in its fixed job configuration. This is the configured selection; backend model and effort are not independently observed.')
+    if any(frozen[name][0].count(statement) != 1 for name in NAMES):
+        raise ValueError('clean revision instruction selection mismatch')
+    return statement

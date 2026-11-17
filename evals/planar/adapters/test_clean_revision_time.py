@@ -25,8 +25,9 @@ class TimeBoundaryTests(unittest.TestCase):
             with self.subTest(elapsed=elapsed, expiry=expiry), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp).resolve(); (root/'clean-revision').mkdir()
                 agent = SmokeCodex.__new__(SmokeCodex); agent._case=root; agent._provenance_dir=root
+                agent.model_name='gpt-6.1-terra'; agent.options=SimpleNamespace(reasoning_effort='medium')
                 agent._clean_step='worker'; agent._clean_container='a'*64; agent._clean_baseline=['baseline']
-                identity=SimpleNamespace(load_instructions=lambda _: {},identify=lambda *_:'revision')
+                identity=SimpleNamespace(load_instructions=lambda _: {},validate_selection=lambda *_:None,identify=lambda *_:'revision')
                 handoff=SimpleNamespace(worker_gate=Mock())
                 capture=SimpleNamespace(load=Mock(return_value={'state':b'before'}), collect=AsyncMock(return_value={'state':b'before'}), inject=AsyncMock(), save=Mock())
                 def load(_, name): return {'step_identity':identity,'handoff':handoff,'capture':capture}[name]

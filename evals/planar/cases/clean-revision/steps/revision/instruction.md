@@ -1,1 +1,3 @@
 Use the installed Planar package with the isolated approved project at `/workspace/home/projects/revision-fault`, profile `revision-fault`, and `PLANAR_HOME=/workspace/home`. The previous driver and its locally observed descendants have stopped. Continue T-001 from its durable records using the normal workflow, then stop after the attempt-2 review has been durably recorded. Keep all work within this isolated workspace.
+
+The launcher selected this fresh session with model `gpt-6.1-terra` and reasoning effort `medium` in its fixed job configuration. This is the configured selection; backend model and effort are not independently observed.

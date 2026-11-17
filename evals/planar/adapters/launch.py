@@ -159,7 +159,9 @@ def plan(case_name='plugin-smoke', *, candidate_root=None, case_root=None, trial
             raise ValueError('clean revision native step contract mismatch')
         from clean_revision_support import load_case_module
         identity = load_case_module(case,'step_identity')
-        identity.load_instructions(case)
+        frozen = identity.load_instructions(case)
+        selected = config['agents'][0]
+        identity.validate_selection(frozen, selected['model_name'], selected['kwargs']['reasoning_effort'])
     prerequisites = {'cwd': str(Path.cwd().resolve()), 'repository_root': str(ROOT),
         'package_read_root': str(candidate), 'case_read_root': str(case),
         'project_root': str(PROJECT), 'evidence_write_root': str(jobs_root()),

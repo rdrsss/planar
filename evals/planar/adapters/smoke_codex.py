@@ -253,7 +253,9 @@ class SmokeCodex(Codex):
         if not os.environ.get('PLANAR_T044_CASE_SNAPSHOT') or not os.environ.get('PLANAR_T044_CANDIDATE_SNAPSHOT'):
             raise ValueError('clean revision requires reviewed frozen snapshots')
         identity = load_case_module(self._case, 'step_identity')
-        selected = identity.identify(instruction, identity.load_instructions(self._case))
+        frozen = identity.load_instructions(self._case)
+        identity.validate_selection(frozen, self.model_name, self.options.reasoning_effort)
+        selected = identity.identify(instruction, frozen)
         capture = load_case_module(self._case, 'capture')
         evidence = self._provenance_dir/'clean-revision'
         if selected == 'worker':
