@@ -3,7 +3,7 @@
 This module does not launch, authorize, consume gates, inspect images, or
 activate an account slot. The guarded adapter must perform those operations.
 """
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import fcntl
 import hashlib
 import json
@@ -69,7 +69,7 @@ def package(root):
         raise Invalid('missing core skill')
 
 def initialize(root, *, template, reviewed_template_sha256, variants, repetitions,
-               config, implementation_sha256, deadline_at, account_scope_id):
+               config, implementation_sha256, deadline_at, account_scope_id, runnable_contract=None):
     """Freeze explicit local inputs. Image IDs are supplied observations, not verified here."""
     root, template = Path(root), Path(template)
     if root.exists() or root.is_symlink(): raise Invalid('experiment root exists')
@@ -81,7 +81,10 @@ def initialize(root, *, template, reviewed_template_sha256, variants, repetition
     if not isinstance(caps,dict) or set(caps) != {'session_seconds','verifier_seconds','trial_seconds','job_seconds','trials','max_executions'} or any(type(v) is not int or not 0 < v <= 86400 for v in caps.values()):
         raise Invalid('finite caps required')
     if not isinstance(implementation_sha256, str) or not pv.HEX.fullmatch(implementation_sha256): raise Invalid('implementation identity required')
-    if utc(deadline_at) <= datetime.now(timezone.utc): raise Invalid('deadline expired')
+    now = datetime.now(timezone.utc); deadline = utc(deadline_at)
+    if deadline <= now or deadline > now + timedelta(seconds=caps['job_seconds']): raise Invalid('deadline exceeds finite job wall-time cap')
+    if caps['trial_seconds'] > caps['job_seconds'] or caps['session_seconds'] > caps['trial_seconds'] or caps['verifier_seconds'] > caps['trial_seconds']:
+        raise Invalid('inconsistent time caps')
     pv.validate_template(template, reviewed_template_sha256)
     ids = []
     for v in variants:
@@ -94,6 +97,39 @@ def initialize(root, *, template, reviewed_template_sha256, variants, repetition
     if len(ids) != len(set(ids)): raise Invalid('duplicate variant')
     if config['variant_efforts'] != {v['id']:v['effort'] for v in variants} or len(variants)*repetitions > caps['trials'] or len(variants)*repetitions > caps['max_executions']:
         raise Invalid('configuration effort or trial cap mismatch')
+    if runnable_contract is not None:
+        if runnable_contract != 'planar-schema2-runnable-v1': raise Invalid('unsupported runnable contract')
+        # Use the actual guarded launcher and default-resolved pinned JobConfig;
+        # only a policy matching every field and concrete scope can be frozen.
+        import sys
+        sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'adapters'))
+        import launch
+        from harbor.models.job.config import JobConfig
+        from harbor.models.task.task import Task
+        import schema2_runnable
+        policy = config['native_config']
+        schema2_runnable.closed(policy,schema2_runnable.POLICY_FIELDS)
+        schema2_runnable.closed(policy['roots'],schema2_runnable.ROOTS)
+        expected_roots = {'experiment':root.absolute(), 'reviews':launch.reviews_root().absolute(),
+                          'jobs':launch.jobs_root().absolute(), 'consumed':(launch.reviews_root()/'harbor-t044-consumed').absolute()}
+        for key, raw in expected_roots.items():
+            if policy['roots'][key] != {'raw':str(raw),'resolved':str(raw.resolve())}:
+                raise Invalid('runnable output scope mismatch')
+        if account_scope_id != str((launch.reviews_root()/'planar-account-admission-v1').resolve()):
+            raise Invalid('runnable account scope mismatch')
+        task = Task(template).config
+        if task.environment.env or task.verifier.env or task.verifier.environment is None or task.verifier.environment.env or task.verifier.environment_mode.value != 'separate': raise Invalid('unsupported frozen task channels')
+        if task.agent.timeout_sec > caps['session_seconds'] or task.verifier.timeout_sec > caps['verifier_seconds']: raise Invalid('case exceeds reviewed caps')
+        trial_id = '0'*32
+        evidence = expected_roots['jobs']/('planar-t044-'+trial_id)
+        for v in variants:
+            if v['host_version'] != 'codex-cli 0.169.0' or v['image_id'] != task.environment.docker_image: raise Invalid('unsupported runnable host or task image')
+            schema2_runnable.projection.effective_verifier_environment(task.verifier.environment,v['verifier_image_id'])
+            case = root.absolute()/'variants'/v['id']/'case-instance'
+            job = JobConfig.model_validate(launch.config_for('planar-t044-'+trial_id,evidence,case,v['effort']))
+            expected_policy = schema2_runnable.derive_policy(job, execution_id=trial_id,
+                evidence_raw=str(evidence),case_raw=str(case),effort=v['effort'],roots=policy['roots'])
+            if not schema2_runnable.projection.exact(policy,expected_policy): raise Invalid('runnable JobConfig policy mismatch')
     root.mkdir(mode=0o700)
     # Failure leaves a non-reusable partial root. It is never silently repaired.
     (root/'variants').mkdir(mode=0o700); (root/'reservations').mkdir(mode=0o700); (root/'executions').mkdir(mode=0o700)
@@ -123,6 +159,7 @@ def initialize(root, *, template, reviewed_template_sha256, variants, repetition
         'configuration':configuration, 'configuration_sha256':object_hash(configuration),
         'implementation_sha256':implementation_sha256, 'deadline_at':deadline_at,
         'variants':records, 'trials':[{'logical_id':f"{v['variant_id']}:{n}", 'variant_id':v['variant_id'], 'repetition':n} for n in range(1,repetitions+1) for v in records]}
+    if runnable_contract is not None: manifest['runnable_contract'] = runnable_contract
     manifest['identity'] = object_hash(manifest)
     write_new(root/'manifest.json', manifest)
     return manifest
@@ -173,6 +210,7 @@ def reserve(root, identity, logical_id, *, expires_at, predecessor_execution_id=
         if not stat.S_ISREG(os.fstat(lock.fileno()).st_mode): raise Invalid('unsafe reservation lock')
         fcntl.flock(lock, fcntl.LOCK_EX)
         selected = preflight(root, identity, logical_id); m, v, trial = selected['manifest'], selected['variant'], selected['trial']
+        if m.get('runnable_contract') is not None: raise Invalid('runnable manifest requires runnable reservation route')
         expiry = utc(expires_at)
         if expiry <= datetime.now(timezone.utc) or expiry > utc(m['deadline_at']): raise Invalid('reservation expiry')
         existing = [read_record(p) for p in (root/'reservations').glob('*.json')]
@@ -197,13 +235,13 @@ def reserve(root, identity, logical_id, *, expires_at, predecessor_execution_id=
         write_new(root/'reservations'/f'{eid}.json', record)
         return record
 
-def validate_gate(root, identity, reservation_id, gate, *, now=None):
+def validate_gate(root, identity, reservation_id, gate, *, now=None, allow_activated=False):
     """Review-only comparison; adapter must recheck and atomically consume before auth."""
     pv.safe_id(reservation_id)
     root = Path(root); r = read_record(root/'reservations'/f'{reservation_id}.json')
     selected = preflight(root, identity, r['logical_id']); m = selected['manifest']
     if r['reservation_id'] != reservation_id or r['execution_id'] != reservation_id or r['experiment_identity'] != identity: raise Invalid('foreign reservation')
-    if (root/'executions'/reservation_id).exists(): raise Invalid('reservation already activated')
+    if (root/'executions'/reservation_id).exists() and not allow_activated: raise Invalid('reservation already activated')
     if not isinstance(gate, dict) or set(gate) != GATE_FIELDS or type(gate.get('schema_version')) is not int or type(gate.get('max_attempts')) is not int or type(gate.get('repetition')) is not int: raise Invalid('gate fields')
     expected = {k:r[k] for k in GATE_FIELDS if k in r and k not in ('schema_version','expires_at')}
     expected.update({'schema_version':2,'purpose':'one-experiment-trial','verdict':'approve','max_attempts':1,'reservation_sha256':h((root/'reservations'/f'{reservation_id}.json').read_bytes())})

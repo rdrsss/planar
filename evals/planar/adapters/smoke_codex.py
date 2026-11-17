@@ -48,7 +48,7 @@ class SmokeCodex(Codex):
             raise ValueError('provenance directory is outside the project evidence root')
         self._execution_id = self._provenance_dir.name
         case_name = os.environ.get('PLANAR_T044_CASE', 'plugin-smoke')
-        if case_name not in ('plugin-smoke', 'native-lineage-smoke', 'native-lineage-current', 'fresh-interrupted-review', 'clean-revision'):
+        if case_name not in ('plugin-smoke', 'native-lineage-smoke', 'native-lineage-current', 'fresh-interrupted-review', 'clean-revision', 'native-lineage-portable'):
             raise ValueError('unsupported case')
         self._case_name = case_name
         self._clean_step = None
@@ -56,6 +56,8 @@ class SmokeCodex(Codex):
         self._clean_baseline = None
         case_snapshot = os.environ.get('PLANAR_T044_CASE_SNAPSHOT')
         candidate_snapshot = os.environ.get('PLANAR_T044_CANDIDATE_SNAPSHOT')
+        if case_name == 'native-lineage-portable' and (not case_snapshot or not candidate_snapshot):
+            raise ValueError('portable case requires frozen snapshots')
         if bool(case_snapshot) != bool(candidate_snapshot):
             raise ValueError('candidate and case snapshots must be paired')
         self._candidate = Path(candidate_snapshot).resolve(strict=True) if candidate_snapshot else CANDIDATE

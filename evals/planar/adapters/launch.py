@@ -189,7 +189,7 @@ def plan(case_name='plugin-smoke', *, candidate_root=None, case_root=None, trial
         prerequisites['fixture'] = 'portable source-derived fixture; applicability requires independent review'
     return {'prerequisites': prerequisites, 'case': case_name, 'case_sha256': case_inventory(case),
             'image_id': Task(case).config.environment.docker_image,
-            'implementation_sha256': source_digest(CASES[case_name]), 'candidate_sha256': expected['sha256'],
+            'implementation_sha256': source_digest() if case_name == 'native-lineage-portable' else source_digest(CASES[case_name]), 'candidate_sha256': expected['sha256'],
             'configuration_sha256': config_digest, 'purpose': 'one-diagnostic-attempt',
             'harbor_version': '0.26.0', 'codex_version': '0.169.0', 'configuration': config}
 
@@ -209,7 +209,7 @@ def consume_review_once(review_path, consumed_root):
     return digest
 
 
-def execute(auth_path, review_path, case_name='plugin-smoke', *, candidate_root=None, case_root=None, trial_deadline=1500, execution_id=None, effort='medium', absolute_deadline=None, emit=True):
+def execute(auth_path, review_path, case_name='plugin-smoke', *, candidate_root=None, case_root=None, trial_deadline=1500, execution_id=None, effort='medium', absolute_deadline=None, emit=True, schema2_context=None):
     def remaining():
         if absolute_deadline is None:
             return None
@@ -218,6 +218,18 @@ def execute(auth_path, review_path, case_name='plugin-smoke', *, candidate_root=
             raise TimeoutError('experiment absolute deadline expired')
         return seconds
     remaining()
+    portable = case_name == 'native-lineage-portable'
+    if portable:
+        if not isinstance(schema2_context,dict) or set(schema2_context) != {'root','identity','reservation_id','preparation_evidence'} or candidate_root is None or case_root is None:
+            raise ValueError('portable execution requires exact activated schema-2 context')
+        sys.path.insert(0,str(EVALS/'planar/experiments'))
+        import schema2_execution
+        admitted=schema2_execution.verify_activated(schema2_context['root'],schema2_context['identity'],schema2_context['reservation_id'],review_path,preparation_evidence=schema2_context['preparation_evidence'])
+        reservation=admitted['reservation']; binding=reservation['concrete_binding']
+        if execution_id != 'planar-t044-'+reservation['execution_id'] or str(candidate_root) != binding['path_bindings']['candidate']['raw'] or str(case_root) != binding['path_bindings']['case_instance']['raw'] or effort != binding['job_config']['agents'][0]['kwargs']['reasoning_effort'] or absolute_deadline != reservation['expires_at']:
+            raise ValueError('portable activated dispatch mismatch')
+    elif schema2_context is not None:
+        raise ValueError('schema-2 context is portable-only')
     case = Path(case_root).resolve(strict=True) if case_root is not None else CASES[case_name]
     snapshot = plan(case_name, candidate_root=candidate_root, case_root=case_root, trial_deadline=trial_deadline, effort=effort)
     if execution_id is not None and not re.fullmatch(r'planar-t044-[0-9a-f]{32}', execution_id):
@@ -231,7 +243,7 @@ def execute(auth_path, review_path, case_name='plugin-smoke', *, candidate_root=
                 'candidate_sha256': snapshot['candidate_sha256'],
                 'configuration_sha256': snapshot['configuration_sha256'], 'case': case_name,
                 'case_sha256': snapshot['case_sha256'], 'image_id': snapshot['image_id']}
-    if any(gate.get(key) != value for key, value in required.items()):
+    if not portable and any(gate.get(key) != value for key, value in required.items()):
         raise ValueError('diagnostic review is missing, stale, or not approved')
     if case_name == 'clean-revision':
         if not absolute_deadline or gate.get('absolute_deadline') != absolute_deadline:
@@ -242,14 +254,14 @@ def execute(auth_path, review_path, case_name='plugin-smoke', *, candidate_root=
                 raise ValueError()
         except (TypeError, ValueError):
             raise ValueError('clean revision gate expiry is invalid or expired') from None
-    image_id = gate.get('image_id')
+    image_id = reservation['image_id'] if portable else gate.get('image_id')
     if not isinstance(image_id, str) or len(image_id) != 71 or not image_id.startswith('sha256:') or image_id != Task(case).config.environment.docker_image:
         raise ValueError('diagnostic review lacks the pinned image identity')
     verifier_image = None
-    if case_name == 'clean-revision':
-        verifier_image = gate.get('verifier_image_id')
+    if case_name in ('clean-revision', 'native-lineage-portable'):
+        verifier_image = reservation['verifier_image_id'] if portable else gate.get('verifier_image_id')
         if (not isinstance(verifier_image, str) or not re.fullmatch(r'sha256:[0-9a-f]{64}', verifier_image)
-            or verifier_image != Task(case).config.verifier.environment.docker_image):
+            or (not portable and verifier_image != Task(case).config.verifier.environment.docker_image)):
             raise ValueError('clean revision requires the reviewed verifier image identity')
     harbor = Path(sys.executable).parent / 'harbor'
     docker = shutil.which('docker')
@@ -265,10 +277,23 @@ def execute(auth_path, review_path, case_name='plugin-smoke', *, candidate_root=
             raise ValueError('reviewed verifier image is unavailable')
     if any((jobs_root()).glob('*/recovery-required')):
         raise RuntimeError('previous diagnostic cleanup is unconfirmed')
+    if portable:
+        import schema2_projection
+        planned_evidence=jobs_root()/execution_id
+        planned_config=config_for(execution_id,planned_evidence,Path(case_root),effort)
+        actual=JobConfig.model_validate(planned_config)
+        if not schema2_projection.exact(schema2_projection.project(actual),binding['job_config']):
+            raise ValueError('portable concrete JobConfig mismatch before auth')
+        caps=binding['caps']
+        budgets=snapshot['prerequisites']['budgets_seconds']
+        if trial_deadline > caps['trial_seconds'] or budgets['agent'] > caps['session_seconds'] or budgets['verifier'] > caps['verifier_seconds']:
+            raise ValueError('portable runtime exceeds reviewed caps')
     if case_name == 'clean-revision':
         # The selected multi-step case consumes its reviewed one-use gate before
         # resolving or reading the authentication file.
         consume_review_once(review, reviews_root() / 'harbor-t044-consumed')
+    if portable:
+        schema2_execution.verify_activated(schema2_context['root'],schema2_context['identity'],schema2_context['reservation_id'],review,preparation_evidence=schema2_context['preparation_evidence'])
     auth_path = auth_path.resolve(strict=True)
     # Read solely to enforce the subscription route; never retain or print bytes.
     try:
@@ -279,15 +304,29 @@ def execute(auth_path, review_path, case_name='plugin-smoke', *, candidate_root=
         raise ValueError('subscription file authentication is unavailable') from None
     del auth
     remaining()
-    if case_name != 'clean-revision':
+    if case_name not in ('clean-revision', 'native-lineage-portable'):
         consume_review_once(review, reviews_root() / 'harbor-t044-consumed')
     run_id = execution_id or 'planar-t044-' + uuid.uuid4().hex
     evidence = jobs_root() / run_id
     evidence.mkdir(parents=True, exist_ok=False, mode=0o700)
-    job_config = config_for(run_id, evidence, case, effort)
+    job_config = planned_config if portable else config_for(run_id, evidence, case, effort)
+    if portable:
+        # Revalidate the gate and compare the actual concrete object after all
+        # launcher mutations before passing it to native_job.
+        schema2_execution.verify_activated(schema2_context['root'],schema2_context['identity'],schema2_context['reservation_id'],review,preparation_evidence=schema2_context['preparation_evidence'])
+        import schema2_projection
+        actual = JobConfig.model_validate(job_config)
+        if not schema2_projection.exact(schema2_projection.project(actual),binding['job_config']):
+            raise ValueError('portable concrete JobConfig mismatch')
     config_path = evidence / 'job-config.json'
-    config_path.write_text(json.dumps(job_config, indent=2, sort_keys=True) + '\n')
-    (evidence / 'launcher.json').write_text(json.dumps({'execution_id': run_id, 'started_at': datetime.now(timezone.utc).isoformat(), 'case': case_name, 'case_sha256': snapshot['case_sha256'], 'image_id': image_id, 'configuration_sha256': snapshot['configuration_sha256'], 'implementation_sha256': snapshot['implementation_sha256'], 'candidate_sha256': snapshot['candidate_sha256'], 'harbor_version': '0.26.0', 'codex_version': '0.169.0', 'prerequisites': snapshot['prerequisites'], 'review_sha256': hashlib.sha256(review.read_bytes()).hexdigest(), 'job_config_sha256': hashlib.sha256(config_path.read_bytes()).hexdigest()}, indent=2, sort_keys=True) + '\n')
+    if portable:
+        config_path.write_bytes(schema2_projection.canonical(binding['job_config']))
+    else:
+        config_path.write_text(json.dumps(job_config, indent=2, sort_keys=True) + '\n')
+    launcher_record = {'execution_id': run_id, 'started_at': datetime.now(timezone.utc).isoformat(), 'case': case_name, 'case_sha256': snapshot['case_sha256'], 'image_id': image_id, 'configuration_sha256': snapshot['configuration_sha256'], 'implementation_sha256': snapshot['implementation_sha256'], 'candidate_sha256': snapshot['candidate_sha256'], 'harbor_version': '0.26.0', 'codex_version': '0.169.0', 'prerequisites': snapshot['prerequisites'], 'review_sha256': hashlib.sha256(review.read_bytes()).hexdigest(), 'job_config_sha256': hashlib.sha256(config_path.read_bytes()).hexdigest()}
+    if portable:
+        launcher_record.update({'runnable_contract':'planar-schema2-runnable-v1','verifier_image_id':verifier_image,'effective_verifier_environment':binding['effective_verifier_environment']})
+    (evidence / 'launcher.json').write_text(json.dumps(launcher_record, indent=2, sort_keys=True) + '\n')
     # Docker uses the current user's context; no API-key or host configuration
     # variables are inherited by the Harbor process.
     directories = [str(Path(docker).resolve().parent), str(Path(sys.executable).parent), '/usr/bin', '/bin', '/usr/sbin', '/sbin']
@@ -300,6 +339,11 @@ def execute(auth_path, review_path, case_name='plugin-smoke', *, candidate_root=
            'CODEX_AUTH_JSON_PATH': str(auth_path), 'OPENAI_API_KEY': '', 'CODEX_API_KEY': ''}
     if verifier_image:
         env['PLANAR_T045_VERIFIER_IMAGE_ID'] = verifier_image
+    if portable:
+        context_path=evidence/'schema2-context.json'
+        context_path.write_text(json.dumps({**schema2_context,'gate_path':str(review)},sort_keys=True)+'\n')
+        env['PLANAR_SCHEMA2_CONTEXT'] = str(context_path)
+        env['PYTHONPATH'] += os.pathsep + str(EVALS/'planar/experiments')
     if candidate_root is not None:
         env['PLANAR_T044_CANDIDATE_SNAPSHOT'] = str(Path(candidate_root).resolve(strict=True))
         env['PLANAR_T044_CASE_SNAPSHOT'] = str(case)

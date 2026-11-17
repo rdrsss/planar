@@ -81,6 +81,15 @@ class Schema2Cli(unittest.TestCase):
         native.unlink(); native.symlink_to(path)
         with self.assertRaises(schema2.Invalid): schema2_reporting.report(self.out,identity)
 
+    def test_old_manifest_cannot_use_runnable_execution_routes(self):
+        m=self.cli('plan-v2',self.definition,self.out); identity=m['identity']
+        r=self.cli('reserve-v2',self.out,identity,'a:1','--expires-at',when(600))
+        untouched=self.root/'never-read-auth'; gate=self.root/'never-read-gate'; prep=self.root/'never-read-prep'
+        self.cli('execute-runnable-v2',self.out,identity,r['reservation_id'],'--auth-file',untouched,'--gate',gate,'--preparation-evidence',prep,ok=False)
+        self.cli('reserve-runnable-v2',self.out,identity,'a:2','--expires-at',when(600),'--preparation-evidence',prep,ok=False)
+        self.assertFalse(untouched.exists()); self.assertFalse(gate.exists()); self.assertFalse(prep.exists())
+        self.assertEqual(list((self.out/'executions').iterdir()),[])
+
     def test_report_retains_retry_without_inventing_verdict(self):
         m=self.cli('plan-v2',self.definition,self.out); identity=m['identity']
         primary=self.cli('reserve-v2',self.out,identity,'a:1','--expires-at',when(600))
@@ -96,7 +105,7 @@ class Schema2Cli(unittest.TestCase):
         self.assertEqual(report['groups'][0]['primary_not_started'],1)
         self.assertEqual(report['groups'][0]['all_attempts_reserved'],2)
         self.assertEqual(report['groups'][0]['all_attempts_planned'],1)
-        self.assertIn('no behavioral verdict',report['assessment'])
+        self.assertIn('behavioral verdict not inferred',report['assessment'])
         dest=self.root/'report.json'; self.cli('report-v2',self.out,identity,'--output',dest)
         self.cli('report-v2',self.out,identity,'--output',dest,ok=False)
 

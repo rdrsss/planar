@@ -58,6 +58,43 @@ def main():
     v2reserve.add_argument('--expires-at', required=True)
     v2reserve.add_argument('--retry-of')
     v2reserve.add_argument('--retry-reason')
+    runnable_prepare = commands.add_parser('prepare-runnable-v2', help='build and inspect verifier without authentication or model work')
+    runnable_prepare.add_argument('experiment', type=Path)
+    runnable_prepare.add_argument('identity')
+    runnable_prepare.add_argument('logical_id')
+    runnable_prepare.add_argument('--output', type=Path, required=True)
+    runnable_reserve = commands.add_parser('reserve-runnable-v2', help='reserve one runnable-v1 trial after no-auth image preparation')
+    runnable_reserve.add_argument('experiment', type=Path)
+    runnable_reserve.add_argument('identity')
+    runnable_reserve.add_argument('logical_id')
+    runnable_reserve.add_argument('--expires-at', required=True)
+    runnable_reserve.add_argument('--preparation-evidence', type=Path, required=True)
+    runnable_reserve.add_argument('--retry-of')
+    runnable_reserve.add_argument('--retry-reason')
+    runnable_gate = commands.add_parser('check-runnable-v2', help='compare runnable-v1 review gate without consuming or authorizing it')
+    runnable_gate.add_argument('experiment', type=Path)
+    runnable_gate.add_argument('identity')
+    runnable_gate.add_argument('reservation_id')
+    runnable_gate.add_argument('gate', type=Path)
+    runnable_gate.add_argument('--preparation-evidence', type=Path, required=True)
+    runnable_execute = commands.add_parser('execute-runnable-v2', help='execute one separately reviewed runnable-v1 reservation')
+    runnable_execute.add_argument('experiment', type=Path)
+    runnable_execute.add_argument('identity')
+    runnable_execute.add_argument('reservation_id')
+    runnable_execute.add_argument('--auth-file', type=Path, required=True)
+    runnable_execute.add_argument('--gate', type=Path, required=True)
+    runnable_execute.add_argument('--preparation-evidence', type=Path, required=True)
+    runnable_reconcile = commands.add_parser('reconcile-runnable-v2', help='reconcile an existing runnable attempt without replaying auth or a native job')
+    runnable_reconcile.add_argument('experiment', type=Path)
+    runnable_reconcile.add_argument('identity')
+    runnable_reconcile.add_argument('reservation_id')
+    runnable_reconcile.add_argument('--gate', type=Path, required=True)
+    v2resolve = commands.add_parser('resolve-account-stop-v2', help='explicitly resolve a cleaned runnable account stop')
+    v2resolve.add_argument('experiment', type=Path)
+    v2resolve.add_argument('identity')
+    v2resolve.add_argument('execution_id')
+    v2resolve.add_argument('--reason', required=True)
+    v2resolve.add_argument('--gate', type=Path, required=True)
     v2gate = commands.add_parser('check-gate-v2', help='compare an existing gate without consuming or authorizing it')
     v2gate.add_argument('experiment', type=Path)
     v2gate.add_argument('identity')
@@ -79,6 +116,27 @@ def main():
     elif args.command == 'reserve-v2':
         import schema2
         print(json.dumps(schema2.reserve(args.experiment, args.identity, args.logical_id, expires_at=args.expires_at, predecessor_execution_id=args.retry_of, retry_reason=args.retry_reason), indent=2))
+    elif args.command == 'prepare-runnable-v2':
+        import schema2_runnable
+        print(json.dumps(schema2_runnable.prepare_image(args.experiment,args.identity,args.logical_id,output=args.output),indent=2))
+    elif args.command == 'reserve-runnable-v2':
+        import schema2_runnable
+        print(json.dumps(schema2_runnable.reserve(args.experiment,args.identity,args.logical_id,expires_at=args.expires_at,preparation_evidence=args.preparation_evidence,predecessor_execution_id=args.retry_of,retry_reason=args.retry_reason),indent=2))
+    elif args.command == 'check-runnable-v2':
+        import per_variant
+        import schema2_runnable
+        gate=per_variant.parse(args.gate.read_bytes(),1024*1024)
+        print(json.dumps(schema2_runnable.check_gate(args.experiment,args.identity,args.reservation_id,gate,preparation_evidence=args.preparation_evidence),indent=2))
+    elif args.command == 'execute-runnable-v2':
+        import schema2_execution
+        print(json.dumps(schema2_execution.execute_runnable(args.experiment,args.identity,args.reservation_id,args.auth_file,args.gate,preparation_evidence=args.preparation_evidence),indent=2))
+    elif args.command == 'reconcile-runnable-v2':
+        import schema2_execution
+        result=schema2_execution.reconcile_runnable(args.experiment,args.identity,args.reservation_id,args.gate)
+        print(json.dumps(result if result is not None else {'status':'blocked','reason':'insufficient or contradictory recovery evidence'},indent=2))
+    elif args.command == 'resolve-account-stop-v2':
+        import schema2_execution
+        print(json.dumps(schema2_execution.resolve_account_stop(args.experiment,args.identity,args.execution_id,args.reason,gate_path=args.gate),indent=2))
     elif args.command == 'check-gate-v2':
         import schema2
         gate = json.loads(args.gate.read_text())

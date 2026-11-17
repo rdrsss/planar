@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 
 from harbor.models.task.config import NetworkMode
 
@@ -26,7 +27,7 @@ class GuardedDocker(DockerEnvironment):
         if not re.fullmatch(r'planar-t044-(?:noauth-)?[0-9a-f]{32}', run_id):
             raise ValueError('invalid launcher execution identity')
         case_name = os.environ.get('PLANAR_T044_CASE', 'plugin-smoke')
-        if case_name not in ('plugin-smoke', 'native-lineage-smoke', 'native-lineage-current', 'fresh-interrupted-review', 'clean-revision'):
+        if case_name not in ('plugin-smoke', 'native-lineage-smoke', 'native-lineage-current', 'fresh-interrupted-review', 'clean-revision', 'native-lineage-portable'):
             raise ValueError('unsupported diagnostic case')
         self._case_name = case_name
         self._evidence_root = evidence
@@ -41,6 +42,8 @@ class GuardedDocker(DockerEnvironment):
             self._verifier_step = match.group(1)
         if self._static_verifier:
             snapshot = os.environ.get('PLANAR_T044_CASE_SNAPSHOT')
+            if case_name == 'native-lineage-portable' and not snapshot:
+                raise ValueError('portable verifier requires frozen case snapshot')
             if snapshot:
                 from launch import case_inventory
                 root = Path(snapshot)
@@ -63,6 +66,19 @@ class GuardedDocker(DockerEnvironment):
             policy = kwargs.get('network_policy')
             if policy is None or policy.network_mode != NetworkMode.NO_NETWORK:
                 raise ValueError('verifier requires a no-network policy')
+            if case_name == 'native-lineage-portable':
+                # Only the separate verifier may substitute the independently
+                # reviewed data-baked image into a deep copy of Harbor's config.
+                sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'experiments'))
+                from schema2_projection import effective_verifier_environment, project, exact
+                image_id = os.environ.get('PLANAR_T045_VERIFIER_IMAGE_ID')
+                if (record.get('runnable_contract') != 'planar-schema2-runnable-v1'
+                    or record.get('verifier_image_id') != image_id):
+                    raise ValueError('portable verifier binding missing')
+                effective = effective_verifier_environment(kwargs['task_env_config'], image_id)
+                if not exact(project(effective), record.get('effective_verifier_environment')):
+                    raise ValueError('portable verifier configuration mismatch')
+                kwargs['task_env_config'] = effective
         kwargs['session_id'] = run_id + '-' + raw_session
         super().__init__(*args, **kwargs)
         if self._static_verifier:
@@ -89,13 +105,15 @@ class GuardedDocker(DockerEnvironment):
         return capabilities
 
     async def start(self, force_build):
+        if self._static_verifier and self._case_name == 'native-lineage-portable' and force_build:
+            raise ValueError('portable verifier cannot rebuild')
         await super().start(force_build)
         if self._static_verifier:
             cid = await self._platform._resolve_service_container('main')
             result = subprocess.run(['docker', 'inspect', '--format', '{{.HostConfig.NetworkMode}}', cid], capture_output=True, text=True, check=True, timeout=15)
             if result.stdout.strip() != 'none':
                 raise RuntimeError('verifier container is not network-disabled')
-            if self._case_name == 'clean-revision':
+            if self._case_name in ('clean-revision', 'native-lineage-portable'):
                 expected = os.environ.get('PLANAR_T045_VERIFIER_IMAGE_ID')
                 noauth = os.environ.get('PLANAR_T045_NOAUTH_CONTROL') == '1'
                 if noauth and any(os.environ.get(key) for key in ('CODEX_AUTH_JSON_PATH','CODEX_FORCE_AUTH_JSON','OPENAI_API_KEY','CODEX_API_KEY')):
@@ -106,10 +124,28 @@ class GuardedDocker(DockerEnvironment):
             evidence = Path(os.environ['PLANAR_T044_EVIDENCE_DIR']).resolve(strict=True)
             name = 'verifier-network-'+self._verifier_step+'.json' if self._verifier_step else 'verifier-network.json'
             record = {'execution_id': evidence.name, 'container_id': cid, 'network_mode': 'none'}
+            if self._case_name == 'native-lineage-portable':
+                record['image_id'] = actual
             if self._verifier_step:
                 record['step'] = self._verifier_step
                 record['image_id'] = actual
             (evidence / name).write_text(json.dumps(record))
+
+    async def _run_docker_compose_command(self, command, check=True, timeout_sec=None, stdin_data=None, on_output=None):
+        if self._static_verifier and self._case_name == 'native-lineage-portable':
+            if command and command[0] in ('build', 'pull'):
+                raise ValueError('portable verifier cannot build or pull at runtime')
+            if command and command[0] == 'up':
+                if any(arg in ('--build', '--pull') or arg.startswith('--pull=') for arg in command[1:]):
+                    raise ValueError('portable verifier has conflicting compose flags')
+                command = [*command, '--no-build', '--pull', 'never']
+                path = self._evidence_root / 'verifier-compose-up.json'
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, 'w') as output:
+                    json.dump({'execution_id': self._evidence_root.name, 'command': command}, output)
+                    output.flush(); os.fsync(output.fileno())
+        return await super()._run_docker_compose_command(command, check=check,
+            timeout_sec=timeout_sec, stdin_data=stdin_data, on_output=on_output)
 
     async def _apply_network_policy(self, network_policy):
         if self._static_verifier and network_policy.network_mode == NetworkMode.NO_NETWORK:
