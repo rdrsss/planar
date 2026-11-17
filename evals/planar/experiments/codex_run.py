@@ -47,7 +47,36 @@ def shared_pending(records):
             data=json.loads(start.read_text())
             if data.get('case') != 'retained-a-fresh-b': return closed.exists() or resolved.exists()
             if closed.exists() or closed.is_symlink() or resolved.is_symlink() or not resolved.is_file(): return False
-            release=json.loads(resolved.read_text())
+            import retained_b_release_schema
+            release=json.loads(resolved.read_text(),object_pairs_hook=retained_b_release_schema._unique)
+            early_fields={'type','execution_id','job_id','trial_id','observed_status','observed_reason','observed_reward',
+                          'gate_sha256','source_packet_sha256','case_sha256','candidate_sha256','configuration_sha256',
+                          'historical_implementation_sha256','resolver_commit','resolver_implementation_sha256',
+                          'audit_sha256','release_sha256','release_path','historical_commit','wrapper_audit_sha256','trace_sha256','verifier_status_sha256','reward_sha256','census_sha256'}
+            if release.get('type')=='aborted-before-work':
+                gate=data.get('gate_authority',{})
+                review=Path(release['release_path']); project_reviews=(launch.PROJECT/'reviews').resolve(strict=True)
+                if review.is_symlink() or not review.is_file() or not review.resolve().is_relative_to(project_reviews): return False
+                review_bytes=review.read_bytes()
+                if hashlib.sha256(review_bytes).hexdigest()!=release['release_sha256']: return False
+                reviewed=retained_b_release_schema.parse(review_bytes)
+                overlap=set(release)&set(reviewed)
+                if any(type(release[k]) is not type(reviewed[k]) or release[k]!=reviewed[k] for k in overlap): return False
+                census=resolved.parent/(data['execution_id']+'.census-'+release['census_sha256']+'.json')
+                if census.is_symlink() or not census.is_file() or hashlib.sha256(census.read_bytes().rstrip(b'\n')).hexdigest()!=release['census_sha256']: return False
+                return (set(release)==early_fields and release['execution_id']==data['execution_id']=='planar-t044-aeaec469c5c549ee96f3ce7729dc4c2e'
+                        and release['job_id']=='fdc75ee2-c657-453d-ab8a-0b86879b5e36' and release['trial_id']=='89273082-831e-4cfd-812e-307db6df2413'
+                        and release['historical_commit']=='bd3fecfe1c4786125973fc800150173f52be1f53' and release['wrapper_audit_sha256']=='fe6f155376212c9d77d01ecd8bb539ac99b479a5169ee754ff7282ec6c559572'
+                        and release['observed_status']=='behavioral_failure' and release['observed_reason']=='final record field mismatch' and type(release['observed_reward']) is int and release['observed_reward']==0
+                        and release['gate_sha256']==data['gate_sha256']=='8a7d024b4f8ec14983f700e352deeddfeeb9209fb28a4d9545fd6336132afe86' and release['source_packet_sha256']==gate.get('source_packet_sha256')
+                        and release['audit_sha256']=='1b6f7e187c154fce391d7eccd341293fc19e00f6cfbbc949255838c9a5413578'
+                        and release['trace_sha256']=='7ebac5fa973365f637365c54fdb675852623304767f45c6c9c895049a4b1e0cc'
+                        and release['verifier_status_sha256']=='d638a8043ee92815310aecbeb69060bc3a5464e08ff76f12b40252cfe0ae946e'
+                        and release['reward_sha256']=='9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa'
+                        and release['case_sha256']==gate.get('case_sha256') and release['candidate_sha256']==gate.get('candidate_sha256')
+                        and release['configuration_sha256']==gate.get('configuration_sha256') and release['historical_implementation_sha256']==gate.get('implementation_sha256')
+                        and isinstance(release['resolver_commit'],str) and len(release['resolver_commit'])==40 and all(c in '0123456789abcdef' for c in release['resolver_commit'])
+                        and all(isinstance(release[k],str) and len(release[k])==64 and all(c in '0123456789abcdef' for c in release[k]) for k in ('gate_sha256','source_packet_sha256','case_sha256','candidate_sha256','configuration_sha256','historical_implementation_sha256','resolver_implementation_sha256','audit_sha256','release_sha256','trace_sha256','verifier_status_sha256','reward_sha256','census_sha256')))
             fields={'execution_id','behavior','audit_sha256','gate_sha256','source_packet_sha256','verifier_status_sha256','reward_sha256'}
             return (set(release)==fields and release['execution_id']==data['execution_id'] and release['behavior']=='incomplete'
                     and release['gate_sha256']==data['gate_sha256'] and release['source_packet_sha256']==data['gate_authority']['source_packet_sha256']
