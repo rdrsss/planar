@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import time
 from datetime import datetime, timezone
 
 from recover import recover_projects
@@ -17,7 +18,11 @@ def main():
         raise RuntimeError('durable recovery marker missing')
     command=[sys.executable, str(Path(__file__).with_name('native_job.py')), str(evidence/'job-config.json'), str(evidence)]
     def on_start(pid):
-        (evidence/'harbor-process.json').write_text(json.dumps({'pid':pid,'execution_id':evidence.name}))
+        record = {'pid':pid, 'execution_id':evidence.name}
+        if os.environ.get('PLANAR_T044_CASE') == 'clean-revision':
+            record.update({'started_monotonic_ns':time.monotonic_ns(), 'deadline_seconds':deadline,
+                           'absolute_deadline':os.environ.get('PLANAR_T044_ABSOLUTE_DEADLINE')})
+        (evidence/'harbor-process.json').write_text(json.dumps(record))
     def cleanup():
         recover_projects(evidence)
         marker.unlink()

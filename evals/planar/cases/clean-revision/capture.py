@@ -1,0 +1,151 @@
+"""Host-controlled capture and fixed fault for an identified quiescent container.
+
+The caller owns the fresh private evidence root and must establish the A gate
+and step ordering. This module never accepts a path or bytes for injection.
+"""
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import time
+
+from safe_export import select_recovery_home, write_tree
+from boundary import verify_injection
+from snapshot import select_repository
+
+CASE = Path(__file__).resolve().parent
+PROJECT = 'projects/revision-fault/'
+
+
+def _docker(*args):
+    return subprocess.run(['docker', *args], check=True, capture_output=True, text=True, timeout=30).stdout
+
+
+def census(container_id):
+    if not re.fullmatch(r'[0-9a-f]{64}', container_id): raise ValueError('invalid container identity')
+    actual = _docker('inspect', '--format', '{{.Id}}', container_id).strip()
+    if actual != container_id: raise ValueError('container identity changed')
+    lines = _docker('top', container_id, '-eo', 'pid,ppid,args').splitlines()
+    if len(lines) < 2: raise ValueError('process census unavailable')
+    return sorted(' '.join(line.split()) for line in lines[1:])
+
+
+def _git(container_id, *args):
+    return _docker('exec', '--user', 'root', '--env', 'GIT_CONFIG_NOSYSTEM=1', '--env', 'GIT_CONFIG_GLOBAL=/dev/null',
+                   container_id, 'git', '-c', 'safe.directory=/workspace/repository', '-c', 'core.fsmonitor=false',
+                   '-c', 'core.hooksPath=/dev/null', '-C', '/workspace/repository', *args)
+
+
+async def collect(environment, container_id, baseline):
+    """Collect full bounded evidence only while exact process census matches."""
+    if not baseline or census(container_id) != baseline: raise ValueError('container not quiescent')
+    head = _git(container_id, 'rev-parse', 'HEAD')
+    stage = _git(container_id, 'ls-files', '--stage')
+    status = _git(container_id, 'status', '--porcelain=v1', '--untracked-files=all')
+    if head.strip() != '08bacc341a31f32c14a1695b5b2de5c44b3a3e56': raise ValueError('base changed')
+    projection = json.loads((CASE/'projection.json').read_text())['files']
+    retained = {name[5:] for name in projection if name.startswith('home/')}
+    home = select_recovery_home(await environment._archive('/workspace/home/.'), retained)
+    for name in retained:
+        if name not in home: raise ValueError('initial home input missing')
+        # tasks.md is allowed to change at the final step; the verifier checks it.
+        if name != PROJECT+'tasks.md' and hashlib.sha256(home[name]).hexdigest() != projection['home/'+name]:
+            raise ValueError('immutable home input changed')
+    repository, repo_meta = select_repository(await environment._archive('/workspace/repository/.'))
+    if hashlib.sha256(repository['repository/README.md']).hexdigest() != projection['repository/README.md']:
+        raise ValueError('base README changed')
+    if repository['repository/.git/HEAD'] != b'08bacc341a31f32c14a1695b5b2de5c44b3a3e56\n':
+        raise ValueError('repository is not detached at the base')
+    if census(container_id) != baseline: raise ValueError('process census changed during capture')
+    files = {'home/'+name: content for name,content in home.items()}
+    files.update(repository)
+    files['host/git-head.txt'] = head.encode()
+    files['host/git-stage.txt'] = stage.encode()
+    files['host/git-status.txt'] = status.encode()
+    files['host/repository-inventory.json'] = (json.dumps(repo_meta, sort_keys=True, separators=(',', ':'))+'\n').encode()
+    return files
+
+
+def save(destination, files):
+    """Write a one-time immutable host snapshot and host-computed manifest."""
+    destination = Path(destination)
+    if destination.exists() or destination.is_symlink(): raise ValueError('snapshot destination exists')
+    from boundary import manifest
+    inventory = manifest(files)
+    write_tree(destination, files)
+    descriptor = destination/'snapshot-manifest.json'
+    fd = os.open(descriptor, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'w') as output:
+        json.dump(inventory, output, sort_keys=True, indent=2)
+        output.write('\n')
+    receipt = {'stage':destination.name, 'wall_ns':time.time_ns(), 'monotonic_ns':time.monotonic_ns(),
+               'manifest_sha256':hashlib.sha256(descriptor.read_bytes()).hexdigest()}
+    receipt_path = destination.parent/(destination.name+'-receipt.json')
+    fd = os.open(receipt_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'w') as output:
+        json.dump(receipt, output, sort_keys=True)
+        output.write('\n')
+
+
+# A fixed, non-interpolated root command. It follows no symlink, checks exact
+# old bytes and regular single-link ownership before replacing the file bytes.
+INJECT = """import os,stat
+p='/workspace/repository/STATE.txt'
+f=os.open(p,os.O_RDWR|os.O_NOFOLLOW)
+s=os.fstat(f)
+if not stat.S_ISREG(s.st_mode) or s.st_nlink != 1 or os.read(f,100) != b'correct\\n': raise SystemExit(1)
+os.lseek(f,0,os.SEEK_SET); os.write(f,b'fault-injected\\n'); os.ftruncate(f,len(b'fault-injected\\n')); os.fsync(f); os.close(f)
+"""
+
+
+async def inject(environment, container_id, baseline, before):
+    """Perform the sole approved delta, then recapture and compare it."""
+    if census(container_id) != baseline: raise ValueError('container not quiescent')
+    if before.get('repository/STATE.txt') != b'correct\n': raise ValueError('unexpected initial state')
+    _docker('exec', '--user', 'root', container_id, 'python3', '-c', INJECT)
+    after = await collect(environment, container_id, baseline)
+    # The repo inventory necessarily changes STATE's hash; compare that one
+    # entry separately and require all other metadata to remain identical.
+    pre_meta = json.loads(before['host/repository-inventory.json'])
+    post_meta = json.loads(after['host/repository-inventory.json'])
+    old_state = pre_meta['files'].pop('STATE.txt', None)
+    new_state = post_meta['files'].pop('STATE.txt', None)
+    if old_state is None or new_state is None or pre_meta != post_meta:
+        raise ValueError('unexpected repository metadata delta')
+    filtered_pre = {k:v for k,v in before.items() if k != 'host/repository-inventory.json'}
+    filtered_post = {k:v for k,v in after.items() if k != 'host/repository-inventory.json'}
+    receipt = verify_injection(filtered_pre, filtered_post)
+    return after, receipt
+
+
+def load(destination):
+    """Read a saved snapshot only when every byte matches its host manifest."""
+    destination = Path(destination)
+    if destination.is_symlink(): raise ValueError('unsafe snapshot directory')
+    if not destination.is_dir(): raise FileNotFoundError('snapshot directory missing')
+    descriptor = destination/'snapshot-manifest.json'
+    if descriptor.is_symlink() or not descriptor.is_file(): raise ValueError('snapshot manifest missing')
+    inventory = json.loads(descriptor.read_text())
+    if not isinstance(inventory, dict) or not inventory: raise ValueError('invalid snapshot manifest')
+    actual = set()
+    for path in destination.rglob('*'):
+        if path.is_symlink(): raise ValueError('symlink in snapshot')
+        if path.is_file() and path != descriptor: actual.add(path.relative_to(destination).as_posix())
+        elif not path.is_file() and not path.is_dir(): raise ValueError('special snapshot entry')
+    if actual != set(inventory): raise ValueError('snapshot inventory mismatch')
+    files = {}
+    for name, item in inventory.items():
+        if not isinstance(name, str) or name.startswith('/') or any(part in ('', '.', '..') for part in name.split('/')):
+            raise ValueError('unsafe snapshot name')
+        path = destination/name
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            with os.fdopen(fd, 'rb') as stream: data = stream.read(4*1024*1024+1)
+        except BaseException:
+            raise
+        if len(data) > 4*1024*1024 or item != {'size':len(data), 'sha256':hashlib.sha256(data).hexdigest()}:
+            raise ValueError('snapshot content mismatch')
+        files[name] = data
+    return files

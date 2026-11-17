@@ -1,0 +1,1 @@
+Use the installed Planar package with the isolated approved project at `/workspace/home/projects/revision-fault`, profile `revision-fault`, and `PLANAR_HOME=/workspace/home`. Run T-001 and stop after its worker has completed and the worker-done step is durably recorded, before checks or review. Keep all work within this isolated workspace.

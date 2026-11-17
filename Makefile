@@ -38,6 +38,7 @@ evals-setup:
 evals-test:
 	uv run --project evals --locked python -m unittest discover -s evals/planar/adapters -p 'test_*.py' -v
 	uv run --project evals --locked python -m unittest discover -s evals/planar/cases/fresh-interrupted-review -p 'test_*.py' -v
+	PYTHONPATH=evals/planar/adapters uv run --project evals --locked python -m unittest discover -s evals/planar/cases/clean-revision -p 'test_*.py' -v
 	uv run --project evals --locked python -m unittest discover -s evals/planar/experiments -p 'test_*.py' -v
 evals-plan:
 	PLANAR_EVALS_OUTPUT_ROOT="$$EVALS_OUTPUT_ROOT" uv run --project evals --locked python evals/planar/adapters/launch.py --case "$$CASE"

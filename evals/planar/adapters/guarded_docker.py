@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 
 from harbor.models.task.config import NetworkMode
@@ -25,13 +26,19 @@ class GuardedDocker(DockerEnvironment):
         if not re.fullmatch(r'planar-t044-(?:noauth-)?[0-9a-f]{32}', run_id):
             raise ValueError('invalid launcher execution identity')
         case_name = os.environ.get('PLANAR_T044_CASE', 'plugin-smoke')
-        if case_name not in ('plugin-smoke', 'native-lineage-smoke', 'native-lineage-current', 'fresh-interrupted-review'):
+        if case_name not in ('plugin-smoke', 'native-lineage-smoke', 'native-lineage-current', 'fresh-interrupted-review', 'clean-revision'):
             raise ValueError('unsupported diagnostic case')
         self._case_name = case_name
+        self._evidence_root = evidence
         raw_session = kwargs.get('session_id')
         if not isinstance(raw_session, str):
             raise ValueError('environment session identity is required')
         self._static_verifier = '__verifier__' in raw_session
+        self._verifier_step = None
+        if self._static_verifier and case_name == 'clean-revision':
+            match = re.search(r'__verifier__(worker|revision)$', raw_session)
+            if match is None: raise ValueError('invalid clean verifier step identity')
+            self._verifier_step = match.group(1)
         if self._static_verifier:
             snapshot = os.environ.get('PLANAR_T044_CASE_SNAPSHOT')
             if snapshot:
@@ -88,8 +95,21 @@ class GuardedDocker(DockerEnvironment):
             result = subprocess.run(['docker', 'inspect', '--format', '{{.HostConfig.NetworkMode}}', cid], capture_output=True, text=True, check=True, timeout=15)
             if result.stdout.strip() != 'none':
                 raise RuntimeError('verifier container is not network-disabled')
+            if self._case_name == 'clean-revision':
+                expected = os.environ.get('PLANAR_T045_VERIFIER_IMAGE_ID')
+                noauth = os.environ.get('PLANAR_T045_NOAUTH_CONTROL') == '1'
+                if noauth and any(os.environ.get(key) for key in ('CODEX_AUTH_JSON_PATH','CODEX_FORCE_AUTH_JSON','OPENAI_API_KEY','CODEX_API_KEY')):
+                    raise ValueError('no-auth control cannot carry authentication')
+                if not expected and not noauth: raise ValueError('reviewed verifier image identity missing')
+                actual = subprocess.run(['docker','inspect','--format','{{.Image}}',cid], capture_output=True, text=True, check=True, timeout=15).stdout.strip()
+                if expected and actual != expected: raise ValueError('actual verifier image differs from gate')
             evidence = Path(os.environ['PLANAR_T044_EVIDENCE_DIR']).resolve(strict=True)
-            (evidence / 'verifier-network.json').write_text(json.dumps({'execution_id': evidence.name, 'container_id': cid, 'network_mode': 'none'}))
+            name = 'verifier-network-'+self._verifier_step+'.json' if self._verifier_step else 'verifier-network.json'
+            record = {'execution_id': evidence.name, 'container_id': cid, 'network_mode': 'none'}
+            if self._verifier_step:
+                record['step'] = self._verifier_step
+                record['image_id'] = actual
+            (evidence / name).write_text(json.dumps(record))
 
     async def _apply_network_policy(self, network_policy):
         if self._static_verifier and network_policy.network_mode == NetworkMode.NO_NETWORK:
@@ -124,7 +144,43 @@ class GuardedDocker(DockerEnvironment):
     async def download_dir(self, source_dir, target_dir):
         if source_dir == '/logs/agent' and not self._static_verifier:
             archive = await self._archive(source_dir + '/.')
-            write_tree(Path(target_dir), select_native_logs(archive))
+            logs = select_native_logs(archive)
+            write_tree(Path(target_dir), logs)
+            if self._case_name == 'clean-revision':
+                clean = self._evidence_root/'clean-revision'
+                active = json.loads((clean/'active.json').read_text())
+                step = active.get('step')
+                if step not in ('worker', 'revision'): raise ValueError('invalid clean step')
+                destination = clean/'logs'/step
+                if destination.exists() or destination.is_symlink(): raise ValueError('clean step logs already collected')
+                write_tree(destination, logs)
+        elif source_dir == '/workspace/home' and not self._static_verifier and self._case_name == 'clean-revision':
+            from clean_revision_support import load_case_module
+            case = Path(os.environ.get('PLANAR_T044_CASE_SNAPSHOT') or Path(__file__).resolve().parents[1]/'cases/clean-revision')
+            capture = load_case_module(case, 'capture')
+            clean = self._evidence_root/'clean-revision'
+            active = json.loads((clean/'active.json').read_text())
+            step = active.get('step')
+            if step not in ('worker', 'revision'): raise ValueError('invalid clean step')
+            identity = json.loads((clean/'container.json').read_text())
+            cid = await self._platform._resolve_service_container('main')
+            actual = subprocess.run(['docker','inspect','--format','{{.Id}}',cid], check=True, capture_output=True, text=True, timeout=15).stdout.strip()
+            if actual != identity.get('container_id'): raise ValueError('clean container identity changed')
+            if not (clean/'logs'/step).is_dir(): raise ValueError('clean native logs missing')
+            snapshot = await capture.collect(self, actual, identity.get('baseline'))
+            capture.save(clean/('pre' if step == 'worker' else 'final'), snapshot)
+            home = {name[5:]: value for name,value in snapshot.items() if name.startswith('home/')}
+            write_tree(Path(target_dir), home)
+            host = Path(target_dir)/'_planar_host'
+            if host.exists() or host.is_symlink(): raise ValueError('host evidence destination exists')
+            shutil.copytree(clean, host, symlinks=True)
+            # Only this exported verifier copy is made readable by the separate
+            # container user; the host-owned originals stay private.
+            for item in (host, *host.rglob('*')):
+                if item.is_symlink(): raise ValueError('symlink in host evidence')
+                if item.is_dir(): item.chmod(0o755)
+                elif item.is_file(): item.chmod(0o644)
+                else: raise ValueError('special host evidence entry')
         elif source_dir == '/workspace/home' and not self._static_verifier and self._case_name == 'fresh-interrupted-review':
             fixture = Path(__file__).resolve().parents[1] / 'cases/fresh-interrupted-review/fixture/inventory.json'
             manifest = json.loads(fixture.read_text())['files']

@@ -1,0 +1,38 @@
+# Shared minimal workflow; references/profiles.md defines the format.
+version: 2
+name: revision-fault
+description: The session drives one task at a time with a worker, checks and one reviewer.
+driver: session
+driver_execution:
+  claude: {model: claude-sonnet-5-5, effort: medium}
+  codex: {model: gpt-6.1-terra, effort: medium}
+parallel: false
+stages:
+  implement:
+    agent: worker
+    execution:
+      claude: {model: claude-sonnet-5-5, effort: medium}
+      codex: {model: gpt-6.1-terra, effort: medium}
+  check: {}
+  review:
+    reviewers:
+      - agent: reviewer
+        focus: all
+        execution:
+          claude: {model: claude-opus-5-5, effort: high}
+          codex: {model: gpt-6.1-sol, effort: medium}
+limits:
+  revisions: 2
+  stall: 2
+spec_review:
+  reviewers:
+    - agent: spec-reviewer
+      focus: all
+      execution:
+        claude: {model: claude-opus-5-5, effort: high}
+        codex: {model: gpt-6.1-sol, effort: medium}
+spec_check:
+  agent: spec-checker
+  execution:
+    claude: {model: claude-sonnet-5-5, effort: medium}
+    codex: {model: gpt-6-luna, effort: medium}

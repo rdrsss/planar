@@ -28,7 +28,7 @@ PROJECT = ROOT.parent
 REVIEWS = PROJECT / 'reviews'
 EVALS = ROOT / 'evals'
 CASE = EVALS / 'planar/cases/plugin-smoke'
-CASES = {name: EVALS / 'planar/cases' / name for name in ('plugin-smoke', 'native-lineage-smoke', 'native-lineage-current', 'fresh-interrupted-review')}
+CASES = {name: EVALS / 'planar/cases' / name for name in ('plugin-smoke', 'native-lineage-smoke', 'native-lineage-current', 'fresh-interrupted-review', 'clean-revision')}
 
 
 def case_inventory(case):
@@ -91,6 +91,10 @@ def reviews_root():
 
 
 def plan(case_name='plugin-smoke', *, candidate_root=None, case_root=None, trial_deadline=1500, effort='medium'):
+    if case_name == 'clean-revision' and (trial_deadline != 1050 or effort != 'medium'):
+        raise ValueError('clean revision requires the reviewed 1050-second job and medium effort')
+    if case_name == 'clean-revision' and (candidate_root is None or case_root is None):
+        raise ValueError('clean revision requires paired frozen candidate and case snapshots')
     if effort not in ('medium', 'high') or (case_name == 'fresh-interrupted-review' and effort != 'medium'):
         raise ValueError('unsupported effort for selected case')
     if not isinstance(trial_deadline, int) or not 1 <= trial_deadline <= 1500:
@@ -136,6 +140,26 @@ def plan(case_name='plugin-smoke', *, candidate_root=None, case_root=None, trial
         digest_input = {'base': digest_input, 'candidate_root': str(candidate), 'case_root': str(case), 'trial_deadline': trial_deadline}
     config_digest = hashlib.sha256(json.dumps(digest_input, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     task = Task(case).config
+    if case_name == 'clean-revision':
+        from harbor.models.task.config import NetworkMode
+        from harbor.models.task.verifier_mode import resolve_step_verifier_mode, VerifierEnvironmentMode
+        steps = task.steps or []
+        if ([step.name for step in steps] != ['worker','revision'] or steps[0].min_reward != 1
+            or any(step.agent.timeout_sec != 400 or step.verifier.timeout_sec != 60 for step in steps)
+            or task.agent.timeout_sec != 400 or task.verifier.timeout_sec != 60
+            or task.environment.docker_image != 'sha256:06e95472c9fb2a7ab49c50b0f2c87f5f1006aa33397ef17715a75164458b7ed2'
+            or task.verifier.environment is None or not re.fullmatch(r'sha256:[0-9a-f]{64}', task.verifier.environment.docker_image or '')
+            or task.verifier.environment.network_mode != NetworkMode.NO_NETWORK
+            or any(resolve_step_verifier_mode(task,step) != VerifierEnvironmentMode.SEPARATE for step in steps)
+            or [step.verifier.env.get('PLANAR_CLEAN_PHASE') for step in steps] != ['worker','revision']
+            or task.artifacts != ['/workspace/home']
+            or config['agents'][0].get('resume_trajectory') is not False
+            or config['agents'][0].get('load_trajectory') is not None
+            or config.get('verifier',{}).get('disable') is not False):
+            raise ValueError('clean revision native step contract mismatch')
+        from clean_revision_support import load_case_module
+        identity = load_case_module(case,'step_identity')
+        identity.load_instructions(case)
     prerequisites = {'cwd': str(Path.cwd().resolve()), 'repository_root': str(ROOT),
         'package_read_root': str(candidate), 'case_read_root': str(case),
         'project_root': str(PROJECT), 'evidence_write_root': str(jobs_root()),
@@ -154,6 +178,10 @@ def plan(case_name='plugin-smoke', *, candidate_root=None, case_root=None, trial
         'budgets_seconds': {'agent': task.agent.timeout_sec, 'verifier': task.verifier.timeout_sec, 'job': trial_deadline, 'grace': 15},
         'cleanup_owner': 'SmokeCodex and watchdog process group; recovery marker until confirmed',
         'last_observed_event': 'preflight plan', 'verdict': 'pending'}
+    if case_name == 'clean-revision':
+        prerequisites['execution_gate'] = 'requires independent review, matching expiry and one-use gate before authentication'
+        prerequisites['budgets_seconds']['step_agent'] = [400,400]
+        prerequisites['fixture'] = 'clean projected fixture and host-owned controlled state fault'
     if case_name == 'fresh-interrupted-review':
         prerequisites['execution_gate'] = 'requires independent review and matching one-use gate before execution'
         prerequisites['fixture'] = 'portable source-derived fixture; applicability requires independent review'
@@ -203,9 +231,24 @@ def execute(auth_path, review_path, case_name='plugin-smoke', *, candidate_root=
                 'case_sha256': snapshot['case_sha256'], 'image_id': snapshot['image_id']}
     if any(gate.get(key) != value for key, value in required.items()):
         raise ValueError('diagnostic review is missing, stale, or not approved')
+    if case_name == 'clean-revision':
+        if not absolute_deadline or gate.get('absolute_deadline') != absolute_deadline:
+            raise ValueError('clean revision requires the matching finite gate expiry')
+        try:
+            expiry = datetime.fromisoformat(absolute_deadline)
+            if expiry.tzinfo is None or expiry <= datetime.now(timezone.utc):
+                raise ValueError()
+        except (TypeError, ValueError):
+            raise ValueError('clean revision gate expiry is invalid or expired') from None
     image_id = gate.get('image_id')
     if not isinstance(image_id, str) or len(image_id) != 71 or not image_id.startswith('sha256:') or image_id != Task(case).config.environment.docker_image:
         raise ValueError('diagnostic review lacks the pinned image identity')
+    verifier_image = None
+    if case_name == 'clean-revision':
+        verifier_image = gate.get('verifier_image_id')
+        if (not isinstance(verifier_image, str) or not re.fullmatch(r'sha256:[0-9a-f]{64}', verifier_image)
+            or verifier_image != Task(case).config.verifier.environment.docker_image):
+            raise ValueError('clean revision requires the reviewed verifier image identity')
     harbor = Path(sys.executable).parent / 'harbor'
     docker = shutil.which('docker')
     if not docker or not harbor.is_file():
@@ -214,8 +257,16 @@ def execute(auth_path, review_path, case_name='plugin-smoke', *, candidate_root=
     result = subprocess.run(['docker', 'image', 'inspect', '--format', '{{.Id}}', image_id], text=True, capture_output=True, timeout=min(15, seconds) if seconds is not None else 15)
     if result.returncode or result.stdout.strip() != image_id:
         raise ValueError('reviewed Docker image is unavailable')
+    if verifier_image:
+        result = subprocess.run(['docker', 'image', 'inspect', '--format', '{{.Id}}', verifier_image], text=True, capture_output=True, timeout=15)
+        if result.returncode or result.stdout.strip() != verifier_image:
+            raise ValueError('reviewed verifier image is unavailable')
     if any((jobs_root()).glob('*/recovery-required')):
         raise RuntimeError('previous diagnostic cleanup is unconfirmed')
+    if case_name == 'clean-revision':
+        # The selected multi-step case consumes its reviewed one-use gate before
+        # resolving or reading the authentication file.
+        consume_review_once(review, reviews_root() / 'harbor-t044-consumed')
     auth_path = auth_path.resolve(strict=True)
     # Read solely to enforce the subscription route; never retain or print bytes.
     try:
@@ -226,7 +277,8 @@ def execute(auth_path, review_path, case_name='plugin-smoke', *, candidate_root=
         raise ValueError('subscription file authentication is unavailable') from None
     del auth
     remaining()
-    consume_review_once(review, reviews_root() / 'harbor-t044-consumed')
+    if case_name != 'clean-revision':
+        consume_review_once(review, reviews_root() / 'harbor-t044-consumed')
     run_id = execution_id or 'planar-t044-' + uuid.uuid4().hex
     evidence = jobs_root() / run_id
     evidence.mkdir(parents=True, exist_ok=False, mode=0o700)
@@ -244,6 +296,8 @@ def execute(auth_path, review_path, case_name='plugin-smoke', *, candidate_root=
            'PLANAR_T044_EXPECTED_IMAGE_ID': image_id, 'PLANAR_T044_CASE': case_name,
            'PLANAR_T044_DEADLINE_SECONDS': str(trial_deadline), 'PLANAR_T044_EFFORT': effort,
            'CODEX_AUTH_JSON_PATH': str(auth_path), 'OPENAI_API_KEY': '', 'CODEX_API_KEY': ''}
+    if verifier_image:
+        env['PLANAR_T045_VERIFIER_IMAGE_ID'] = verifier_image
     if candidate_root is not None:
         env['PLANAR_T044_CANDIDATE_SNAPSHOT'] = str(Path(candidate_root).resolve(strict=True))
         env['PLANAR_T044_CASE_SNAPSHOT'] = str(case)
@@ -292,6 +346,7 @@ def main():
     parser.add_argument('--snapshot-case', type=Path)
     parser.add_argument('--trial-deadline', type=int, default=1500)
     parser.add_argument('--execution-id')
+    parser.add_argument('--absolute-deadline')
     parser.add_argument('--effort', choices=('medium', 'high'), default='medium')
     args = parser.parse_args()
     if not args.execute:
@@ -299,7 +354,7 @@ def main():
         return 0
     if args.auth_file is None or args.review_file is None:
         parser.error('--execute requires --auth-file and --review-file')
-    return execute(args.auth_file, args.review_file, args.case, candidate_root=args.snapshot_candidate, case_root=args.snapshot_case, trial_deadline=args.trial_deadline, execution_id=args.execution_id, effort=args.effort)
+    return execute(args.auth_file, args.review_file, args.case, candidate_root=args.snapshot_candidate, case_root=args.snapshot_case, trial_deadline=args.trial_deadline, execution_id=args.execution_id, effort=args.effort, absolute_deadline=args.absolute_deadline)
 
 
 if __name__ == '__main__':

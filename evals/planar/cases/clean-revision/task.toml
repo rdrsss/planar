@@ -1,0 +1,49 @@
+schema_version = "1.4"
+multi_step_reward_strategy = "final"
+artifacts = ["/workspace/home"]
+
+[task]
+name = "planar/clean-revision"
+description = "Bounded clean scratch revision with a controlled post-worker state defect"
+authors = []
+keywords = ["planar", "codex", "revision"]
+
+[environment]
+docker_image = "sha256:06e95472c9fb2a7ab49c50b0f2c87f5f1006aa33397ef17715a75164458b7ed2"
+build_timeout_sec = 600
+cpus = 2
+memory_mb = 4096
+storage_mb = 10240
+
+[agent]
+timeout_sec = 400
+
+[verifier]
+environment_mode = "separate"
+timeout_sec = 60
+[verifier.environment]
+docker_image = "sha256:50679f79b84cbe8f034eaa73e0485e6ed7c601be5cc654985a92a4f0816cfc6a"
+network_mode = "no-network"
+build_timeout_sec = 600
+cpus = 1
+memory_mb = 2048
+storage_mb = 10240
+
+[[steps]]
+name = "worker"
+min_reward = 1
+[steps.agent]
+timeout_sec = 400
+[steps.verifier]
+timeout_sec = 60
+[steps.verifier.env]
+PLANAR_CLEAN_PHASE = "worker"
+
+[[steps]]
+name = "revision"
+[steps.agent]
+timeout_sec = 400
+[steps.verifier]
+timeout_sec = 60
+[steps.verifier.env]
+PLANAR_CLEAN_PHASE = "revision"

@@ -127,7 +127,7 @@ class LaunchControls(unittest.TestCase):
         for name, case in launch.CASES.items():
             with self.subTest(case=name):
                 self.case_name = name
-                planned = launch.plan(name)['configuration']
+                planned = (launch.plan(name, candidate_root=launch.CANDIDATE, case_root=case, trial_deadline=1050) if name == 'clean-revision' else launch.plan(name))['configuration']
                 actual = launch.config_for('actual-run', Path('/tmp/actual-run'), case)
                 for key in ('job_name', 'jobs_dir'):
                     planned.pop(key); actual.pop(key)

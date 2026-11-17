@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 from harbor.agents.installed.codex import Codex
@@ -47,9 +48,12 @@ class SmokeCodex(Codex):
             raise ValueError('provenance directory is outside the project evidence root')
         self._execution_id = self._provenance_dir.name
         case_name = os.environ.get('PLANAR_T044_CASE', 'plugin-smoke')
-        if case_name not in ('plugin-smoke', 'native-lineage-smoke', 'native-lineage-current', 'fresh-interrupted-review'):
+        if case_name not in ('plugin-smoke', 'native-lineage-smoke', 'native-lineage-current', 'fresh-interrupted-review', 'clean-revision'):
             raise ValueError('unsupported case')
         self._case_name = case_name
+        self._clean_step = None
+        self._clean_container = None
+        self._clean_baseline = None
         case_snapshot = os.environ.get('PLANAR_T044_CASE_SNAPSHOT')
         candidate_snapshot = os.environ.get('PLANAR_T044_CANDIDATE_SNAPSHOT')
         if bool(case_snapshot) != bool(candidate_snapshot):
@@ -65,6 +69,8 @@ class SmokeCodex(Codex):
     def _record(self, name, value):
         # Unlike Harbor's agent logs, this directory is never mounted into the
         # agent container. Bind every record to the unique launcher execution.
+        if getattr(self, '_case_name', 'plugin-smoke') == 'clean-revision' and self._clean_step:
+            name = self._clean_step + '-' + name
         value = {'execution_id': self._execution_id, **value}
         (self._provenance_dir / name).write_text(json.dumps(value, indent=2, sort_keys=True) + '\n')
 
@@ -117,10 +123,16 @@ class SmokeCodex(Codex):
         expected = json.loads(self._manifest.read_text())
         if inventory(getattr(self, '_candidate', CANDIDATE)) != expected:
             raise ValueError('candidate does not match frozen inventory')
-        workspace = await self.exec_as_agent(environment, command="python3 -c 'import os,stat; p=\"/workspace\"; assert stat.S_ISDIR(os.lstat(p).st_mode) and not os.listdir(p)'", env=ENV)
-        if workspace.return_code != 0:
-            raise ValueError('workspace must be an empty directory before execution')
-        self._record('planar-workspace-preflight.json', {'status': 'passed', 'fixture': '/workspace', 'check': 'empty-directory-before-model'})
+        if getattr(self, '_case_name', 'plugin-smoke') == 'clean-revision' and self._clean_step == 'revision':
+            workspace = await self.exec_as_agent(environment, command='test -d /workspace/home/projects/revision-fault && test -d /workspace/repository/.git', env=ENV)
+            if workspace.return_code != 0:
+                raise ValueError('clean revision workspace is unavailable')
+            self._record('planar-workspace-preflight.json', {'status':'passed', 'check':'retained-project-and-repository'})
+        else:
+            workspace = await self.exec_as_agent(environment, command="python3 -c 'import os,stat; p=\"/workspace\"; assert stat.S_ISDIR(os.lstat(p).st_mode) and not os.listdir(p)'", env=ENV)
+            if workspace.return_code != 0:
+                raise ValueError('workspace must be an empty directory before execution')
+            self._record('planar-workspace-preflight.json', {'status': 'passed', 'fixture': '/workspace', 'check': 'empty-directory-before-model'})
         await super()._upload_effective_config(environment, config, remote_path)
         uid, gid = await self._ensure_agent_owned_dir(environment, self._REMOTE_CODEX_HOME)
         await self.exec_as_root(environment, command=f'chown {uid}:{gid} /installed-agent/codex-home/config.toml && chmod 600 /installed-agent/codex-home/config.toml')
@@ -180,11 +192,50 @@ class SmokeCodex(Codex):
             if receipt.get('base') != '08bacc341a31f32c14a1695b5b2de5c44b3a3e56' or receipt.get('files') != 32 or receipt.get('fixture_version') != 'v2-clean-review-boundary':
                 raise ValueError('recovery fixture installation failed')
             self._record('planar-fixture-provenance.json', receipt)
+        if getattr(self, '_case_name', 'plugin-smoke') == 'clean-revision' and self._clean_step == 'worker':
+            await self._install_clean_fixture(environment)
+
+    async def _install_clean_fixture(self, environment):
+        from clean_revision_support import load_case_module
+        case = self._case
+        source = case/'fixture'
+        projection = json.loads((case/'projection.json').read_text())
+        with tempfile.TemporaryDirectory(prefix='planar-clean-') as temp:
+            root = Path(temp); root.chmod(0o755)
+            target = root/'clean-revision'; target.mkdir()
+            for name in ('install_fixture.py', 'projection.json'):
+                shutil.copyfile(case/name, target/name)
+            fixture = target/'fixture'; fixture.mkdir()
+            for name in ('inventory.json', 'base.bundle', *projection['files']):
+                src = source/name; dest = fixture/name
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(src, dest)
+            await environment.upload_dir(root, '/tmp/planar-clean-fixture')
+        command = """python3 -c 'import sys,json; sys.path.insert(0,"/tmp/planar-clean-fixture/clean-revision"); from install_fixture import install; print(json.dumps(install("/workspace")))'"""
+        result = await self.exec_as_agent(environment, command=command, env=ENV)
+        receipt = json.loads(result.stdout)
+        if receipt.get('base') != '08bacc341a31f32c14a1695b5b2de5c44b3a3e56' or receipt.get('projection_files') != 12:
+            raise ValueError('clean fixture installation failed')
+        capture = load_case_module(case, 'capture')
+        cid = await environment._platform._resolve_service_container('main')
+        cid = subprocess.run(['docker','inspect','--format','{{.Id}}',cid], check=True, capture_output=True, text=True, timeout=15).stdout.strip()
+        baseline = capture.census(cid)
+        initial = await capture.collect(environment, cid, baseline)
+        evidence = self._provenance_dir/'clean-revision'
+        evidence.mkdir(mode=0o700, exist_ok=False)
+        capture.save(evidence/'initial', initial)
+        self._clean_container, self._clean_baseline = cid, baseline
+        (evidence/'container.json').write_text(json.dumps({'container_id':cid, 'baseline':baseline})+'\n')
+        (evidence/'active.json').write_text(json.dumps({'step':'worker'})+'\n')
+        self._record('planar-fixture-provenance.json', receipt)
 
     async def exec_as_agent(self, environment, command, env=None, cwd=None, timeout_sec=None):
-        if getattr(self, '_case_name', 'plugin-smoke') == 'fresh-interrupted-review':
+        if getattr(self, '_case_name', 'plugin-smoke') in ('fresh-interrupted-review', 'clean-revision'):
             env = {**(env or {}), 'PLANAR_HOME': '/workspace/home'}
         is_exec = 'codex exec ' in command
+        if is_exec and getattr(self, '_case_name', 'plugin-smoke') == 'clean-revision' and self._clean_step == 'revision':
+            from clean_revision_support import check_revision_time
+            check_revision_time(self._provenance_dir, 475)
         if is_exec:
             self._record('planar-launch.json', {'command': command, 'codex_home': HOME, 'model': self.model_name, 'cli_version': self.version(), 'status': 'started'})
         try:
@@ -197,7 +248,41 @@ class SmokeCodex(Codex):
             self._record('planar-terminal.json', {'status': 'shell_completed', 'return_code': result.return_code})
         return result
 
+    async def _prepare_clean_step(self, instruction, environment):
+        from clean_revision_support import load_case_module
+        if not os.environ.get('PLANAR_T044_CASE_SNAPSHOT') or not os.environ.get('PLANAR_T044_CANDIDATE_SNAPSHOT'):
+            raise ValueError('clean revision requires reviewed frozen snapshots')
+        identity = load_case_module(self._case, 'step_identity')
+        selected = identity.identify(instruction, identity.load_instructions(self._case))
+        capture = load_case_module(self._case, 'capture')
+        evidence = self._provenance_dir/'clean-revision'
+        if selected == 'worker':
+            if self._clean_step is not None or evidence.exists():
+                raise ValueError('worker step already started')
+        else:
+            if self._clean_step != 'worker' or not self._clean_container or not self._clean_baseline:
+                raise ValueError('worker step was not prepared')
+            handoff = load_case_module(self._case, 'handoff')
+            handoff.worker_gate(self._provenance_dir)
+            before = capture.load(evidence/'pre')
+            current = await capture.collect(environment, self._clean_container, self._clean_baseline)
+            if current != before:
+                raise ValueError('worker snapshot changed before injection')
+            # Reserve B's complete 400-second execution, 60-second verifier,
+            # 15-second cleanup grace, and 90 seconds for the fixed handoff.
+            from clean_revision_support import check_revision_time
+            check_revision_time(self._provenance_dir, 565)
+            started = {'wall_ns':time.time_ns(), 'monotonic_ns':time.monotonic_ns()}
+            after, receipt = await capture.inject(environment, self._clean_container, self._clean_baseline, before)
+            ended = {'wall_ns':time.time_ns(), 'monotonic_ns':time.monotonic_ns()}
+            capture.save(evidence/'post', after)
+            (evidence/'injection.json').write_text(json.dumps({'change':receipt,'started':started,'ended':ended}, sort_keys=True)+'\n')
+            (evidence/'active.json').write_text(json.dumps({'step':'revision'})+'\n')
+        self._clean_step = selected
+
     async def run(self, instruction, environment, context):
+        if getattr(self, '_case_name', 'plugin-smoke') == 'clean-revision':
+            await self._prepare_clean_step(instruction, environment)
         if getattr(self, '_case_name', 'plugin-smoke') == 'fresh-interrupted-review':
             validate_recovery_selection(instruction, self.model_name, self.options.reasoning_effort)
         if self._resolve_auth_json_path() is None:
@@ -207,6 +292,9 @@ class SmokeCodex(Codex):
             raise ValueError('unexpected CLI version or model')
         if self._resume or self._load or self.mcp_servers or self.skills_dir:
             raise ValueError('only fresh, unextended exec is supported')
+        if getattr(self, '_case_name', 'plugin-smoke') == 'clean-revision' and self._clean_step == 'revision':
+            from clean_revision_support import check_revision_time
+            check_revision_time(self._provenance_dir, 475)
         try:
             return await super().run(instruction, environment, context)
         finally:
