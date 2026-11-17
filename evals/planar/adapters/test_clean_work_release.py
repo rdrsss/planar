@@ -48,7 +48,10 @@ class CleanWorkPublication(TestCase):
 
     def test_lock_publication_idempotence_and_consumer_review_binding(self):
         with TemporaryDirectory() as tmp:
-            root=Path(tmp).resolve(); jobs=root/'jobs'; jobs.mkdir(); doc=CleanWorkReleaseSchema().document(); eid=doc['execution_id']; evidence=jobs/eid; evidence.mkdir(); review=root/'review.json'; review.write_text(json.dumps(doc));
+            root=Path(tmp).resolve(); jobs=root/'jobs'; jobs.mkdir(); doc=CleanWorkReleaseSchema().document()
+            doc.update({'terminal_class':'behavioral_failure','raw_audit_path':str(root/'predicate-audit'),'raw_audit_sha256':'a'*64,'missing_artifacts':['review verifier output','review native logs','post host capture','final host capture']})
+            doc['steps']={'worker':{'status':'behavioral_failure','reason':None,'reward':0,'exception':None,'status_sha256':'d8e8b5bf76640fd5542b55813ccb8f25a2298872ea2713a55995e7b014bae4d6','reward_sha256':'9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa'},'review':None}
+            eid=doc['execution_id']; evidence=jobs/eid; evidence.mkdir(); review=root/'review.json'; review.write_text(json.dumps(doc));
             verified={'trial_name':'case__x','trial':{}}
             census={'execution_id':eid,'native_group':'absent','matching_commands':0,'unresolved':0}
             identity={'commit':doc['resolver_commit'],'implementation_sha256':doc['resolver_implementation_sha256']}
@@ -72,7 +75,7 @@ class CleanWorkPublication(TestCase):
                 with codex_run.admission_scope() as locked:
                     self.assertEqual(len(codex_run.shared_pending(locked)),1)
                 review.write_bytes(original_review)
-                data=json.loads(marker.read_text()); data['review_binding']['steps']['review']['reward']=False
+                data=json.loads(marker.read_text()); data['review_binding']['steps']['worker']['reward']=False
                 marker.write_bytes(release.canonical(data)+b'\n')
                 with codex_run.admission_scope() as locked:
                     self.assertEqual(len(codex_run.shared_pending(locked)),1)

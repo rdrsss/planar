@@ -41,7 +41,7 @@ def parse(raw):
     try:
         if datetime.fromisoformat(doc['reviewed_at']).tzinfo is None: raise ValueError()
     except ValueError: raise ValueError('invalid review time') from None
-    if doc['terminal_class'] not in ('completed','incomplete','partial_failure'):
+    if doc['terminal_class'] not in ('completed','incomplete','partial_failure','behavioral_failure'):
         raise ValueError('unsupported terminal class')
     if doc['exception'] is not None and (type(doc['exception']) is not str or not doc['exception'].strip()):
         raise ValueError('invalid exception')

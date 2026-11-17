@@ -18,20 +18,26 @@ def h(path): return hashlib.sha256(path.read_bytes()).hexdigest()
 
 class OneStep(TestCase):
     def test_retained_worker_evidence_and_fresh_checks(self):
-        native=json.loads((SOURCE/'native-trial-start.json').read_text()); original_job=Path(native['job_dir']); original_trial=original_job/native['trial_name']
+        self.check_retained(SOURCE, 'incomplete')
+
+    def test_retained_behavioral_worker_evidence_and_fresh_checks(self):
+        self.check_retained(Path('/Users/mn/.planar/projects/planar/reviews/t045-clean-clarified-live-prep-20261117/output/jobs/planar-t044-6bd4371146a84b89b323e6b70e81c85d'), 'behavioral_failure')
+
+    def check_retained(self, source, expected):
+        native=json.loads((source/'native-trial-start.json').read_text()); original_job=Path(native['job_dir']); original_trial=original_job/native['trial_name']
         with TemporaryDirectory() as tmp:
-            root=Path(tmp).resolve(); jobs=root/'jobs'; target=jobs/SOURCE.name; target.mkdir(parents=True); job=target/SOURCE.name; trial=job/native['trial_name']; trial.mkdir(parents=True)
+            root=Path(tmp).resolve(); jobs=root/'jobs'; target=jobs/source.name; target.mkdir(parents=True); job=target/source.name; trial=job/native['trial_name']; trial.mkdir(parents=True)
             pairs=[(original_job/'result.json',job/'result.json'),(original_job/'config.json',job/'config.json'),(original_trial/'result.json',trial/'result.json'),(original_trial/'steps/worker/verifier/status.json',trial/'steps/worker/verifier/status.json'),(original_trial/'steps/worker/verifier/reward.txt',trial/'steps/worker/verifier/reward.txt')]
             for src,dst in pairs:
                 dst.parent.mkdir(parents=True,exist_ok=True); shutil.copyfile(src,dst)
             transform={'source_sha256':{str(src):h(src) for src,_ in pairs},'copy_sha256':{str(dst):h(dst) for _,dst in pairs},'transform':'trial.config.trials_dir rewritten to isolated temporary job; all outcomes retained'}
             t=json.loads((trial/'result.json').read_text()); t['config']['trials_dir']=str(job); (trial/'result.json').write_text(json.dumps(t))
             transform['transformed_trial_sha256']=h(trial/'result.json'); (root/'source-transform-manifest.json').write_text(json.dumps(transform,sort_keys=True))
-            actual=observe(trial,root,t); self.assertEqual((actual['worker']['status'],actual['worker']['reward']),('incomplete',0)); self.assertIsNone(actual['review'])
+            actual=observe(trial,root,t); self.assertEqual((actual['worker']['status'],actual['worker']['reward']),(expected,0)); self.assertIsNone(actual['review'])
             evidence.validate_native((job/'result.json').read_bytes(),(trial/'result.json').read_bytes(),(job/'config.json').read_bytes(),job_id=native['job_id'],trial_id=native['trial_id'],trial_name=native['trial_name'],job_dir=job,task_name=t['task_name'],actual=actual,strategy='final')
             for name in ('launcher-terminal.json','watchdog-terminal.json','harbor-process.json','worker-planar-cleanup.json','worker-planar-terminal.json','verifier-compose-up-worker.json'):
-                shutil.copyfile(SOURCE/name,target/name)
-            shutil.copytree(SOURCE/'projects',target/'projects')
+                shutil.copyfile(source/name,target/name)
+            shutil.copytree(source/'projects',target/'projects')
             calls=[]
             def empty(cmd,**kwargs): calls.append(cmd); return SimpleNamespace(returncode=0,stdout='')
             self.assertEqual(len(check_projects(target,native['trial_name'],t,run=empty)['queried_projects']),3); self.assertEqual(len(calls),9)

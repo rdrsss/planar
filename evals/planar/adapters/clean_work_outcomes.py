@@ -58,6 +58,10 @@ def observe(trial_dir, evidence_root, trial):
         observed[name] = {'status':result['status'], 'reason':result.get('reason'),
                           'reward':int(reward_raw), 'exception':native_exception, 'status_sha256':hashlib.sha256(status_raw).hexdigest(),
                           'reward_sha256':hashlib.sha256(reward_raw).hexdigest()}
-    if len(steps)==1 and (observed['worker'] is None or observed['worker']['status']!='incomplete' or observed['worker']['reward']!=0 or not observed['worker']['reason']):
-        raise ValueError('unsupported one-step worker outcome')
+    if len(steps)==1:
+        worker=observed['worker']
+        incomplete=worker is not None and worker['status']=='incomplete' and worker['reward']==0 and worker['reason']
+        behavioral=(worker is not None and worker['status']=='behavioral_failure' and worker['reward']==0
+                    and worker['exception'] is None and result=={'status':'behavioral_failure'})
+        if not (incomplete or behavioral): raise ValueError('unsupported one-step worker outcome')
     return observed

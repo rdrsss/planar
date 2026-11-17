@@ -123,3 +123,32 @@ class CleanWorkEvidence(TestCase):
                 write(td/'result.json',one); doc['trial_result_sha256']=sha(td/'result.json')
                 raw_audit.write_text('tampered')
                 with self.assertRaisesRegex(ValueError,'raw audit'): checks.verify(doc,evidence,start)
+                raw_audit.write_text('Independent fixture predicate audit.\n'); doc['raw_audit_sha256']=sha(raw_audit)
+                source=Path('/Users/mn/.planar/projects/planar/reviews/t045-clean-clarified-live-prep-20261117/output/jobs/planar-t044-6bd4371146a84b89b323e6b70e81c85d')
+                source_start=json.loads((source/'native-trial-start.json').read_text()); source_trial=Path(source_start['job_dir'])/source_start['trial_name']
+                retained=json.loads((source_trial/'result.json').read_text()); one['step_results']=retained['step_results']; one['verifier_result']=retained['verifier_result']
+                write(td/'result.json',one); doc['trial_result_sha256']=sha(td/'result.json')
+                for filename in ('status.json','reward.txt'): shutil.copyfile(source_trial/'steps/worker/verifier'/filename,td/'steps/worker/verifier'/filename)
+                write(root/'behavioral-transform.json',{'source_trial_sha256':sha(source_trial/'result.json'),'source_status_sha256':sha(source_trial/'steps/worker/verifier/status.json'),'source_reward_sha256':sha(source_trial/'steps/worker/verifier/reward.txt'),'transformed_trial_sha256':sha(td/'result.json'),'transform':'native worker result retained; identifiers and configuration rebound'})
+                doc['steps']=observe(td,root,one); doc['terminal_class']='behavioral_failure'
+                audit=json.loads(authority.read_bytes())
+                for x in audit['artifacts']: x['sha256']=sha(Path(x['path']))
+                write(authority,audit); doc['authority_sha256']=sha(authority)
+                self.assertEqual(checks.verify(doc,evidence,start)['trial_name'],name)
+                for wrong in ('incomplete','completed'):
+                    doc['terminal_class']=wrong
+                    with self.assertRaisesRegex(ValueError,'one-step outcome'): checks.verify(doc,evidence,start)
+                doc['terminal_class']='behavioral_failure'
+                for path in (status,reward,raw_audit,authority,gate_path,start,job/'config.json'):
+                    saved=path.read_bytes(); path.write_bytes(saved+b' ')
+                    with self.assertRaises((ValueError,KeyError)): checks.verify(doc,evidence,start)
+                    path.write_bytes(saved)
+                for forbidden in (td/'steps'/'review',clean/'no-fault.json',evidence/'verifier-network-review.json',evidence/'review-planar-cleanup.json'):
+                    forbidden.write_text('{}')
+                    with self.assertRaisesRegex(ValueError,'contradictory review'): checks.verify(doc,evidence,start)
+                    forbidden.unlink()
+                saved=status.read_bytes(); write(status,{'status':'behavioral_failure','reason':'unexpected'})
+                with self.assertRaisesRegex(ValueError,'one-step worker outcome'): observe(td,root,one)
+                status.write_bytes(saved)
+                changed=json.loads(json.dumps(one)); changed['step_results'][0]['exception_info']={'exception_type':'error'}
+                with self.assertRaisesRegex(ValueError,'one-step worker outcome'): observe(td,root,changed)

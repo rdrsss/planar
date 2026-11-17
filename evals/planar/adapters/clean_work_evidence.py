@@ -190,7 +190,8 @@ def verify(doc, evidence, start):
             raise ValueError('configured worker gate mismatch')
         if any(type(stats.get(k)) is not int or stats[k]!=v for k,v in (('n_completed_trials',1),('n_retries',0),('n_errored_trials',0),('n_cancelled_trials',0))):
             raise ValueError('one-step job terminal mismatch')
-        if trial.get('exception_info') is not None or doc['terminal_class']!='incomplete' or doc['steps'].get('review') is not None:
+        if (trial.get('exception_info') is not None or doc['terminal_class']!=actual['worker']['status']
+            or doc['terminal_class'] not in ('incomplete','behavioral_failure') or doc['steps'].get('review') is not None):
             raise ValueError('unsupported one-step outcome')
         if not {'review verifier output','review native logs','post host capture','final host capture'}<=set(doc['missing_artifacts']):
             raise ValueError('one-step missing evidence declaration incomplete')
@@ -217,6 +218,8 @@ def verify(doc, evidence, start):
         raise ValueError('completed outcome unsupported')
     if doc['terminal_class']=='incomplete' and not any(v is not None and v['status']=='incomplete' for v in actual.values()):
         raise ValueError('incomplete outcome unsupported')
+    if doc['terminal_class']=='behavioral_failure' and not one_step:
+        raise ValueError('behavioral failure disposition requires one worker step')
     if one_step:
         if not {'raw_audit_path','raw_audit_sha256'}<=set(doc) or digest(raw(doc['raw_audit_path']))!=doc['raw_audit_sha256']:
             raise ValueError('one-step independent raw audit mismatch')
