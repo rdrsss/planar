@@ -28,7 +28,7 @@ PROJECT = ROOT.parent
 REVIEWS = PROJECT / 'reviews'
 EVALS = ROOT / 'evals'
 CASE = EVALS / 'planar/cases/plugin-smoke'
-CASES = {name: EVALS / 'planar/cases' / name for name in ('plugin-smoke', 'native-lineage-smoke', 'fresh-interrupted-review')}
+CASES = {name: EVALS / 'planar/cases' / name for name in ('plugin-smoke', 'native-lineage-smoke', 'native-lineage-current', 'fresh-interrupted-review')}
 
 
 def case_inventory(case):

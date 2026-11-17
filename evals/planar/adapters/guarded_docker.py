@@ -25,7 +25,7 @@ class GuardedDocker(DockerEnvironment):
         if not re.fullmatch(r'planar-t044-(?:noauth-)?[0-9a-f]{32}', run_id):
             raise ValueError('invalid launcher execution identity')
         case_name = os.environ.get('PLANAR_T044_CASE', 'plugin-smoke')
-        if case_name not in ('plugin-smoke', 'native-lineage-smoke', 'fresh-interrupted-review'):
+        if case_name not in ('plugin-smoke', 'native-lineage-smoke', 'native-lineage-current', 'fresh-interrupted-review'):
             raise ValueError('unsupported diagnostic case')
         self._case_name = case_name
         raw_session = kwargs.get('session_id')
@@ -33,8 +33,25 @@ class GuardedDocker(DockerEnvironment):
             raise ValueError('environment session identity is required')
         self._static_verifier = '__verifier__' in raw_session
         if self._static_verifier:
-            expected = Path(__file__).resolve().parents[1] / 'cases' / case_name / 'tests'
-            if Path(kwargs['environment_dir']).resolve() != expected.resolve():
+            snapshot = os.environ.get('PLANAR_T044_CASE_SNAPSHOT')
+            if snapshot:
+                from launch import case_inventory
+                root = Path(snapshot)
+                if not root.is_absolute() or root != root.resolve(strict=True):
+                    raise ValueError('unsafe case snapshot path')
+                record = json.loads((evidence / 'launcher.json').read_text())
+                digest = os.environ.get('PLANAR_T044_CASE_SHA256')
+                if (not os.environ.get('PLANAR_T044_CANDIDATE_SNAPSHOT') or
+                    record.get('execution_id') != run_id or record.get('case') != case_name or
+                    record.get('case_sha256') != digest or
+                    record.get('prerequisites', {}).get('case_read_root') != str(root) or
+                    case_inventory(root) != digest):
+                    raise ValueError('case snapshot identity mismatch')
+                expected = root / 'tests'
+            else:
+                expected = Path(__file__).resolve().parents[1] / 'cases' / case_name / 'tests'
+            directory = Path(kwargs['environment_dir'])
+            if directory != expected or directory != directory.resolve(strict=True):
                 raise ValueError('unexpected verifier environment directory')
             policy = kwargs.get('network_policy')
             if policy is None or policy.network_mode != NetworkMode.NO_NETWORK:

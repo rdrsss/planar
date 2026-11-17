@@ -47,7 +47,7 @@ class SmokeCodex(Codex):
             raise ValueError('provenance directory is outside the project evidence root')
         self._execution_id = self._provenance_dir.name
         case_name = os.environ.get('PLANAR_T044_CASE', 'plugin-smoke')
-        if case_name not in ('plugin-smoke', 'native-lineage-smoke', 'fresh-interrupted-review'):
+        if case_name not in ('plugin-smoke', 'native-lineage-smoke', 'native-lineage-current', 'fresh-interrupted-review'):
             raise ValueError('unsupported case')
         self._case_name = case_name
         case_snapshot = os.environ.get('PLANAR_T044_CASE_SNAPSHOT')
