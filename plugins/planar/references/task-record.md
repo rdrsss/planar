@@ -134,7 +134,11 @@ ID before work starts. Append a six-field `started` line without changing
 state; its result names the invocation and its initial observation file. Use a
 fresh ID for a retry and link its predecessor; reuse of a host session does
 not reuse an invocation. Link a child invocation to its parent invocation when
-known. Append completion, interruption and later discovery lines as
+known. Before each implementation, review or check dispatch, the sender creates
+the specific invocation start and initial observation and includes their exact
+reference in the packet; the receiver verifies it before acting. An umbrella
+coordination start does not establish a later step's start. Append completion,
+interruption and later discovery lines as
 `session-observed` without changing state, linking their observation files in
 the result. The ordinary completion line and its state transition still apply;
 a start or observation alone never completes a step.
@@ -178,12 +182,28 @@ or add a collector, hook or service. Record a necessary collector as a gap.
 Audit from task and attempt log links through invocation and parent links;
 check the exact native ID before opening a transcript. Missing metadata is an
 explicit audit gap, not a reason to erase results or stop normal continuation.
-Legacy evidence stays unchanged; a supplemental observation for it must name
-its reconstruction source and confidence. Resume does not depend on provider
-transcripts. Final checks report linked and unlinked invocations and unresolved
-locators. Before advertising a host as audit-linked, demonstrate real driver
+Keep all earlier observations immutable. A discovery supplement uses the current
+time, links its actual invocation, and names its reconstruction source and
+confidence. Legacy evidence stays unchanged. A later
+discovery does not show that an earlier dispatch return contained those values.
+Resume does not depend on provider transcripts. For every final task or attempt
+audit, enumerate known invocations and their linked or unlinked status, the
+required start, acceptance and completion or interruption observations, missing
+phases and unresolved locators. A worker-done state, complete report or
+accepted dispatch does not establish a timely completion observation. Distinguish
+supplied or reconstructed outcomes from observed native completion; report
+missing completion capture as a gap (TS-7.5, TEST-I12). Before advertising a
+host as audit-linked, demonstrate real driver
 and two distinct child-role captures and an exact-ID locator lookup or explicit
 host limitation. Synthetic controls do not establish host capture.
+
+For example, a synthetic final audit may retain `worker-done` with its complete
+report while listing invocation `<local-invocation-id>` as incomplete: its
+start and dispatch acceptance observations are linked, but its native completion
+or interruption observation is missing. The report supplies the worker outcome;
+it does not supply a native completion observation. Report that missing phase
+and any unresolved locator as gaps, without inventing a completion time or a
+provider ID.
 
 ### Packet preflight evidence (TS-8.13)
 

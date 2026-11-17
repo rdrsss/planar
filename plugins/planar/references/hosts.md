@@ -172,15 +172,40 @@ end-to-end Planar integration.
 ## Session audit capture (TS-7.5, PRD-R35)
 
 Follow `${CLAUDE_PLUGIN_ROOT}/references/task-record.md` for invocation and
-observation records. Prefer dispatch return metadata, host events or supported
-host metadata access, with a source for each identity and locator. The current
-Codex collaboration surface has exposed canonical task names for routing and
-status, but no native thread/session ID or transcript locator in the observed
-surface. Record the collaboration name as such and native IDs and locators as
-`unavailable` (not exposed) unless sourced host evidence supplies them. Do not
-retry a known-unavailable nested metadata surface or infer identity from a
-name. This observation does not establish that other host surfaces lack IDs.
-Claude hook documentation describes identifiers and transcript paths, but does
-not establish visibility here or authorize installing hooks; live proof remains
-separate. Do not advertise either surface as audit-linked without the proof
-required by the task-record reference.
+observation records (TS-7.5, TEST-I12). Prefer actual dispatch return metadata,
+host events or supported host metadata access, with a source for each identity
+and locator. The observed Codex collaboration dispatch return exposed canonical
+task names for routing and status, not native IDs or locators. Keep that
+finding scoped to the return; do not infer identity from a name.
+
+On the verified Codex host, use a supported tool in the subject's own context
+to inspect only the named nonsecret `CODEX_THREAD_ID` and `CODEX_SESSION_ID`
+environment values when available. Record exact values, source and checked time;
+do not dump the environment or read authentication data. The former identifies
+the reporting thread on this surface; the latter may be shared by the root
+session and its children. Do not use the shared session value as a child's
+thread ID or infer parent links from equality. Preserve native parent-thread
+relationships only when metadata or events confirm the subject and its exact ID.
+Keep native agent type, including `default`, distinct from the assigned work
+role, host agent ID and collaboration path.
+
+A child may supplement the parent's dispatch observation with its own
+tool-sourced values; a bare model self-report is insufficient, and the parent
+must not depend exclusively on a child that may crash. If values or supported
+metadata are absent or denied, record `unavailable` and the reason; do not
+borrow the parent's identity or repeatedly probe a known-unavailable surface.
+Availability on earlier container runs, other Codex builds or Claude is not
+established. Earlier unavailable observations remain valid for their time and
+surface.
+
+Locator discovery is optional: search only for a known exact ID within a known
+configured session root, inspect bounded `session_meta` first, and accept a
+path only if its metadata ID matches. Confirm exposed parent and agent-path
+metadata before assigning lineage. A path pattern is not proof; do not scan
+unrelated session content or copy transcripts by default. Record the
+configured-root-relative or home-relative locator, source, host/local/container
+scope, checked time and availability. A verified file is not a retention
+guarantee. Claude hook documentation describes identifiers and transcript
+paths, but does not establish visibility here or authorize installing hooks;
+live proof remains separate. Do not advertise either surface as audit-linked
+without the proof required by the task-record reference.
