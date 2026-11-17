@@ -44,8 +44,53 @@ def main():
     report.add_argument('identity')
     report.add_argument('--markdown', action='store_true')
     report.add_argument('--output', type=Path, help='create a new report file without overwriting')
+    v2plan = commands.add_parser('plan-v2', help='freeze explicit portable schema-2 inputs; no model or approval')
+    v2plan.add_argument('definition', type=Path)
+    v2plan.add_argument('output', type=Path)
+    v2pre = commands.add_parser('preflight-v2', help='inspect one frozen variant without authorizing a run')
+    v2pre.add_argument('experiment', type=Path)
+    v2pre.add_argument('identity')
+    v2pre.add_argument('logical_id')
+    v2reserve = commands.add_parser('reserve-v2', help='reserve an exact future execution for independent review')
+    v2reserve.add_argument('experiment', type=Path)
+    v2reserve.add_argument('identity')
+    v2reserve.add_argument('logical_id')
+    v2reserve.add_argument('--expires-at', required=True)
+    v2reserve.add_argument('--retry-of')
+    v2reserve.add_argument('--retry-reason')
+    v2gate = commands.add_parser('check-gate-v2', help='compare an existing gate without consuming or authorizing it')
+    v2gate.add_argument('experiment', type=Path)
+    v2gate.add_argument('identity')
+    v2gate.add_argument('reservation_id')
+    v2gate.add_argument('gate', type=Path)
+    v2report = commands.add_parser('report-v2', help='inventory planned reservations and unreconciled execution records')
+    v2report.add_argument('experiment', type=Path)
+    v2report.add_argument('identity')
+    v2report.add_argument('--output', type=Path)
     args = p.parse_args()
-    if args.command == 'plan':
+    if args.command == 'plan-v2':
+        import schema2
+        definition = json.loads(args.definition.read_text())
+        if definition.pop('schema', None) != 2: raise ValueError('unsupported definition schema')
+        print(json.dumps(schema2.initialize(args.output, **definition), indent=2))
+    elif args.command == 'preflight-v2':
+        import schema2
+        print(json.dumps(schema2.preflight(args.experiment, args.identity, args.logical_id), indent=2))
+    elif args.command == 'reserve-v2':
+        import schema2
+        print(json.dumps(schema2.reserve(args.experiment, args.identity, args.logical_id, expires_at=args.expires_at, predecessor_execution_id=args.retry_of, retry_reason=args.retry_reason), indent=2))
+    elif args.command == 'check-gate-v2':
+        import schema2
+        gate = json.loads(args.gate.read_text())
+        schema2.validate_gate(args.experiment, args.identity, args.reservation_id, gate)
+        print(json.dumps({'comparison':'matched', 'authorization':'not granted', 'gate_consumed':False}))
+    elif args.command == 'report-v2':
+        import schema2_reporting
+        content = json.dumps(schema2_reporting.report(args.experiment, args.identity), indent=2) + '\n'
+        if args.output:
+            with args.output.open('x') as output: output.write(content)
+        else: print(content, end='')
+    elif args.command == 'plan':
         definition = json.loads(args.definition.read_text())
         if definition.pop('schema', None) != 1:
             raise ValueError('unsupported definition schema')
