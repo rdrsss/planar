@@ -31,12 +31,15 @@ belong in this directory.
 
 From the repository root, `make evals-setup` installs the locked dependencies,
 `make evals-test` (or `make evals`) runs the adapter, recovery-case,
-clean-revision and model-free experiment-control tests,
+clean-revision, retained-A/fresh-B and model-free experiment-control tests,
 and `make evals-plan` preflights `CASE=fresh-interrupted-review` by default.
 Set `CASE` to select another supported case. A preflight can refuse a stale
 frozen candidate or missing case-specific inputs; it never refreezes or approves
 them. Specialized cases requiring paired snapshots and a fixed deadline use
 the [direct launcher procedure](planar/README.md#clean-revision-inputs).
+The [retained-A/fresh-B procedure](planar/README.md#retained-a-to-fresh-b) also
+requires its exact source packet, candidate, reserved ID and expiry; the generic
+Make case wrapper does not supply those arguments.
 
 A live diagnostic requires a matching independent gate and explicit paths:
 

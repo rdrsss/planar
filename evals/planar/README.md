@@ -3,7 +3,7 @@
 ## Case and experiment status
 
 Run `make evals-test` from the repository root for the model-free adapter,
-recovery, revision and experiment-control suites. Docker/native integration
+recovery, revision, retained-A/fresh-B and experiment-control suites. Docker/native integration
 controls are separate; synthetic reports and rollouts do not prove a model
 performed the workflow. Live execution needs the exact matching independent
 one-use gate and confirmed cleanup.
@@ -15,6 +15,7 @@ one-use gate and confirmed cleanup.
 | `cases/native-lineage-current` | Separate frozen successor with one independently audited online reward 1 for its bounded lineage/artifact contract. Its name does not select an arbitrary current package. |
 | `cases/fresh-interrupted-review` | Recovery fixture, independent verifier and retained-export assessments; these do not establish every recovery scenario or a final-byte live pass. |
 | `cases/clean-revision` | Two fresh native parents in a persistent workspace, controlled post-worker STATE fault and separate verifiers. Actual trials have stopped at A with reward 0; corrected, versioned retained-A assessments do not establish B, repair or revision success. |
+| `cases/retained-a-fresh-b` | Separate source-bound continuation case. Real no-auth Harbor/Docker restore, sole fault and network-none verifier handoff are observed with synthetic target logs. No real B has run. Structural-positive remains incomplete/reward 0 pending independent raw audit. |
 | `cases/native-lineage-portable` | Opt-in schema-2 template/materializer with explicit inventory/execution data. The template's unbound placeholders are invalid inputs, not a runnable case. |
 | `experiments/cli.py` | Schema-1 controls and separately gated Codex execution; experimental schema-2 planning, image preparation, exact reservation/gate, execution, reconciliation and reporting routes. Schema-2 source/control review is complete; a gated native run remains unproven. |
 
@@ -210,6 +211,83 @@ incomplete; typed native errors take precedence. This narrow grading does not
 establish full test acceptance. Live crash reconciliation, verifier-versioned
 regrade and cross-vendor acceptance remain pending. No-model controls are not
 plugin behavior evidence.
+
+### Retained A to fresh B
+
+This separate case resumes the durable boundary from one explicitly bound real
+worker A in a fresh target B. Source A's original online reward 0 is preserved;
+its corrected unchanged-byte assessment is separate. The target receives only
+allowlisted durable project/work files, with Git rebuilt from the pinned base.
+Source conversation, native logs and cache remain outside the target and are
+handed to the separate verifier only after the target stops.
+
+The source packet is a closed, private input validated by the case policy; it
+is not included in a repository-only clone. The first slice requires the exact
+source candidate inventory `02a5932125696d1c1cbe586f010d59c33b74a1b8b2c765c6c9b911adb6d317d3`.
+A newer plugin checkout cannot substitute for it. See the case
+[contract](cases/retained-a-fresh-b/CONTRACT.md) for source/target distinctions,
+allowed artifacts, evidence and limits.
+
+Use the direct launcher; the Make case wrapper does not supply these mandatory
+inputs. With all placeholder paths and identities replaced, secret-free
+planning is:
+
+```sh
+PLANAR_EVALS_OUTPUT_ROOT=/path/to/reviews \
+uv run --project evals --locked python evals/planar/adapters/launch.py \
+  --case retained-a-fresh-b \
+  --snapshot-candidate /path/to/reviews/source-candidate \
+  --snapshot-case /path/to/reviews/retained-case \
+  --source-packet /path/to/reviews/source-packet \
+  --execution-id 'planar-t044-<32 lowercase hex>' \
+  --absolute-deadline '<reviewed UTC expiry>' \
+  --trial-deadline 1050 --effort medium
+```
+
+Keep the same output root for planning, execution and resolution. Source,
+gate and independent release inputs must satisfy the validated root rules.
+Execution adds `--execute`, `--auth-file` and `--review-file` to the same frozen
+invocation after independent exact gate review. The gate binds source packet,
+original outcome/assessment, candidate/case/implementation, effective native
+configuration, images, account/output roots, reserved ID and finite expiry.
+One exact validated gate is consumed before auth under the shared account
+lock. The target retains the reviewed 1050-second envelope, B400 seconds,
+verifier60 and cleanup15; preparation and pauses consume the fixed deadline.
+
+Native no-auth controls prove restoration, the fixed STATE-only injection,
+separate pinned verifier with network `none`, no build/pull fallback and
+cleanup. Synthetic target logs do not prove genuine review/repair behavior.
+A real B has not yet run. Automatic structural-positive is deliberately
+`incomplete` with reward 0 and `semantic_audit: required`. Supported host
+captures are restored-pre, post-injection and final. Intermediate record
+writes are cooperative evidence; complete actual native calls and outputs
+need independent raw audit for timely starts, full packets before dispatch,
+genuine finding, repair/check order and fresh final review. A final file or
+child read after dispatch does not prove a pre-dispatch write.
+
+Admission stays pending until explicit reviewed release. The case-specific
+operator tool supports the structurally positive, audit-pending incomplete
+outcome with confirmed terminal cleanup and no exact-label resources:
+
+```sh
+PLANAR_EVALS_OUTPUT_ROOT=/path/to/reviews \
+uv run --project evals --locked python evals/planar/adapters/retained_b_resolve.py \
+  /path/to/reviews/jobs/planar-t044-EXECUTION_ID \
+  /path/to/reviews/retained-case /path/to/reviews/source-candidate \
+  /path/to/reviews/independent-release.json
+```
+
+The independently prepared release JSON binds execution, consumed gate,
+source, verifier status and reward hashes plus an explicit reason. It is an
+operator assertion; the tool cannot authenticate its author or establish
+semantic truth. It rechecks source/config/gate authority and cleanup, publishes
+a complete release atomically, and preserves behavior as incomplete. It does
+not rewrite rewards, approve workflow semantics or retry a model. Other
+failure shapes or ambiguous cleanup remain pending for independent disposition;
+never fabricate a resolution marker. Keep source/code/gate inputs frozen
+through audit and account resolution. New attempts require fresh review and a
+new one-use gate; none of these controls establishes full S62/S63/S70 or
+cross-vendor acceptance.
 
 ### Experimental schema-2 execution
 
