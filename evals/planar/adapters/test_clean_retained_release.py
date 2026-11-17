@@ -104,7 +104,16 @@ class Publication(unittest.TestCase):
                 result=release.live_check(evidence,trial_name,{'step_results':None},run=run); self.assertEqual(set(result['queried_projects']),names);self.assertEqual(len(seen),6)
                 (evidence/'planar-terminal.json').write_text(json.dumps({'execution_id':eid,'status':'shell_completed','return_code':False}))
                 with self.assertRaises(ValueError): release.live_check(evidence,trial_name,{},run=run)
-                put(evidence/'planar-terminal.json',{'execution_id':eid,'status':'shell_completed','return_code':0}); (registry/(hashlib.sha256((prefix+'__env').encode()).hexdigest()+'.json')).unlink();seen.clear()
+                put(evidence/'planar-terminal.json',{'execution_id':eid,'status':'shell_completed','return_code':0})
+                put(evidence/'planar-cleanup.json',{'execution_id':eid,'paths':['/tmp/wrong'],'status':'passed'})
+                with self.assertRaises(ValueError): release.live_check(evidence,trial_name,{},run=run)
+                put(evidence/'planar-cleanup.json',{'execution_id':eid,'paths':['/tmp/codex-secrets','/installed-agent/codex-home'],'status':'passed'})
+                with patch.object(release.os,'killpg',return_value=None):
+                    with self.assertRaises(ValueError): release.live_check(evidence,trial_name,{},run=run)
+                with patch.object(retained_b_census,'check',return_value={'matching_commands':0,'unresolved':1}):
+                    with self.assertRaises(ValueError): release.live_check(evidence,trial_name,{},run=run)
+                with self.assertRaises(ValueError): release.live_check(evidence,trial_name,{},run=lambda *a,**k:SimpleNamespace(returncode=0,stdout='owned'))
+                (registry/(hashlib.sha256((prefix+'__env').encode()).hexdigest()+'.json')).unlink();seen.clear()
                 with self.assertRaises(ValueError): release.live_check(evidence,trial_name,{},run=run)
                 self.assertEqual(len(seen),6)
 
@@ -135,3 +144,49 @@ class StaticBindings(unittest.TestCase):
                 with codex_run.admission_scope() as records: (records/(eid+'.start.json')).write_text(json.dumps({'case':'clean-retained-a-continuation','execution_id':eid}))
                 with self.assertRaisesRegex(ValueError,'review bytes changed'): release.publish(evidence,review)
                 self.assertFalse((records/(eid+'.resolved.json')).exists())
+
+class ExportFailure(unittest.TestCase):
+    # Copied traceback frames from the retained Harbor job.log; paths are redacted.
+    LOG = b'''Failed to download artifact '/workspace/home' from service 'main' (best-effort)
+Traceback (most recent call last):
+  File "/redacted/artifact_handler.py", line 351, in _download_artifact
+    await source_env.service_download_dir(...)
+  File "/redacted/guarded_docker.py", line 331, in service_download_dir
+    return await self.download_dir(source_dir, target_dir)
+  File "/redacted/guarded_docker.py", line 217, in download_dir
+    await verifier_handoff(...)
+  File "/redacted/clean_retained_support.py", line 96, in verifier_handoff
+    final=await capture.collect(...)
+  File "/redacted/capture.py", line 95, in collect
+    repository, repo_meta = select_repository(...)
+  File "/redacted/snapshot.py", line 42, in select_repository
+    if name not in GIT_DIRS: raise ValueError('unexpected repository directory')
+ValueError: unexpected repository directory
+'''
+    def test_recorded_chain_and_mutations(self):
+        release.validate_export_log(self.LOG)
+        for old,new in ((b'in service_download_dir',b'in other'),(b'in verifier_handoff',b'in other'),
+                        (b'in collect',b'in other'),(b'in select_repository',b'in other'),
+                        (b'ValueError: unexpected repository directory',b'ValueError: other')):
+            with self.subTest(old=old), self.assertRaises(ValueError): release.validate_export_log(self.LOG.replace(old,new))
+
+    def test_rejects_disjoint_tracebacks_and_missing_context(self):
+        split=self.LOG.replace(b'  File "/redacted/capture.py"',b'Traceback (most recent call last):\n  File "/redacted/capture.py"')
+        no_context=self.LOG.split(b'\n',1)[1]
+        unrelated=self.LOG.replace(b'  File "/redacted/capture.py"',b'RuntimeError: unrelated\n  File "/redacted/capture.py"')
+        indented_split=split.replace(b'\nTraceback (most recent call last):\n  File "/redacted/capture.py"',b'\n  Traceback (most recent call last):\n  File "/redacted/capture.py"')
+        indented_error=unrelated.replace(b'\nRuntimeError: unrelated',b'\n  RuntimeError: unrelated')
+        for raw in (split,indented_split,no_context,unrelated,indented_error):
+            with self.subTest(raw=raw),self.assertRaises(ValueError): release.validate_export_log(raw)
+
+    def test_closed_failure_schema(self):
+        with TemporaryDirectory() as tmp:
+            doc=document(Path(tmp)); doc.update(schema='planar-retained-clean-account-v2',terminal_class='final-export-failed',
+                final_capture='absent',verifier_handoff='absent',semantic_result='unverified',
+                missing_artifacts=release.MISSING_ARTIFACTS.copy(),job_log_sha256='d'*64,
+                target_reason=release.EXPORT_REASON,target_reason_present=True)
+            self.assertEqual(release.parse(json.dumps(doc))['target_status'],'incomplete')
+            for key,value in (('target_reason','different'),('target_status','behavioral_failure'),('semantic_result','pass'),
+                              ('final_capture','present'),('job_log_sha256','bad'),('missing_artifacts',[])):
+                changed=copy.deepcopy(doc); changed[key]=value
+                with self.subTest(key=key),self.assertRaises(ValueError): release.parse(json.dumps(changed))

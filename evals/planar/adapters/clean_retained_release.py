@@ -29,17 +29,21 @@ FIELDS={'schema','decision','execution_id','job_id','trial_id','source_job_id','
         'job_result_sha256','trial_result_sha256','status_sha256','reward_sha256','target_status','target_reason','target_reason_present',
         'source_status','source_reward','target_reward','reviewer','independence_basis','reviewed_at','independent_review'}
 
+EXPORT_FIELDS={'terminal_class','final_capture','verifier_handoff','semantic_result','missing_artifacts','job_log_sha256'}
+EXPORT_REASON="[Errno 2] No such file or directory: '/workspace/home/_planar_host'"
+MISSING_ARTIFACTS=['retained-clean/final','retained-clean/final-receipt.json','artifacts/workspace/home/_planar_host','final-state-audit']
 
 def parse(raw):
     doc=json.loads(raw,object_pairs_hook=unique)
-    if not isinstance(doc,dict) or set(doc)!=FIELDS or doc['schema']!='planar-retained-clean-account-v1' or doc['decision']!='release-account' or doc['independent_review'] is not True:
+    if not isinstance(doc,dict) or (set(doc),doc.get('schema')) not in ((FIELDS,'planar-retained-clean-account-v1'),(FIELDS|EXPORT_FIELDS,'planar-retained-clean-account-v2')) or doc['decision']!='release-account' or doc['independent_review'] is not True:
         raise ValueError('unsupported retained clean disposition')
+    if doc['schema']=='planar-retained-clean-account-v2' and (doc['terminal_class']!='final-export-failed' or doc['final_capture']!='absent' or doc['verifier_handoff']!='absent' or doc['semantic_result']!='unverified' or doc['missing_artifacts']!=MISSING_ARTIFACTS or doc['target_status']!='incomplete' or doc['target_reason_present'] is not True or doc['target_reason']!=EXPORT_REASON): raise ValueError('unsupported export failure')
     if not re.fullmatch(r'planar-t044-[0-9a-f]{32}',doc.get('execution_id','')): raise ValueError('invalid execution identity')
     if doc['source_status']!='behavioral_failure' or type(doc['source_reward']) is not int or doc['source_reward']!=0 or type(doc['target_reward']) is not int or doc['target_reward']!=0 or doc['target_status'] not in ('incomplete','behavioral_failure'):
         raise ValueError('unsupported source or target outcome')
     if type(doc['target_reason_present']) is not bool or (not doc['target_reason_present'] and doc['target_reason'] is not None): raise ValueError('invalid reason presence')
     if doc['target_reason'] is not None and (type(doc['target_reason']) is not str or not doc['target_reason']): raise ValueError('invalid target reason')
-    for name in FIELDS:
+    for name in doc:
         if name.endswith('_sha256') and (type(doc[name]) is not str or not re.fullmatch(r'[0-9a-f]{64}',doc[name])): raise ValueError('invalid digest')
     for name in ('historical_commit','historical_tree','resolver_commit'):
         if type(doc[name]) is not str or not re.fullmatch(r'[0-9a-f]{40}',doc[name]): raise ValueError('invalid commit')
@@ -92,6 +96,27 @@ def validate_shape(job,trial,config,actual,job_id,trial_id,trial_name,job_dir):
     try: number=float(k)
     except (TypeError,ValueError): raise ValueError('job reward malformed') from None
     if number!=0 or names!=[trial_name]: raise ValueError('job reward mismatch')
+
+
+def validate_export_log(raw):
+    """Match one complete artifact-download traceback, without guessing its entry."""
+    lines=raw.decode('utf-8',errors='strict').splitlines()
+    context="Failed to download artifact '/workspace/home' from service 'main' (best-effort)"
+    expected=[('artifact_handler.py','_download_artifact'),('guarded_docker.py','service_download_dir'),
+              ('guarded_docker.py','download_dir'),('clean_retained_support.py','verifier_handoff'),
+              ('capture.py','collect'),('snapshot.py','select_repository')]
+    for i,line in enumerate(lines):
+        if line!=context or i+1>=len(lines) or lines[i+1]!='Traceback (most recent call last):': continue
+        frames=[]
+        for part in lines[i+2:]:
+            if part.lstrip().startswith('Traceback (most recent call last):'): break
+            if not part.startswith((' ','\t')):
+                if part=='ValueError: unexpected repository directory' and frames==expected: return
+                break
+            if re.match(r'\s*[A-Za-z_][A-Za-z_0-9.]*(?:Error|Exception):',part): break
+            match=re.fullmatch(r'  File "[^"\n]*/([^/"\n]+)", line [0-9]+, in ([A-Za-z_][A-Za-z_0-9]*)',part)
+            if match: frames.append(match.groups())
+    raise ValueError('export failure chain mismatch')
 
 
 def verify(doc,evidence,start):
@@ -176,30 +201,40 @@ def verify(doc,evidence,start):
         status.get('status')!=doc['target_status'] or status.get('reason')!=doc['target_reason'] or ('reason' in status)!=doc['target_reason_present']): raise ValueError('verifier pair mismatch')
     validate_shape(job,trial,config,doc['target_reward'],doc['job_id'],doc['trial_id'],name,job_dir)
     target=evidence/'retained-clean'; capture=load_case_module(case,'capture'); chronology=load_case_module(case,'chronology'); boundary=load_case_module(case,'no_fault')
-    restored=capture.load(target/'restored-pre'); post=capture.load(target/'post'); final=capture.load(target/'final')
+    failed=doc['schema']=='planar-retained-clean-account-v2'
+    restored=capture.load(target/'restored-pre'); post=capture.load(target/'post')
     source_capture=capture.load(packet/'source/pre'); source_receipt=chronology.receipt(packet/'source','pre')
-    pre_receipt=chronology.receipt(target,'restored-pre'); post_receipt=chronology.receipt(target,'post'); final_receipt=chronology.receipt(target,'final'); chronology.order(post_receipt,final_receipt)
+    pre_receipt=chronology.receipt(target,'restored-pre'); post_receipt=chronology.receipt(target,'post')
     nofault=obj(target/'no-fault.json'); provenance=obj(target/'target-provenance.json')
     if (set(nofault)!={'source_packet_sha256','source_job','target_job','boundary','wall_ns','monotonic_ns'} or
         nofault['source_packet_sha256']!=doc['source_packet_sha256'] or nofault['source_job']!=doc['source_job_id'] or nofault['target_job']!=doc['job_id'] or nofault['boundary']!='restored-no-fault' or
         provenance!={'execution_id':eid,'job_id':doc['job_id']}): raise ValueError('host handoff identity mismatch')
     boundary.verify(source_capture,restored,post,source_receipt=source_receipt,restored_receipt=pre_receipt,post_receipt=post_receipt,
                     source_job=doc['source_job_id'],target_job=doc['job_id'],injection_exists=(target/'injection.json').exists() or (target/'injection.json').is_symlink())
-    if type(nofault['wall_ns']) is not int or type(nofault['monotonic_ns']) is not int or not post_receipt['wall_ns']<=nofault['wall_ns']<final_receipt['wall_ns'] or not post_receipt['monotonic_ns']<=nofault['monotonic_ns']<final_receipt['monotonic_ns']: raise ValueError('host handoff chronology mismatch')
-    if not final: raise ValueError('final capture unavailable')
+    if type(nofault['wall_ns']) is not int or type(nofault['monotonic_ns']) is not int or post_receipt['wall_ns']>nofault['wall_ns'] or post_receipt['monotonic_ns']>nofault['monotonic_ns']: raise ValueError('host handoff chronology mismatch')
     exported=results[0].parent/'artifacts/workspace/home/_planar_host'
-    if exported.is_symlink() or not exported.is_dir(): raise ValueError('verifier handoff unavailable')
-    if inventory(exported/'candidate')['sha256']!=doc['candidate_sha256'] or source.validate_closed(exported/'source-packet',doc['candidate_sha256'])['source_packet_sha256']!=doc['source_packet_sha256']:
-        raise ValueError('verifier handoff source mismatch')
-    target_copy=exported/'target'
-    def regular_files(root):
-        if root.is_symlink() or not root.is_dir(): raise ValueError('unsafe evidence tree')
-        result={}
-        for p in root.rglob('*'):
-            if p.is_symlink() or not (p.is_file() or p.is_dir()): raise ValueError('unsafe evidence entry')
-            if p.is_file() and p.name not in ('rejected-home.tar','rejected-home.json'): result[p.relative_to(root).as_posix()]=raw(p)
-        return result
-    if regular_files(target)!=regular_files(target_copy): raise ValueError('verifier handoff target drift')
+    if failed:
+        for path in (target/'final',target/'final-receipt.json',exported,target/'final-state-audit'):
+            if path.exists() or path.is_symlink(): raise ValueError('unexpected final artifact')
+        log=raw(job_dir/'job.log')
+        if digest(log)!=doc['job_log_sha256']: raise ValueError('job log drift')
+        validate_export_log(log)
+    else:
+        final=capture.load(target/'final'); final_receipt=chronology.receipt(target,'final'); chronology.order(post_receipt,final_receipt)
+        if not final or nofault['wall_ns']>=final_receipt['wall_ns'] or nofault['monotonic_ns']>=final_receipt['monotonic_ns']: raise ValueError('final capture unavailable')
+    if not failed:
+        if exported.is_symlink() or not exported.is_dir(): raise ValueError('verifier handoff unavailable')
+        if inventory(exported/'candidate')['sha256']!=doc['candidate_sha256'] or source.validate_closed(exported/'source-packet',doc['candidate_sha256'])['source_packet_sha256']!=doc['source_packet_sha256']:
+            raise ValueError('verifier handoff source mismatch')
+        target_copy=exported/'target'
+        def regular_files(root):
+            if root.is_symlink() or not root.is_dir(): raise ValueError('unsafe evidence tree')
+            result={}
+            for p in root.rglob('*'):
+                if p.is_symlink() or not (p.is_file() or p.is_dir()): raise ValueError('unsafe evidence entry')
+                if p.is_file() and p.name not in ('rejected-home.tar','rejected-home.json'): result[p.relative_to(root).as_posix()]=raw(p)
+            return result
+        if regular_files(target)!=regular_files(target_copy): raise ValueError('verifier handoff target drift')
     authority_raw=raw(doc['authority_path']); manifest_raw=raw(doc['raw_manifest_path']); audit=raw(doc['raw_audit_path'])
     if digest(authority_raw)!=doc['authority_sha256'] or digest(manifest_raw)!=doc['raw_manifest_sha256'] or digest(audit)!=doc['raw_audit_sha256']: raise ValueError('independent evidence drift')
     authority=json.loads(authority_raw,object_pairs_hook=unique); manifest=json.loads(manifest_raw,object_pairs_hook=unique)
@@ -213,10 +248,11 @@ def verify(doc,evidence,start):
         return found
     audited=inventory_entries(authority.get('artifacts'))
     required={str(p) for p in (start,gate_path,evidence/'launcher.json',evidence/'job-config.json',evidence/'native-trial-start.json',evidence/'retained-admission.json',evidence/'launcher-terminal.json',evidence/'watchdog-terminal.json',evidence/'harbor-process.json',evidence/'planar-terminal.json',evidence/'planar-cleanup.json',evidence/'verifier-compose-up.json',evidence/'verifier-network.json',job_dir/'config.json',job_dir/'result.json',results[0],status_path,reward_path,target/'no-fault.json',target/'target-provenance.json',target/'container.json',Path(doc['raw_audit_path']))}
-    for stage in ('restored-pre','post','final'):
+    for stage in (('restored-pre','post') if failed else ('restored-pre','post','final')):
         required.add(str(target/(stage+'-receipt.json'))); required.add(str(target/stage/'snapshot-manifest.json'))
         required.update(str(p) for p in (target/stage).rglob('*') if p.is_file())
-    required.update(str(p) for p in exported.rglob('*') if p.is_file())
+    if failed: required.add(str(job_dir/'job.log'))
+    else: required.update(str(p) for p in exported.rglob('*') if p.is_file())
     registry=evidence/'projects'
     if registry.is_symlink() or not registry.is_dir(): raise ValueError('project registry missing')
     required.update(str(p) for p in registry.iterdir())
