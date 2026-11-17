@@ -1,5 +1,6 @@
 import hashlib
 import json
+import shutil
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -39,13 +40,16 @@ class CleanWorkEvidence(TestCase):
                 base=td/'steps'/step/'verifier'; write(base/'status.json',status); (base/'reward.txt').write_text(reward)
             doc['steps']=observe(td,root,trial); doc['job_result_sha256']=sha(job/'result.json'); doc['trial_result_sha256']=sha(td/'result.json'); doc['exception']=None; doc['terminal_class']='incomplete'; doc['missing_artifacts']=['final host capture','worker native logs','review native logs']
             (evidence/'projects').mkdir()
-            for filename in ('launcher-terminal.json','watchdog-terminal.json','harbor-process.json','planar-cleanup.json'): write(evidence/filename,{})
-            required=[start,gate_path,evidence/'launcher.json',evidence/'job-config.json',evidence/'native-trial-start.json',evidence/'launcher-terminal.json',evidence/'watchdog-terminal.json',evidence/'harbor-process.json',evidence/'planar-cleanup.json',job/'config.json',job/'result.json',td/'result.json']+[td/'steps'/s/'verifier'/n for s in ('worker','review') for n in ('status.json','reward.txt')]
+            for filename in ('launcher-terminal.json','watchdog-terminal.json','harbor-process.json','worker-planar-cleanup.json','worker-planar-terminal.json','review-planar-cleanup.json','review-planar-terminal.json'): write(evidence/filename,{})
+            for stage in ('worker','review'):
+                write(evidence/(stage+'-planar-cleanup.json'),{'execution_id':eid,'paths':['/tmp/codex-secrets','/installed-agent/codex-home'],'status':'passed'})
+                write(evidence/(stage+'-planar-terminal.json'),{'execution_id':eid,'status':'shell_completed','return_code':0})
+            required=[start,gate_path,evidence/'launcher.json',evidence/'job-config.json',evidence/'native-trial-start.json',evidence/'launcher-terminal.json',evidence/'watchdog-terminal.json',evidence/'harbor-process.json',evidence/'worker-planar-cleanup.json',evidence/'worker-planar-terminal.json',evidence/'review-planar-cleanup.json',evidence/'review-planar-terminal.json',job/'config.json',job/'result.json',td/'result.json']+[td/'steps'/s/'verifier'/n for s in ('worker','review') for n in ('status.json','reward.txt')]
             authority=Path(doc['authority_path']); write(authority,{'execution_id':eid,'job_id':doc['job_id'],'trial_id':doc['trial_id'],'full_runtime_authority_revalidated':True,'submitted_actual_jobconfigs_equal':True,'final_host_capture_exists':False,'artifacts':[{'path':str(p),'sha256':sha(p)} for p in required]}); doc['authority_sha256']=sha(authority)
             manifest=Path(doc['raw_manifest_path']); write(manifest,{'artifacts':[]}); doc['raw_manifest_sha256']=sha(manifest)
             produced=launch.Task(launch.CASES['clean-work-review']).config.verifier.timeout_sec
             self.assertIs(type(produced),float); self.assertEqual(produced,60.0)
-            task=SimpleNamespace(name='planar/clean-work-review',config=SimpleNamespace(environment=SimpleNamespace(docker_image='image'),verifier=SimpleNamespace(environment=SimpleNamespace(docker_image='verifier')),multi_step_reward_strategy=SimpleNamespace(value='final')))
+            task=SimpleNamespace(name='planar/clean-work-review',config=SimpleNamespace(environment=SimpleNamespace(docker_image='image'),verifier=SimpleNamespace(environment=SimpleNamespace(docker_image='verifier')),multi_step_reward_strategy=SimpleNamespace(value='final'),steps=[SimpleNamespace(name='worker',min_reward=1),SimpleNamespace(name='review',min_reward=None)]))
             fake=SimpleNamespace(stdout='a'*40)
             with patch.object(launch,'reviews_root',return_value=root),patch.object(launch,'jobs_root',return_value=jobs),patch.object(launch,'case_inventory',return_value=doc['case_sha256']),patch.object(checks,'inventory',return_value={'sha256':doc['candidate_sha256']}),patch.object(checks,'historical_inventory'),patch.object(checks.subprocess,'run',return_value=fake),patch.object(launch,'Task',return_value=task):
                 self.assertEqual(checks.verify(doc,evidence,start)['trial_name'],name)
@@ -89,3 +93,33 @@ class CleanWorkEvidence(TestCase):
                 audit=json.loads(authority.read_bytes()); next(x for x in audit['artifacts'] if x['path']==str(launcher_path))['sha256']=sha(launcher_path); write(authority,audit); doc['authority_sha256']=sha(authority)
                 doc['steps']['review']['reward']=1
                 with self.assertRaisesRegex(ValueError,'outcomes differ'): checks.verify(doc,evidence,start)
+                doc['steps']['review']['reward']=0
+                # One-step fixture derives its worker result and status from the retained run;
+                # the isolated trace is redacted and its transformation is hash recorded.
+                source=Path('/Users/mn/.planar/projects/planar/reviews/t045-clean-work-live-prep-20261117/output/jobs/planar-t044-891e08ce96d2474487fe2eab0ea6984b')
+                source_start=json.loads((source/'native-trial-start.json').read_text()); source_trial=Path(source_start['job_dir'])/source_start['trial_name']; live_result=json.loads((source_trial/'result.json').read_text())
+                one=json.loads(json.dumps(original_trial)); one['step_results']=[live_result['step_results'][0]]; one['verifier_result']=live_result['verifier_result']; write(td/'result.json',one); doc['trial_result_sha256']=sha(td/'result.json')
+                shutil.rmtree(td/'steps'/'review'); status=td/'steps'/'worker'/'verifier'/'status.json'; reward=td/'steps'/'worker'/'verifier'/'reward.txt'; shutil.copyfile(source_trial/'steps/worker/verifier/status.json',status); shutil.copyfile(source_trial/'steps/worker/verifier/reward.txt',reward)
+                doc['steps']=observe(td,root,one); doc['missing_artifacts']=['review verifier output','review native logs','post host capture','final host capture']
+                clean=evidence/'clean-revision'; write(clean/'active.json',{'step':'worker'}); log=clean/'logs'/'worker'/'codex.txt'; log.parent.mkdir(parents=True); log.write_text('[redacted fixture: native worker events omitted]\n')
+                source_log=source/'clean-revision/logs/worker/codex.txt'; transform={'source_trial_sha256':sha(source_trial/'result.json'),'source_log_sha256':sha(source_log),'transformed_trial_sha256':sha(td/'result.json'),'transformed_log_sha256':sha(log),'transform':'worker result retained; identifiers/config rebound; worker event content redacted'}; write(root/'fixture-transform.json',transform)
+                write(manifest,{'artifacts':[{'path':str(log),'sha256':sha(log)}]}); doc['raw_manifest_sha256']=sha(manifest)
+                raw_audit=root/'raw-audit.md'; raw_audit.write_text('Independent fixture audit of one worker incomplete/0; review and post/final absent.\n'); doc['raw_audit_path']=str(raw_audit); doc['raw_audit_sha256']=sha(raw_audit)
+                for file in (evidence/'review-planar-cleanup.json',evidence/'review-planar-terminal.json'): file.unlink()
+                audit=json.loads(authority.read_bytes()); audit['artifacts']=[x for x in audit['artifacts'] if '/review-planar-' not in x['path'] and '/steps/review/' not in x['path']]
+                for x in audit['artifacts']:
+                    path=Path(x['path']); x['sha256']=sha(path)
+                audit['artifacts'] += [{'path':str(clean/'active.json'),'sha256':sha(clean/'active.json')},{'path':str(raw_audit),'sha256':sha(raw_audit)}]; write(authority,audit); doc['authority_sha256']=sha(authority)
+                self.assertEqual(checks.verify(doc,evidence,start)['trial_name'],name)
+                task.config.steps[0].min_reward=0
+                with self.assertRaisesRegex(ValueError,'worker gate mismatch'): checks.verify(doc,evidence,start)
+                task.config.steps[0].min_reward=1
+                for forbidden in (clean/'no-fault.json',clean/'post',evidence/'verifier-compose-up-review.json',clean/'logs'/'review'):
+                    forbidden.write_text('{}')
+                    with self.assertRaisesRegex(ValueError,'contradictory review'): checks.verify(doc,evidence,start)
+                    forbidden.unlink()
+                modified=json.loads((td/'result.json').read_text()); modified['finished_at']=None; write(td/'result.json',modified); doc['trial_result_sha256']=sha(td/'result.json')
+                with self.assertRaisesRegex(ValueError,'termination unproven'): checks.verify(doc,evidence,start)
+                write(td/'result.json',one); doc['trial_result_sha256']=sha(td/'result.json')
+                raw_audit.write_text('tampered')
+                with self.assertRaisesRegex(ValueError,'raw audit'): checks.verify(doc,evidence,start)

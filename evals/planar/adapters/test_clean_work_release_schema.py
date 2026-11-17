@@ -10,6 +10,14 @@ class CleanWorkReleaseSchema(TestCase):
             if k.endswith('_sha256'): doc[k]='a'*64
         for k in ('historical_commit','historical_tree','resolver_commit'): doc[k]='a'*40
         return doc
+    def test_one_step_requires_separate_raw_audit(self):
+        doc=self.document(); doc['steps']['review']=None; doc['missing_artifacts']=['review verifier output','review native logs','post host capture','final host capture']
+        with self.assertRaisesRegex(ValueError,'raw audit missing'): parse(json.dumps(doc))
+        doc['raw_audit_path']='/test/audit'; doc['raw_audit_sha256']='a'*64
+        self.assertIsNone(parse(json.dumps(doc))['steps']['review'])
+        doc['raw_audit_path']='/test/../outside'
+        with self.assertRaises(ValueError): parse(json.dumps(doc))
+
     def test_closed_typed_and_duplicates(self):
         doc=self.document(); self.assertEqual(parse(json.dumps(doc))['steps']['review']['status'],'incomplete')
         doc['steps']['review']['reward']=False

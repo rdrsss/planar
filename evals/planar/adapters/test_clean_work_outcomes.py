@@ -21,4 +21,4 @@ class CleanWorkOutcomes(TestCase):
             with self.assertRaisesRegex(ValueError,'reward'): observe(trial,root,native)
             reward.unlink()
             with self.assertRaisesRegex(ValueError,'pair'): observe(trial,root,native)
-            with self.assertRaisesRegex(ValueError,'step result'): observe(trial,root,{'step_results':native['step_results'][:1]})
+            with self.assertRaisesRegex(ValueError,'one-step worker outcome'): observe(trial,root,{'step_results':native['step_results'][:1]})

@@ -21,13 +21,15 @@ def check_projects(evidence, trial_name, trial, *, run=subprocess.run):
     if not re.fullmatch(r'[A-Za-z0-9_-]+', trial_name):
         raise ValueError('invalid trial name')
     steps = trial.get('step_results')
-    if not isinstance(steps, list) or len(steps) != 2:
+    if not isinstance(steps, list) or len(steps) not in (1,2):
         raise ValueError('native step coverage unavailable')
     by_name = {}
     for step in steps:
         if not isinstance(step, dict) or step.get('step_name') not in ('worker', 'review') or step['step_name'] in by_name:
             raise ValueError('native step coverage ambiguous')
         by_name[step['step_name']] = step
+    if list(by_name) not in (['worker'],['worker','review']): raise ValueError('native step coverage ambiguous')
+    one_step=len(steps)==1
     prefix = (execution_id + '-' + trial_name).lower()
     names = {prefix+'__env', prefix+'__verifier__worker', prefix+'__verifier__review'}
     required = {prefix+'__env'}
@@ -44,6 +46,7 @@ def check_projects(evidence, trial_name, trial, *, run=subprocess.run):
         if receipt.is_symlink():
             raise ValueError('unsafe verifier receipt')
         if receipt.exists():
+            if one_step and name=='review': raise ValueError('contradictory review receipt')
             if not receipt.is_file() or receipt.stat().st_nlink != 1:
                 raise ValueError('unsafe verifier receipt')
             obj = json.loads(receipt.read_bytes(), object_pairs_hook=unique)
@@ -67,6 +70,8 @@ def check_projects(evidence, trial_name, trial, *, run=subprocess.run):
             or path.name != hashlib.sha256(name.encode()).hexdigest()+'.json'):
             raise ValueError('project record identity mismatch')
         observed.add(name)
+    if one_step and prefix+'__verifier__review' in observed: raise ValueError('contradictory review registration')
+    if one_step and prefix+'__verifier__worker' not in required: raise ValueError('worker verifier start missing')
     if not required <= observed:
         raise ValueError('started native environment lacks registry record')
     for name in sorted(names):

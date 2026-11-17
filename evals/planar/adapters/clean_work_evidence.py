@@ -36,17 +36,18 @@ def validate_native(job_raw, trial_raw, config_raw, *, job_id, trial_id, trial_n
     if strategy!='final': raise ValueError('unsupported native reward strategy')
     parsed=json.loads(trial_raw,object_pairs_hook=unique)
     steps=parsed.get('step_results')
-    if not isinstance(steps,list) or len(steps)!=2 or [s.get('step_name') for s in steps]!=['worker','review']:
+    if not isinstance(steps,list) or [s.get('step_name') for s in steps] not in (['worker'],['worker','review']):
         raise ValueError('native step order mismatch')
     aggregate=parsed.get('verifier_result')
     if 'verifier_result' not in parsed: raise ValueError('native aggregate unavailable')
     expected=steps[-1].get('verifier_result')
     if canonical(aggregate)!=canonical(expected): raise ValueError('native aggregate reward mismatch')
-    if actual['review'] is not None:
+    selected=actual['worker'] if len(steps)==1 else actual['review']
+    if selected is not None:
         if not isinstance(aggregate,dict) or set(aggregate)!={'rewards'} or not isinstance(aggregate['rewards'],dict) or set(aggregate['rewards'])!={'reward'}:
             raise ValueError('native aggregate reward malformed')
         val=aggregate['rewards']['reward']
-        if type(val) not in (int,float) or val!=actual['review']['reward']: raise ValueError('native aggregate reward mismatch')
+        if type(val) not in (int,float) or val!=selected['reward']: raise ValueError('native aggregate reward mismatch')
     elif aggregate is not None:
         raise ValueError('native aggregate reward mismatch')
     parsed_job=json.loads(job_raw,object_pairs_hook=unique)
@@ -64,7 +65,7 @@ def validate_native(job_raw, trial_raw, config_raw, *, job_id, trial_id, trial_n
         key,names=next(iter(rewards['reward'].items()))
         try: score=float(key)
         except (TypeError,ValueError): raise ValueError('native job grade malformed') from None
-        if score!=actual['review']['reward'] or names!=[trial_name]: raise ValueError('native job grade mismatch')
+        if score!=selected['reward'] or names!=[trial_name]: raise ValueError('native job grade mismatch')
     return job,trial
 
 
@@ -182,6 +183,22 @@ def verify(doc, evidence, start):
         if datetime.fromisoformat(trial['finished_at'].replace('Z','+00:00')).tzinfo is None: raise ValueError()
     except (AttributeError,TypeError,KeyError,ValueError): raise ValueError('native trial termination unproven') from None
     actual=observe(trials[0].parent,reviews,trial)
+    one_step=len(trial['step_results'])==1
+    if one_step:
+        configured=task.steps or []
+        if len(configured)!=2 or [x.name for x in configured]!=['worker','review'] or type(configured[0].min_reward) not in (int,float) or configured[0].min_reward!=1:
+            raise ValueError('configured worker gate mismatch')
+        if any(type(stats.get(k)) is not int or stats[k]!=v for k,v in (('n_completed_trials',1),('n_retries',0),('n_errored_trials',0),('n_cancelled_trials',0))):
+            raise ValueError('one-step job terminal mismatch')
+        if trial.get('exception_info') is not None or doc['terminal_class']!='incomplete' or doc['steps'].get('review') is not None:
+            raise ValueError('unsupported one-step outcome')
+        if not {'review verifier output','review native logs','post host capture','final host capture'}<=set(doc['missing_artifacts']):
+            raise ValueError('one-step missing evidence declaration incomplete')
+        clean=evidence/'clean-revision'
+        for path in (trials[0].parent/'steps'/'review',evidence/'verifier-compose-up-review.json',evidence/'verifier-network-review.json',clean/'logs'/'review',clean/'post',clean/'post-receipt.json',clean/'final',clean/'final-receipt.json',clean/'no-fault.json',clean/'worker-gate.json'):
+            if path.exists() or path.is_symlink(): raise ValueError('contradictory review-stage evidence')
+        if any(evidence.glob('review-planar-*')): raise ValueError('contradictory review-stage evidence')
+        if obj(clean/'active.json')!={'step':'worker'}: raise ValueError('one-step active stage mismatch')
     validate_native(job_raw,trial_raw,config_raw,job_id=doc['job_id'],trial_id=doc['trial_id'],trial_name=trial_name,job_dir=job_dir,task_name=launch.Task(case).name,actual=actual,strategy=task.multi_step_reward_strategy.value)
     if canonical(actual)!=canonical(doc['steps']):
         raise ValueError('reviewed verifier outcomes differ')
@@ -200,6 +217,9 @@ def verify(doc, evidence, start):
         raise ValueError('completed outcome unsupported')
     if doc['terminal_class']=='incomplete' and not any(v is not None and v['status']=='incomplete' for v in actual.values()):
         raise ValueError('incomplete outcome unsupported')
+    if one_step:
+        if not {'raw_audit_path','raw_audit_sha256'}<=set(doc) or digest(raw(doc['raw_audit_path']))!=doc['raw_audit_sha256']:
+            raise ValueError('one-step independent raw audit mismatch')
     authority_raw=raw(doc['authority_path']); manifest_raw=raw(doc['raw_manifest_path'])
     if digest(authority_raw)!=doc['authority_sha256'] or digest(manifest_raw)!=doc['raw_manifest_sha256']:
         raise ValueError('reviewed authority bytes changed')
@@ -214,7 +234,16 @@ def verify(doc, evidence, start):
             raise ValueError('authority inventory ambiguous')
         audited.add(item['path'])
         if digest(raw(item['path']))!=item['sha256']: raise ValueError('authority artifact changed')
-    required={str(evidence/x) for x in ('launcher.json','job-config.json','native-trial-start.json','launcher-terminal.json','watchdog-terminal.json','harbor-process.json','planar-cleanup.json')}
+    required={str(evidence/x) for x in ('launcher.json','job-config.json','native-trial-start.json','launcher-terminal.json','watchdog-terminal.json','harbor-process.json')}
+    for step in (['worker'] if one_step else ['worker','review']):
+        cleanup=evidence/(step+'-planar-cleanup.json'); terminal=evidence/(step+'-planar-terminal.json')
+        required.update((str(cleanup),str(terminal)))
+        if obj(cleanup)!={'execution_id':eid,'paths':['/tmp/codex-secrets','/installed-agent/codex-home'],'status':'passed'}:
+            raise ValueError('stage guest cleanup mismatch')
+        terminal_data=obj(terminal)
+        if terminal_data!={'execution_id':eid,'status':'shell_completed','return_code':0} or type(terminal_data['return_code']) is not int:
+            raise ValueError('stage agent terminal mismatch')
+    if one_step: required.update((str(evidence/'clean-revision'/'active.json'),doc['raw_audit_path']))
     required.update((str(start),str(gate_path),str(job_dir/'config.json'),str(job_dir/'result.json'),str(trials[0])))
     projects=evidence/'projects'
     if projects.is_symlink() or not projects.is_dir(): raise ValueError('project registry unavailable')

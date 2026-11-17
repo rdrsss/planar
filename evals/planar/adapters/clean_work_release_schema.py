@@ -17,14 +17,17 @@ FIELDS = {'schema','decision','execution_id','job_id','trial_id','gate_path','ga
 
 def parse(raw):
     doc=json.loads(raw,object_pairs_hook=unique)
-    if not isinstance(doc,dict) or set(doc)!=FIELDS:
+    if not isinstance(doc,dict) or set(doc) not in (FIELDS,FIELDS|{'raw_audit_path','raw_audit_sha256'}):
         raise ValueError('clean-work release schema mismatch')
     if doc['schema']!='planar-clean-work-account-v1' or doc['decision']!='release-account':
         raise ValueError('unsupported account disposition')
+    if isinstance(doc.get('steps'),dict) and doc['steps'].get('review') is None and not {'raw_audit_path','raw_audit_sha256'}<=set(doc): raise ValueError('one-step independent raw audit missing')
+    if 'raw_audit_path' in doc:
+        if type(doc['raw_audit_path']) is not str or not Path(doc['raw_audit_path']).is_absolute() or '..' in Path(doc['raw_audit_path']).parts or type(doc['raw_audit_sha256']) is not str or not re.fullmatch(r'[0-9a-f]{64}',doc['raw_audit_sha256']): raise ValueError('invalid raw audit binding')
     strings=FIELDS-{'steps','missing_artifacts','exception','independent_review'}
     if any(type(doc[key]) is not str or not doc[key].strip() for key in strings):
         raise ValueError('invalid disposition string')
-    paths=[doc[k] for k in ('gate_path','authority_path','raw_manifest_path')]
+    paths=[doc[k] for k in ('gate_path','authority_path','raw_manifest_path')] + ([doc['raw_audit_path']] if 'raw_audit_path' in doc else [])
     if len(set(paths))!=len(paths) or any(not Path(p).is_absolute() or '..' in Path(p).parts for p in paths):
         raise ValueError('unsafe or repeated review paths')
     if doc['independent_review'] is not True:
@@ -47,7 +50,7 @@ def parse(raw):
     missing=doc['missing_artifacts']
     if not isinstance(missing,list) or any(type(x) is not str or not x for x in missing) or len(missing)!=len(set(missing)):
         raise ValueError('invalid missing artifacts')
-    allowed_missing={'final host capture','worker native logs','review native logs','worker verifier output','review verifier output'}
+    allowed_missing={'final host capture','post host capture','worker native logs','review native logs','worker verifier output','review verifier output'}
     if not set(missing)<=allowed_missing: raise ValueError('unsupported missing artifact')
     steps=doc['steps']
     if not isinstance(steps,dict) or set(steps)!={'worker','review'}:

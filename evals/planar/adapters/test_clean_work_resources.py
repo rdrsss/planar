@@ -30,5 +30,5 @@ class CleanWorkResources(TestCase):
             receipt.write_text(original)
             (registry/(hashlib.sha256(worker.encode()).hexdigest()+'.json')).unlink()
             with self.assertRaisesRegex(ValueError,'lacks registry'): check_projects(evidence,'case__XYZ',trial,run=empty)
-            with self.assertRaisesRegex(ValueError,'coverage unavailable'): check_projects(evidence,'case__XYZ',{'step_results':trial['step_results'][:1]},run=empty)
+            with self.assertRaisesRegex(ValueError,'lacks registry'): check_projects(evidence,'case__XYZ',{'step_results':trial['step_results'][:1]},run=empty)
             with self.assertRaisesRegex(ValueError,'coverage ambiguous'): check_projects(evidence,'case__XYZ',{'step_results':[trial['step_results'][0]]*2},run=empty)

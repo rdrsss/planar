@@ -31,9 +31,15 @@ def check(evidence, trial_name, trial):
     except ProcessLookupError: pass
     except PermissionError: raise ValueError('native process state unknown') from None
     else: raise ValueError('native process group active')
-    cleanup=read('planar-cleanup.json')
-    if cleanup!={'execution_id':eid,'paths':['/tmp/codex-secrets','/installed-agent/codex-home'],'status':'passed'}:
-        raise ValueError('guest cleanup unproven')
+    steps=trial.get('step_results')
+    if not isinstance(steps,list) or [x.get('step_name') for x in steps] not in (['worker'],['worker','review']):
+        raise ValueError('native cleanup stages unavailable')
+    for step in steps:
+        name=step['step_name']; cleanup=read(name+'-planar-cleanup.json'); terminal=read(name+'-planar-terminal.json')
+        if cleanup!={'execution_id':eid,'paths':['/tmp/codex-secrets','/installed-agent/codex-home'],'status':'passed'}:
+            raise ValueError('guest cleanup unproven')
+        if terminal!={'execution_id':eid,'status':'shell_completed','return_code':0} or type(terminal['return_code']) is not int:
+            raise ValueError('agent terminal unproven')
     projects=check_projects(evidence,trial_name,trial)
     census=retained_b_census.check(launch.ROOT,eid,evidence)
     if type(census.get('matching_commands')) is not int or census['matching_commands']!=0 or type(census.get('unresolved')) is not int or census['unresolved']!=0:

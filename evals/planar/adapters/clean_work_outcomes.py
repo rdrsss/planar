@@ -10,15 +10,19 @@ from terminal_failure_schema import unique
 def observe(trial_dir, evidence_root, trial):
     trial_dir, evidence_root = Path(trial_dir), Path(evidence_root)
     steps = trial.get('step_results')
-    if not isinstance(steps, list) or len(steps) != 2:
+    if not isinstance(steps, list) or len(steps) not in (1,2):
         raise ValueError('unsupported native step result shape')
     mapped = {}
     for step in steps:
         if not isinstance(step, dict) or step.get('step_name') not in ('worker','review') or step['step_name'] in mapped:
             raise ValueError('ambiguous native step results')
         mapped[step['step_name']] = step
+    if list(mapped) not in (['worker'],['worker','review']): raise ValueError('unsupported native step order')
     observed = {}
     for name in ('worker','review'):
+        if name not in mapped:
+            observed[name]=None
+            continue
         if 'exception_info' not in mapped[name]: raise ValueError('native step exception unavailable')
         native_exception=mapped[name]['exception_info']
         if native_exception is not None and not isinstance(native_exception,dict): raise ValueError('native step exception malformed')
@@ -54,4 +58,6 @@ def observe(trial_dir, evidence_root, trial):
         observed[name] = {'status':result['status'], 'reason':result.get('reason'),
                           'reward':int(reward_raw), 'exception':native_exception, 'status_sha256':hashlib.sha256(status_raw).hexdigest(),
                           'reward_sha256':hashlib.sha256(reward_raw).hexdigest()}
+    if len(steps)==1 and (observed['worker'] is None or observed['worker']['status']!='incomplete' or observed['worker']['reward']!=0 or not observed['worker']['reason']):
+        raise ValueError('unsupported one-step worker outcome')
     return observed
