@@ -19,6 +19,30 @@ class RecoveryExport(unittest.TestCase):
     def test_declared_and_new_review(self):
         data = archive([('projects/revision-fault/tasks/T-001/checks-1.md','file'), ('projects/revision-fault/tasks/T-001/review-1-all.md','file')])
         self.assertEqual(len(select_recovery_home(data, {'projects/revision-fault/tasks/T-001/checks-1.md'})), 2)
+    def test_project_decisions_exact_path_and_archive_safety(self):
+        retained = {'projects/revision-fault/tasks/T-001/checks-1.md'}
+        check = 'projects/revision-fault/tasks/T-001/checks-1.md'
+        task = 'projects/revision-fault/tasks/T-001/session-worker-1-1.md'
+        decisions = 'projects/revision-fault/decisions.md'
+        self.assertEqual(set(select_recovery_home(archive([(check,'file'),(task,'file'),(decisions,'file')]), retained)), {check,task,decisions})
+        self.assertEqual(set(select_recovery_home(archive([(check,'file')]), retained)), {check})
+        for entries in ([(check,'file'),('projects/revision-fault/notes.md','file')],
+                        [(check,'file'),('projects/other/decisions.md','file')],
+                        [(check,'file'),(decisions,'link')],
+                        [(check,'file'),(decisions,'file'),(decisions,'file')]):
+            with self.subTest(entries=entries), self.assertRaises(ValueError):
+                select_recovery_home(archive(entries), retained)
+
+    def test_revision_and_cleanup_paths_remain_within_selected_subtrees(self):
+        retained = {'projects/revision-fault/tasks/T-001/checks-1.md'}
+        task = 'projects/revision-fault/tasks/T-001/'
+        reviews = 'projects/revision-fault/reviews/'
+        names = [task+name for name in ('worker-packet-2.md','worker-report-2.md','checks-2.md',
+                 'reviewer-packet-2.md','review-1-all.md','review-2-all.md',
+                 'session-worker-2-1.md','session-reviewer-2-1.md')]
+        names += [reviews+'run-status.md',reviews+'cleanup-20261117-1.md']
+        self.assertEqual(set(select_recovery_home(archive([(name,'file') for name in names]), retained)),set(names))
+
     def test_home_scoped_names(self):
         retained = {'projects/revision-fault/tasks/T-001/checks-1.md', 'settings.yaml'}
         data = archive([('projects/revision-fault/tasks/T-001/review-1-all.md','file'), ('settings.yaml','file')])

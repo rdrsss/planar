@@ -167,13 +167,13 @@ class GuardedDocker(DockerEnvironment):
             actual = subprocess.run(['docker','inspect','--format','{{.Id}}',cid], check=True, capture_output=True, text=True, timeout=15).stdout.strip()
             if actual != identity.get('container_id'): raise ValueError('clean container identity changed')
             if not (clean/'logs'/step).is_dir(): raise ValueError('clean native logs missing')
-            snapshot = await capture.collect(self, actual, identity.get('baseline'))
+            snapshot = await capture.collect(self, actual, identity.get('baseline'), failure_evidence=clean)
             capture.save(clean/('pre' if step == 'worker' else 'final'), snapshot)
             home = {name[5:]: value for name,value in snapshot.items() if name.startswith('home/')}
             write_tree(Path(target_dir), home)
             host = Path(target_dir)/'_planar_host'
             if host.exists() or host.is_symlink(): raise ValueError('host evidence destination exists')
-            shutil.copytree(clean, host, symlinks=True)
+            shutil.copytree(clean, host, symlinks=True, ignore=shutil.ignore_patterns('rejected-home.tar','rejected-home.json'))
             # Only this exported verifier copy is made readable by the separate
             # container user; the host-owned originals stay private.
             for item in (host, *host.rglob('*')):

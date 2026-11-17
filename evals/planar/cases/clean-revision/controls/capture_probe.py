@@ -46,8 +46,23 @@ async def main():
             env = Environment(cid)
             initial = await collect(env,cid,baseline); save(evidence/'initial',initial)
             docker('exec','--user','root',cid,'python3','-c',"from pathlib import Path; Path('/workspace/repository/RESULT.txt').write_bytes(b'2\\n'); Path('/workspace/repository/STATE.txt').write_bytes(b'correct\\n')")
+            docker('exec','--user','root',cid,'python3','-c',"from pathlib import Path; Path('/workspace/home/projects/revision-fault/decisions.md').write_bytes(b'# Decisions\\n\\n## Run 2026-11-17T00:00:00+00:00\\n')")
             before = await collect(env,cid,baseline); save(evidence/'pre',before)
+            key='home/projects/revision-fault/decisions.md'
+            if before.get(key) != b'# Decisions\n\n## Run 2026-11-17T00:00:00+00:00\n': raise RuntimeError('decisions capture mismatch')
             after, receipt = await inject(env,cid,baseline,before); save(evidence/'post',after)
+            if after.get(key) != before[key]: raise RuntimeError('decisions was changed during injection')
+            docker('exec','--user','root',cid,'python3','-c',"from pathlib import Path; Path('/workspace/home/projects/revision-fault/notes.md').write_text('synthetic forbidden file')")
+            try:
+                await collect(env,cid,baseline,failure_evidence=evidence)
+            except ValueError as error:
+                if 'notes.md' not in str(error): raise
+            else:
+                raise RuntimeError('unexpected project-root file was accepted')
+            retained = json.loads((evidence/'rejected-home.json').read_text())
+            if retained['reason'] != 'bounded_home_selector_rejected' or not (evidence/'rejected-home.tar').is_file():
+                raise RuntimeError('rejected archive not retained')
+            docker('exec','--user','root',cid,'rm','/workspace/home/projects/revision-fault/notes.md')
             docker('exec','-d','--user','root',cid,'python3','-c','import time; time.sleep(30)','planar-census-probe')
             try:
                 await collect(env,cid,baseline)

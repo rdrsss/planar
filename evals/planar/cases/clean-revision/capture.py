@@ -8,10 +8,12 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
+import tarfile
 import subprocess
 import time
 
-from safe_export import select_recovery_home, write_tree
+from safe_export import MAX_ARCHIVE, select_recovery_home, write_tree
 from boundary import verify_injection
 from snapshot import select_repository
 
@@ -38,7 +40,29 @@ def _git(container_id, *args):
                    '-c', 'core.hooksPath=/dev/null', '-C', '/workspace/repository', *args)
 
 
-async def collect(environment, container_id, baseline):
+
+def retain_rejected_home(data, destination):
+    """Save only the bounded, unextracted home archive in private host evidence."""
+    destination = Path(destination)
+    info = destination.lstat()
+    if (destination.is_symlink() or not stat.S_ISDIR(info.st_mode) or
+        info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o077):
+        raise ValueError('unsafe rejected-archive destination')
+    if not isinstance(data, bytes) or len(data) > MAX_ARCHIVE:
+        raise ValueError('invalid rejected-archive size')
+    path = destination/'rejected-home.tar'
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'wb') as output:
+        output.write(data); output.flush(); os.fsync(output.fileno())
+    receipt = {'reason':'bounded_home_selector_rejected', 'source':'/workspace/home/.',
+               'size':len(data), 'sha256':hashlib.sha256(data).hexdigest()}
+    fd = os.open(destination/'rejected-home.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'w') as output:
+        json.dump(receipt, output, sort_keys=True); output.write('\n'); output.flush(); os.fsync(output.fileno())
+    return receipt
+
+
+async def collect(environment, container_id, baseline, *, failure_evidence=None):
     """Collect full bounded evidence only while exact process census matches."""
     if not baseline or census(container_id) != baseline: raise ValueError('container not quiescent')
     head = _git(container_id, 'rev-parse', 'HEAD')
@@ -47,7 +71,12 @@ async def collect(environment, container_id, baseline):
     if head.strip() != '08bacc341a31f32c14a1695b5b2de5c44b3a3e56': raise ValueError('base changed')
     projection = json.loads((CASE/'projection.json').read_text())['files']
     retained = {name[5:] for name in projection if name.startswith('home/')}
-    home = select_recovery_home(await environment._archive('/workspace/home/.'), retained)
+    archive = await environment._archive('/workspace/home/.')
+    try:
+        home = select_recovery_home(archive, retained)
+    except (ValueError, tarfile.TarError):
+        if failure_evidence is not None: retain_rejected_home(archive, failure_evidence)
+        raise
     for name in retained:
         if name not in home: raise ValueError('initial home input missing')
         # tasks.md is allowed to change at the final step; the verifier checks it.
@@ -100,12 +129,12 @@ os.lseek(f,0,os.SEEK_SET); os.write(f,b'fault-injected\\n'); os.ftruncate(f,len(
 """
 
 
-async def inject(environment, container_id, baseline, before):
+async def inject(environment, container_id, baseline, before, *, failure_evidence=None):
     """Perform the sole approved delta, then recapture and compare it."""
     if census(container_id) != baseline: raise ValueError('container not quiescent')
     if before.get('repository/STATE.txt') != b'correct\n': raise ValueError('unexpected initial state')
     _docker('exec', '--user', 'root', container_id, 'python3', '-c', INJECT)
-    after = await collect(environment, container_id, baseline)
+    after = await collect(environment, container_id, baseline, failure_evidence=failure_evidence)
     # The repo inventory necessarily changes STATE's hash; compare that one
     # entry separately and require all other metadata to remain identical.
     pre_meta = json.loads(before['host/repository-inventory.json'])

@@ -220,9 +220,9 @@ class SmokeCodex(Codex):
         cid = await environment._platform._resolve_service_container('main')
         cid = subprocess.run(['docker','inspect','--format','{{.Id}}',cid], check=True, capture_output=True, text=True, timeout=15).stdout.strip()
         baseline = capture.census(cid)
-        initial = await capture.collect(environment, cid, baseline)
         evidence = self._provenance_dir/'clean-revision'
         evidence.mkdir(mode=0o700, exist_ok=False)
+        initial = await capture.collect(environment, cid, baseline, failure_evidence=evidence)
         capture.save(evidence/'initial', initial)
         self._clean_container, self._clean_baseline = cid, baseline
         (evidence/'container.json').write_text(json.dumps({'container_id':cid, 'baseline':baseline})+'\n')
@@ -267,7 +267,7 @@ class SmokeCodex(Codex):
             handoff = load_case_module(self._case, 'handoff')
             handoff.worker_gate(self._provenance_dir)
             before = capture.load(evidence/'pre')
-            current = await capture.collect(environment, self._clean_container, self._clean_baseline)
+            current = await capture.collect(environment, self._clean_container, self._clean_baseline, failure_evidence=evidence)
             if current != before:
                 raise ValueError('worker snapshot changed before injection')
             # Reserve B's complete 400-second execution, 60-second verifier,
@@ -275,7 +275,7 @@ class SmokeCodex(Codex):
             from clean_revision_support import check_revision_time
             check_revision_time(self._provenance_dir, 565)
             started = {'wall_ns':time.time_ns(), 'monotonic_ns':time.monotonic_ns()}
-            after, receipt = await capture.inject(environment, self._clean_container, self._clean_baseline, before)
+            after, receipt = await capture.inject(environment, self._clean_container, self._clean_baseline, before, failure_evidence=evidence)
             ended = {'wall_ns':time.time_ns(), 'monotonic_ns':time.monotonic_ns()}
             capture.save(evidence/'post', after)
             (evidence/'injection.json').write_text(json.dumps({'change':receipt,'started':started,'ended':ended}, sort_keys=True)+'\n')

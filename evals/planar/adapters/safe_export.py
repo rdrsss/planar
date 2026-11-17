@@ -171,6 +171,7 @@ def select_recovery_home(data: bytes, retained: set[str]) -> dict[str, bytes]:
     ):
         raise ValueError('invalid recovery export or allowlist')
     def selected_markdown(name):
+        if name == 'projects/revision-fault/decisions.md': return True
         prefix = 'projects/revision-fault/'
         if not name.startswith(prefix): return False
         relative = name[len(prefix):]
