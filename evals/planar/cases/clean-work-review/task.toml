@@ -22,7 +22,7 @@ timeout_sec = 400
 environment_mode = "separate"
 timeout_sec = 60
 [verifier.environment]
-docker_image = "sha256:f03ecae205332adb3921400abd71c09af102b58a7843a3e5af8be926ecc5fdb6"
+docker_image = "sha256:a8455fe05fd4a4f232c19b0c8adde46ec020b2c3598bce217a7c44f6853e26d5"
 network_mode = "no-network"
 build_timeout_sec = 600
 cpus = 1

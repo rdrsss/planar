@@ -93,7 +93,7 @@ async def main(output,candidate,agent_kind="smoke"):
     output.mkdir(mode=0o700,parents=True); case=output/'case'; shutil.copytree(CASE,case,ignore=shutil.ignore_patterns('__pycache__'))
     evidence=output/'jobs'/('planar-t044-noauth-'+uuid.uuid4().hex); evidence.mkdir(mode=0o700,parents=True)
     expiry=(datetime.now(timezone.utc)+timedelta(hours=1)).isoformat()
-    os.environ.update({'PLANAR_EVALS_OUTPUT_ROOT':str(output),'PLANAR_T044_EVIDENCE_DIR':str(evidence),'PLANAR_T044_CASE':'clean-work-review','PLANAR_T044_CASE_SNAPSHOT':str(case),'PLANAR_T044_CANDIDATE_SNAPSHOT':str(candidate),'PLANAR_T045_NOAUTH_CONTROL':'1','PLANAR_T044_ABSOLUTE_DEADLINE':expiry,'PLANAR_T044_DEADLINE_SECONDS':'1050','PLANAR_T045_VERIFIER_IMAGE_ID':'sha256:f03ecae205332adb3921400abd71c09af102b58a7843a3e5af8be926ecc5fdb6'})
+    os.environ.update({'PLANAR_EVALS_OUTPUT_ROOT':str(output),'PLANAR_T044_EVIDENCE_DIR':str(evidence),'PLANAR_T044_CASE':'clean-work-review','PLANAR_T044_CASE_SNAPSHOT':str(case),'PLANAR_T044_CANDIDATE_SNAPSHOT':str(candidate),'PLANAR_T045_NOAUTH_CONTROL':'1','PLANAR_T044_ABSOLUTE_DEADLINE':expiry,'PLANAR_T044_DEADLINE_SECONDS':'1050','PLANAR_T045_VERIFIER_IMAGE_ID':'sha256:a8455fe05fd4a4f232c19b0c8adde46ec020b2c3598bce217a7c44f6853e26d5'})
     digest=launch.case_inventory(case); os.environ['PLANAR_T044_CASE_SHA256']=digest
     (evidence/'launcher.json').write_text(json.dumps({'execution_id':evidence.name,'case':'clean-work-review','case_sha256':digest,'prerequisites':{'case_read_root':str(case)},'synthetic_noauth':True})+'\n')
     (evidence/'harbor-process.json').write_text(json.dumps({'execution_id':evidence.name,'started_monotonic_ns':time.monotonic_ns(),'deadline_seconds':1050,'absolute_deadline':expiry,'synthetic_control':True})+'\n')
