@@ -28,7 +28,7 @@ PROJECT = ROOT.parent
 REVIEWS = PROJECT / 'reviews'
 EVALS = ROOT / 'evals'
 CASE = EVALS / 'planar/cases/plugin-smoke'
-CASES = {name: EVALS / 'planar/cases' / name for name in ('plugin-smoke', 'native-lineage-smoke', 'native-lineage-current', 'fresh-interrupted-review', 'clean-revision', 'clean-work-review', 'retained-a-fresh-b')}
+CASES = {name: EVALS / 'planar/cases' / name for name in ('plugin-smoke', 'native-lineage-smoke', 'native-lineage-current', 'fresh-interrupted-review', 'clean-revision', 'clean-work-review', 'retained-a-fresh-b', 'clean-retained-a-continuation')}
 
 
 def portable_native_path(docker, expected_version):
@@ -76,7 +76,7 @@ def source_digest(case=CASE):
                 raise ValueError('symlink in evaluation source')
             if path.is_file():
                 paths.append(path)
-    if Path(case).name in ('retained-a-fresh-b','clean-work-review'):
+    if Path(case).name in ('retained-a-fresh-b','clean-work-review','clean-retained-a-continuation'):
         paths.append(EVALS/'planar/experiments/codex_run.py')
     records = []
     for path in sorted(paths):
@@ -114,7 +114,8 @@ def reviews_root():
 
 
 def plan(case_name='plugin-smoke', *, candidate_root=None, case_root=None, trial_deadline=1500, effort='medium', source_packet=None, execution_id=None, absolute_deadline=None):
-    retained = case_name == 'retained-a-fresh-b'
+    retained_clean = case_name == 'clean-retained-a-continuation'
+    retained = case_name in ('retained-a-fresh-b','clean-retained-a-continuation')
     if not retained and source_packet is not None: raise ValueError('source packet is retained-case only')
     if retained and (trial_deadline != 1050 or effort != 'medium' or not candidate_root or not case_root or not source_packet or not execution_id or not re.fullmatch(r'planar-t044-[0-9a-f]{32}',execution_id)):
         raise ValueError('retained case requires frozen inputs, reserved execution and fixed budgets')
@@ -158,9 +159,13 @@ def plan(case_name='plugin-smoke', *, candidate_root=None, case_root=None, trial
     write_roots = {'harbor-t044-jobs': validate_write_destination(jobs_root()),
                    'harbor-t044-consumed': validate_write_destination(reviews_root() / 'harbor-t044-consumed')}
     if retained:
-        from retained_b_support import source as validate_retained_source
-        source_identity=validate_retained_source(case,source_packet,candidate)
-        if source_identity.get('assessment',{}).get('status') != 'pass': raise ValueError('retained source assessment failed')
+        if retained_clean:
+            from retained_b_support import source as validate_retained_source
+            source_identity=validate_retained_source(case,source_packet,candidate)
+        else:
+            from retained_b_support import source as validate_retained_source
+            source_identity=validate_retained_source(case,source_packet,candidate)
+            if source_identity.get('assessment',{}).get('status') != 'pass': raise ValueError('retained source assessment failed')
     expected = json.loads((case / 'candidate.json').read_text())
     if inventory(candidate) != expected:
         raise ValueError('candidate differs from recorded frozen inventory')
@@ -259,9 +264,14 @@ def plan(case_name='plugin-smoke', *, candidate_root=None, case_root=None, trial
         prerequisites['account_scope_id']=str(reviews_root().resolve()/'planar-account-admission-v1')
         prerequisites['effective_configuration_sha256']=effective_hash
         prerequisites['source_online_outcome']='behavioral_failure/reward 0'
+        if retained_clean:
+            source_gate=json.loads((Path(source_packet)/'evidence/original-gate.json').read_bytes())
+            prerequisites['source_account_scope_id']=source_gate['account_scope_id']
+            prerequisites['source_worker_role_delivery']='unverified'
+            prerequisites['fixture']='durable retained clean work; no fault'
     return {'prerequisites': prerequisites, 'case': case_name, 'case_sha256': case_inventory(case),
             'image_id': Task(case).config.environment.docker_image,
-            'implementation_sha256': source_digest() if case_name == 'native-lineage-portable' else source_digest((EVALS/'planar/cases/retained-a-fresh-b') if retained else CASES[case_name]), 'candidate_sha256': expected['sha256'],
+            'implementation_sha256': source_digest() if case_name == 'native-lineage-portable' else source_digest(CASES[case_name]), 'candidate_sha256': expected['sha256'],
             'configuration_sha256': config_digest, 'purpose': 'one-diagnostic-attempt',
             'harbor_version': '0.26.0', 'codex_version': '0.169.0', 'configuration': config}
 
@@ -289,7 +299,7 @@ def consume_review_once(review_path, consumed_root, *, reviewed_bytes=None):
 def execute(auth_path, review_path, case_name='plugin-smoke', *, candidate_root=None, case_root=None, trial_deadline=1500, execution_id=None, effort='medium', absolute_deadline=None, emit=True, schema2_context=None, source_packet=None):
     kwargs={'candidate_root':candidate_root,'case_root':case_root,'trial_deadline':trial_deadline,'execution_id':execution_id,
             'effort':effort,'absolute_deadline':absolute_deadline,'emit':emit,'schema2_context':schema2_context,'source_packet':source_packet}
-    if case_name not in ('retained-a-fresh-b','clean-work-review'):
+    if case_name not in ('retained-a-fresh-b','clean-work-review','clean-retained-a-continuation'):
         return _execute_inner(auth_path,review_path,case_name,**kwargs)
     # Reuse the shared account lock and pending-record namespace, held across
     # the whole trial. Structural results stay pending until a bound raw audit.
@@ -307,7 +317,8 @@ def execute(auth_path, review_path, case_name='plugin-smoke', *, candidate_root=
 
 
 def _execute_inner(auth_path, review_path, case_name='plugin-smoke', *, candidate_root=None, case_root=None, trial_deadline=1500, execution_id=None, effort='medium', absolute_deadline=None, emit=True, schema2_context=None, source_packet=None, _retained_records=None):
-    retained=case_name=='retained-a-fresh-b'
+    retained_clean=case_name=='clean-retained-a-continuation'
+    retained=case_name in ('retained-a-fresh-b','clean-retained-a-continuation')
     clean_work=case_name=='clean-work-review'
     if (retained or clean_work) and _retained_records is None: raise ValueError('retained account admission missing')
     if not retained and source_packet is not None: raise ValueError('source packet is retained-case only')
@@ -339,7 +350,7 @@ def _execute_inner(auth_path, review_path, case_name='plugin-smoke', *, candidat
     if not review.is_relative_to(reviews_root().resolve()):
         raise ValueError('review evidence must reside under the project reviews directory')
     gate_bytes = review.read_bytes()
-    if clean_work:
+    if clean_work or retained_clean:
         from terminal_failure_schema import unique
         gate = json.loads(gate_bytes, object_pairs_hook=unique)
     else:
@@ -350,7 +361,7 @@ def _execute_inner(auth_path, review_path, case_name='plugin-smoke', *, candidat
                 'candidate_sha256': snapshot['candidate_sha256'],
                 'configuration_sha256': snapshot['configuration_sha256'], 'case': case_name,
                 'case_sha256': snapshot['case_sha256'], 'image_id': snapshot['image_id']}
-    if not portable and any(gate.get(key) != value or (clean_work and type(gate.get(key)) is not type(value)) for key, value in required.items()):
+    if not portable and any(gate.get(key) != value or ((clean_work or retained_clean) and type(gate.get(key)) is not type(value)) for key, value in required.items()):
         raise ValueError('diagnostic review is missing, stale, or not approved')
     if case_name in ('clean-revision','clean-work-review'):
         if not absolute_deadline or gate.get('absolute_deadline') != absolute_deadline:
@@ -376,7 +387,7 @@ def _execute_inner(auth_path, review_path, case_name='plugin-smoke', *, candidat
     if not isinstance(image_id, str) or len(image_id) != 71 or not image_id.startswith('sha256:') or image_id != Task(case).config.environment.docker_image:
         raise ValueError('diagnostic review lacks the pinned image identity')
     verifier_image = None
-    if case_name in ('clean-revision', 'clean-work-review', 'native-lineage-portable', 'retained-a-fresh-b'):
+    if case_name in ('clean-revision', 'clean-work-review', 'native-lineage-portable', 'retained-a-fresh-b', 'clean-retained-a-continuation'):
         verifier_image = reservation['verifier_image_id'] if portable else gate.get('verifier_image_id')
         if (not isinstance(verifier_image, str) or not re.fullmatch(r'sha256:[0-9a-f]{64}', verifier_image)
             or (not portable and verifier_image != Task(case).config.verifier.environment.docker_image)):
@@ -408,9 +419,16 @@ def _execute_inner(auth_path, review_path, case_name='plugin-smoke', *, candidat
             raise ValueError('portable runtime exceeds reviewed caps')
         portable_path=portable_native_path(docker,reservation['host_version'])
     if retained:
-        from retained_b_support import validate_gate, source as validate_retained_source
         policy=json.loads((case/'source-policy.json').read_text())
+        if retained_clean:
+            from clean_retained_gate import validate as validate_gate
+            from clean_revision_support import load_case_module
+            from retained_b_support import source as validate_retained_source
+        else:
+            from retained_b_support import validate_gate, source as validate_retained_source
         validate_gate(gate,snapshot,policy,execution_id,absolute_deadline,auth_path,_retained_records.parent,verifier_image)
+        if retained_clean:
+            load_case_module(case,'source_account').check(source_packet,Path(candidate_root),PROJECT/'reviews')
         planned_evidence=jobs_root()/execution_id
         if planned_evidence.exists() or planned_evidence.is_symlink(): raise ValueError('retained execution already exists')
         planned_config=config_for(execution_id,planned_evidence,case,effort)
@@ -456,7 +474,7 @@ def _execute_inner(auth_path, review_path, case_name='plugin-smoke', *, candidat
         raise ValueError('subscription file authentication is unavailable') from None
     del auth
     remaining()
-    if case_name not in ('clean-revision', 'clean-work-review', 'native-lineage-portable', 'retained-a-fresh-b'):
+    if case_name not in ('clean-revision', 'clean-work-review', 'native-lineage-portable', 'retained-a-fresh-b', 'clean-retained-a-continuation'):
         consume_review_once(review, reviews_root() / 'harbor-t044-consumed')
     run_id = execution_id or 'planar-t044-' + uuid.uuid4().hex
     evidence = jobs_root() / run_id

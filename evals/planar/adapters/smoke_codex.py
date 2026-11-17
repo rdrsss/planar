@@ -48,16 +48,19 @@ class SmokeCodex(Codex):
             raise ValueError('provenance directory is outside the project evidence root')
         self._execution_id = self._provenance_dir.name
         case_name = os.environ.get('PLANAR_T044_CASE', 'plugin-smoke')
-        if case_name not in ('plugin-smoke', 'native-lineage-smoke', 'native-lineage-current', 'fresh-interrupted-review', 'clean-revision', 'clean-work-review', 'native-lineage-portable', 'retained-a-fresh-b'):
+        if case_name not in ('plugin-smoke', 'native-lineage-smoke', 'native-lineage-current', 'fresh-interrupted-review', 'clean-revision', 'clean-work-review', 'native-lineage-portable', 'retained-a-fresh-b', 'clean-retained-a-continuation'):
             raise ValueError('unsupported case')
-        if case_name == 'retained-a-fresh-b':
+        if case_name in ('retained-a-fresh-b','clean-retained-a-continuation'):
             if os.environ.get('PLANAR_T045_NOAUTH_CONTROL') == '1':
                 if any(os.environ.get(key) for key in ('CODEX_AUTH_JSON_PATH','CODEX_FORCE_AUTH_JSON','OPENAI_API_KEY','CODEX_API_KEY')):
                     raise ValueError('retained noauth control cannot carry credentials')
             else:
                 if any(not os.environ.get(key) for key in ('PLANAR_T044_CASE_SNAPSHOT','PLANAR_T045_SOURCE_PACKET','PLANAR_T044_CANDIDATE_SNAPSHOT')):
                     raise ValueError('retained host admission missing')
-                from retained_b_support import verify_runtime
+                if case_name == 'clean-retained-a-continuation':
+                    from clean_retained_support import verify_runtime
+                else:
+                    from retained_b_support import verify_runtime
                 verify_runtime(self._provenance_dir,os.environ['PLANAR_T044_CASE_SNAPSHOT'],os.environ['PLANAR_T045_SOURCE_PACKET'],os.environ['PLANAR_T044_CANDIDATE_SNAPSHOT'])
         self._case_name = case_name
         self._clean_step = None
@@ -134,7 +137,7 @@ class SmokeCodex(Codex):
         expected = json.loads(self._manifest.read_text())
         if inventory(getattr(self, '_candidate', CANDIDATE)) != expected:
             raise ValueError('candidate does not match frozen inventory')
-        if (getattr(self, '_case_name', 'plugin-smoke') in ('clean-revision','clean-work-review') and self._clean_step in ('revision','review')) or (getattr(self, '_case_name', 'plugin-smoke') == 'retained-a-fresh-b' and getattr(self, '_retained_prepared',False)):
+        if (getattr(self, '_case_name', 'plugin-smoke') in ('clean-revision','clean-work-review') and self._clean_step in ('revision','review')) or (getattr(self, '_case_name', 'plugin-smoke') in ('retained-a-fresh-b','clean-retained-a-continuation') and getattr(self, '_retained_prepared',False)):
             workspace = await self.exec_as_agent(environment, command='test -d /workspace/home/projects/revision-fault && test -d /workspace/repository/.git', env=ENV)
             if workspace.return_code != 0:
                 raise ValueError('clean revision workspace is unavailable')
@@ -211,6 +214,14 @@ class SmokeCodex(Codex):
                                        self._provenance_dir,os.environ['PLANAR_T045_SOURCE_SHA256'])
             self._retained_prepared=True
             self._record('planar-fixture-provenance.json',proof)
+        if getattr(self, '_case_name', 'plugin-smoke') == 'clean-retained-a-continuation' and not getattr(self, '_retained_prepared',False):
+            from clean_retained_support import prepare_target
+            policy=json.loads((self._case/'source-policy.json').read_bytes())
+            native=json.loads((self._provenance_dir/'native-trial-start.json').read_bytes())
+            proof=await prepare_target(environment,self._case,os.environ['PLANAR_T045_SOURCE_PACKET'],self._candidate,
+                self._provenance_dir,policy['job'],native['job_id'],os.environ['PLANAR_T045_SOURCE_SHA256'])
+            self._retained_prepared=True
+            self._record('planar-fixture-provenance.json',proof)
 
     async def _install_clean_fixture(self, environment):
         from clean_revision_support import load_case_module
@@ -247,12 +258,15 @@ class SmokeCodex(Codex):
         self._record('planar-fixture-provenance.json', receipt)
 
     async def exec_as_agent(self, environment, command, env=None, cwd=None, timeout_sec=None):
-        if getattr(self, '_case_name', 'plugin-smoke') in ('fresh-interrupted-review', 'clean-revision', 'clean-work-review', 'retained-a-fresh-b'):
+        if getattr(self, '_case_name', 'plugin-smoke') in ('fresh-interrupted-review', 'clean-revision', 'clean-work-review', 'retained-a-fresh-b', 'clean-retained-a-continuation'):
             env = {**(env or {}), 'PLANAR_HOME': '/workspace/home'}
         is_exec = 'codex exec ' in command
-        if is_exec and getattr(self, '_case_name', 'plugin-smoke') == 'retained-a-fresh-b':
+        if is_exec and getattr(self, '_case_name', 'plugin-smoke') in ('retained-a-fresh-b','clean-retained-a-continuation'):
             if not getattr(self,'_retained_prepared',False): raise ValueError('retained target not restored')
-            from retained_b_support import verify_runtime
+            if self._case_name == 'clean-retained-a-continuation':
+                from clean_retained_support import verify_runtime
+            else:
+                from retained_b_support import verify_runtime
             from clean_revision_support import check_revision_time
             verify_runtime(self._provenance_dir,self._case,os.environ['PLANAR_T045_SOURCE_PACKET'],self._candidate)
             check_revision_time(self._provenance_dir,475)
@@ -317,7 +331,7 @@ class SmokeCodex(Codex):
     async def run(self, instruction, environment, context):
         if getattr(self, '_case_name', 'plugin-smoke') in ('clean-revision','clean-work-review'):
             await self._prepare_clean_step(instruction, environment)
-        if getattr(self, '_case_name', 'plugin-smoke') in ('fresh-interrupted-review','retained-a-fresh-b'):
+        if getattr(self, '_case_name', 'plugin-smoke') in ('fresh-interrupted-review','retained-a-fresh-b','clean-retained-a-continuation'):
             validate_recovery_selection(instruction, self.model_name, self.options.reasoning_effort)
         if self._resolve_auth_json_path() is None:
             raise ValueError('file-backed subscription authentication is required')

@@ -126,7 +126,7 @@ class LaunchControls(unittest.TestCase):
     def test_plan_and_execution_use_same_generated_settings(self):
         for name, case in launch.CASES.items():
             with self.subTest(case=name):
-                if name == 'retained-a-fresh-b': continue  # Reserved-ID/source binding is covered by test_retained_b_plan.
+                if name in ('retained-a-fresh-b','clean-retained-a-continuation'): continue  # Source-bound cases require explicit packet and reservation.
                 self.case_name = name
                 planned = (launch.plan(name, candidate_root=launch.CANDIDATE, case_root=case, trial_deadline=1050, **({'execution_id':'planar-t044-'+'1'*32, 'absolute_deadline':'2100-01-01T00:00:00+00:00'} if name == 'clean-work-review' else {})) if name in ('clean-revision','clean-work-review') else launch.plan(name))['configuration']
                 actual = launch.config_for('actual-run', Path('/tmp/actual-run'), case)

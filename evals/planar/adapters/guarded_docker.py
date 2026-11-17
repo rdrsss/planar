@@ -27,16 +27,19 @@ class GuardedDocker(DockerEnvironment):
         if not re.fullmatch(r'planar-t044-(?:noauth-)?[0-9a-f]{32}', run_id):
             raise ValueError('invalid launcher execution identity')
         case_name = os.environ.get('PLANAR_T044_CASE', 'plugin-smoke')
-        if case_name not in ('plugin-smoke', 'native-lineage-smoke', 'native-lineage-current', 'fresh-interrupted-review', 'clean-revision', 'clean-work-review', 'native-lineage-portable', 'retained-a-fresh-b'):
+        if case_name not in ('plugin-smoke', 'native-lineage-smoke', 'native-lineage-current', 'fresh-interrupted-review', 'clean-revision', 'clean-work-review', 'native-lineage-portable', 'retained-a-fresh-b', 'clean-retained-a-continuation'):
             raise ValueError('unsupported diagnostic case')
-        if case_name == 'retained-a-fresh-b':
+        if case_name in ('retained-a-fresh-b','clean-retained-a-continuation'):
             if os.environ.get('PLANAR_T045_NOAUTH_CONTROL') == '1':
                 if any(os.environ.get(key) for key in ('CODEX_AUTH_JSON_PATH','CODEX_FORCE_AUTH_JSON','OPENAI_API_KEY','CODEX_API_KEY')):
                     raise ValueError('retained noauth control cannot carry credentials')
             else:
                 if any(not os.environ.get(key) for key in ('PLANAR_T044_CASE_SNAPSHOT','PLANAR_T045_SOURCE_PACKET','PLANAR_T044_CANDIDATE_SNAPSHOT')):
                     raise ValueError('retained host admission missing')
-                from retained_b_support import verify_runtime
+                if case_name == 'clean-retained-a-continuation':
+                    from clean_retained_support import verify_runtime
+                else:
+                    from retained_b_support import verify_runtime
                 verify_runtime(evidence,os.environ['PLANAR_T044_CASE_SNAPSHOT'],os.environ['PLANAR_T045_SOURCE_PACKET'],os.environ['PLANAR_T044_CANDIDATE_SNAPSHOT'])
         self._case_name = case_name
         self._evidence_root = evidence
@@ -114,7 +117,7 @@ class GuardedDocker(DockerEnvironment):
         return capabilities
 
     async def start(self, force_build):
-        if self._static_verifier and self._case_name in ('native-lineage-portable','retained-a-fresh-b') and force_build:
+        if self._static_verifier and self._case_name in ('native-lineage-portable','retained-a-fresh-b','clean-retained-a-continuation') and force_build:
             raise ValueError('portable verifier cannot rebuild')
         await super().start(force_build)
         if self._static_verifier:
@@ -122,7 +125,7 @@ class GuardedDocker(DockerEnvironment):
             result = subprocess.run(['docker', 'inspect', '--format', '{{.HostConfig.NetworkMode}}', cid], capture_output=True, text=True, check=True, timeout=15)
             if result.stdout.strip() != 'none':
                 raise RuntimeError('verifier container is not network-disabled')
-            if self._case_name in ('clean-revision', 'clean-work-review', 'native-lineage-portable', 'retained-a-fresh-b'):
+            if self._case_name in ('clean-revision', 'clean-work-review', 'native-lineage-portable', 'retained-a-fresh-b', 'clean-retained-a-continuation'):
                 expected = os.environ.get('PLANAR_T045_VERIFIER_IMAGE_ID')
                 noauth = os.environ.get('PLANAR_T045_NOAUTH_CONTROL') == '1'
                 if noauth and any(os.environ.get(key) for key in ('CODEX_AUTH_JSON_PATH','CODEX_FORCE_AUTH_JSON','OPENAI_API_KEY','CODEX_API_KEY')):
@@ -133,7 +136,7 @@ class GuardedDocker(DockerEnvironment):
             evidence = Path(os.environ['PLANAR_T044_EVIDENCE_DIR']).resolve(strict=True)
             name = 'verifier-network-'+self._verifier_step+'.json' if self._verifier_step else 'verifier-network.json'
             record = {'execution_id': evidence.name, 'container_id': cid, 'network_mode': 'none'}
-            if self._case_name in ('native-lineage-portable','retained-a-fresh-b'):
+            if self._case_name in ('native-lineage-portable','retained-a-fresh-b','clean-retained-a-continuation'):
                 record['image_id'] = actual
             if self._verifier_step:
                 record['step'] = self._verifier_step
@@ -141,7 +144,7 @@ class GuardedDocker(DockerEnvironment):
             (evidence / name).write_text(json.dumps(record))
 
     async def _run_docker_compose_command(self, command, check=True, timeout_sec=None, stdin_data=None, on_output=None):
-        if self._static_verifier and self._case_name in ('native-lineage-portable','retained-a-fresh-b','clean-work-review'):
+        if self._static_verifier and self._case_name in ('native-lineage-portable','retained-a-fresh-b','clean-work-review','clean-retained-a-continuation'):
             if command and command[0] in ('build', 'pull'):
                 raise ValueError('portable verifier cannot build or pull at runtime')
             if command and command[0] == 'up':
@@ -195,6 +198,10 @@ class GuardedDocker(DockerEnvironment):
                 destination=self._evidence_root/'retained-b/logs/revision'
                 if destination.exists() or destination.is_symlink(): raise ValueError('target logs already collected')
                 write_tree(destination,logs)
+            if self._case_name == 'clean-retained-a-continuation':
+                destination=self._evidence_root/'retained-clean/logs/revision'
+                if destination.exists() or destination.is_symlink(): raise ValueError('target logs already collected')
+                write_tree(destination,logs)
             if self._case_name in ('clean-revision','clean-work-review'):
                 clean = self._evidence_root/'clean-revision'
                 active = json.loads((clean/'active.json').read_text())
@@ -203,6 +210,11 @@ class GuardedDocker(DockerEnvironment):
                 destination = clean/'logs'/step
                 if destination.exists() or destination.is_symlink(): raise ValueError('clean step logs already collected')
                 write_tree(destination, logs)
+        elif source_dir == '/workspace/home' and not self._static_verifier and self._case_name == 'clean-retained-a-continuation':
+            from clean_retained_support import verifier_handoff
+            case=Path(os.environ['PLANAR_T044_CASE_SNAPSHOT']); candidate=Path(os.environ['PLANAR_T044_CANDIDATE_SNAPSHOT'])
+            packet=Path(os.environ['PLANAR_T045_SOURCE_PACKET'])
+            await verifier_handoff(self,case,packet,candidate,self._evidence_root,os.environ['PLANAR_T045_SOURCE_SHA256'],Path(target_dir))
         elif source_dir == '/workspace/home' and not self._static_verifier and self._case_name == 'retained-a-fresh-b':
             from clean_revision_support import load_case_module
             from retained_b_support import source as validate_source

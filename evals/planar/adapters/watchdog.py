@@ -12,7 +12,7 @@ from supervise import supervise
 
 def process_record(evidence, pid, deadline):
     record = {'pid': pid, 'execution_id': evidence.name}
-    if os.environ.get('PLANAR_T044_CASE') in ('clean-revision', 'clean-work-review', 'retained-a-fresh-b'):
+    if os.environ.get('PLANAR_T044_CASE') in ('clean-revision', 'clean-work-review', 'retained-a-fresh-b', 'clean-retained-a-continuation'):
         record.update({'started_monotonic_ns': time.monotonic_ns(), 'deadline_seconds': deadline,
                        'absolute_deadline': os.environ.get('PLANAR_T044_ABSOLUTE_DEADLINE')})
     return record

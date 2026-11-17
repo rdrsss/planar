@@ -35,7 +35,7 @@ class VerifierCaseGuard(unittest.TestCase):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
                 self.evidence = Path(tmp).resolve() / ('planar-t044-noauth-' + 'b' * 32); self.evidence.mkdir()
                 os.environ['PLANAR_T044_EVIDENCE_DIR'] = str(self.evidence)
-                if case == 'retained-a-fresh-b': os.environ['PLANAR_T045_NOAUTH_CONTROL'] = '1'
+                if case in ('retained-a-fresh-b','clean-retained-a-continuation'): os.environ['PLANAR_T045_NOAUTH_CONTROL'] = '1'
                 else: os.environ.pop('PLANAR_T045_NOAUTH_CONTROL', None)
                 env = self.construct(case, CASES / case / 'tests')
                 with patch('smoke_codex.jobs_root', return_value=self.evidence.parent):
