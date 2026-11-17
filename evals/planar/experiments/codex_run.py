@@ -7,6 +7,7 @@ import fcntl
 import hashlib
 import json
 from contextlib import contextmanager
+from contextvars import ContextVar
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -20,6 +21,8 @@ import controls
 import native_status
 
 
+
+_ACTIVE_ADMISSION = ContextVar("planar_account_admission", default=None)
 
 @contextmanager
 def admission_scope():
@@ -36,7 +39,9 @@ def admission_scope():
     records.mkdir(mode=0o700, exist_ok=True)
     with (scope / 'lock').open('a+') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        yield records
+        token = _ACTIVE_ADMISSION.set(records.resolve())
+        try: yield records
+        finally: _ACTIVE_ADMISSION.reset(token)
 
 
 def shared_pending(records):
@@ -53,6 +58,10 @@ def shared_pending(records):
                           'gate_sha256','source_packet_sha256','case_sha256','candidate_sha256','configuration_sha256',
                           'historical_implementation_sha256','resolver_commit','resolver_implementation_sha256',
                           'audit_sha256','release_sha256','release_path','historical_commit','wrapper_audit_sha256','trace_sha256','verifier_status_sha256','reward_sha256','census_sha256'}
+            if release.get('type')=='terminal-failure-v1':
+                if _ACTIVE_ADMISSION.get()!=records.resolve(): return False
+                from terminal_failure import validate_published
+                return validate_published(start, resolved, release)
             if release.get('type')=='aborted-before-work':
                 gate=data.get('gate_authority',{})
                 review=Path(release['release_path']); project_reviews=(launch.PROJECT/'reviews').resolve(strict=True)
