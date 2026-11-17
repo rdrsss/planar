@@ -26,7 +26,7 @@ class VerifierCaseGuard(unittest.TestCase):
 
     def construct(self, case, directory, mode=NetworkMode.NO_NETWORK):
         os.environ['PLANAR_T044_CASE'] = case
-        return GuardedDocker(environment_dir=directory, environment_name='verifier', session_id=('trial__verifier__worker' if case == 'clean-revision' else 'trial__verifier__'),
+        return GuardedDocker(environment_dir=directory, environment_name='verifier', session_id=('trial__verifier__worker' if case in ('clean-revision','clean-work-review') else 'trial__verifier__'),
             trial_paths=TrialPaths(self.evidence / 'trial'), task_env_config=EnvironmentConfig(),
             network_policy=NetworkPolicy(network_mode=mode), auto_mounting=False)
 

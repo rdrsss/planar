@@ -28,7 +28,7 @@ PROJECT = ROOT.parent
 REVIEWS = PROJECT / 'reviews'
 EVALS = ROOT / 'evals'
 CASE = EVALS / 'planar/cases/plugin-smoke'
-CASES = {name: EVALS / 'planar/cases' / name for name in ('plugin-smoke', 'native-lineage-smoke', 'native-lineage-current', 'fresh-interrupted-review', 'clean-revision', 'retained-a-fresh-b')}
+CASES = {name: EVALS / 'planar/cases' / name for name in ('plugin-smoke', 'native-lineage-smoke', 'native-lineage-current', 'fresh-interrupted-review', 'clean-revision', 'clean-work-review', 'retained-a-fresh-b')}
 
 
 def case_inventory(case):
@@ -55,7 +55,7 @@ def source_digest(case=CASE):
                 raise ValueError('symlink in evaluation source')
             if path.is_file():
                 paths.append(path)
-    if Path(case).name == 'retained-a-fresh-b':
+    if Path(case).name in ('retained-a-fresh-b','clean-work-review'):
         paths.append(EVALS/'planar/experiments/codex_run.py')
     records = []
     for path in sorted(paths):
@@ -102,9 +102,9 @@ def plan(case_name='plugin-smoke', *, candidate_root=None, case_root=None, trial
             expiry=datetime.fromisoformat(absolute_deadline)
             if expiry.tzinfo is None or expiry <= datetime.now(timezone.utc): raise ValueError()
         except (ValueError,TypeError): raise ValueError('retained case requires finite future expiry') from None
-    if case_name == 'clean-revision' and (trial_deadline != 1050 or effort != 'medium'):
+    if case_name in ('clean-revision','clean-work-review') and (trial_deadline != 1050 or effort != 'medium'):
         raise ValueError('clean revision requires the reviewed 1050-second job and medium effort')
-    if case_name == 'clean-revision' and (candidate_root is None or case_root is None):
+    if case_name in ('clean-revision','clean-work-review') and (candidate_root is None or case_root is None):
         raise ValueError('clean revision requires paired frozen candidate and case snapshots')
     if effort not in ('medium', 'high') or (case_name == 'fresh-interrupted-review' and effort != 'medium'):
         raise ValueError('unsupported effort for selected case')
@@ -159,18 +159,19 @@ def plan(case_name='plugin-smoke', *, candidate_root=None, case_root=None, trial
                       'absolute_deadline':absolute_deadline}
     config_digest = hashlib.sha256(json.dumps(digest_input, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
     task = Task(case).config
-    if case_name == 'clean-revision':
+    if case_name in ('clean-revision','clean-work-review'):
         from harbor.models.task.config import NetworkMode
         from harbor.models.task.verifier_mode import resolve_step_verifier_mode, VerifierEnvironmentMode
         steps = task.steps or []
-        if ([step.name for step in steps] != ['worker','revision'] or steps[0].min_reward != 1
+        last_step='review' if case_name=='clean-work-review' else 'revision'
+        if ([step.name for step in steps] != ['worker',last_step] or steps[0].min_reward != 1
             or any(step.agent.timeout_sec != 400 or step.verifier.timeout_sec != 60 for step in steps)
             or task.agent.timeout_sec != 400 or task.verifier.timeout_sec != 60
             or task.environment.docker_image != 'sha256:06e95472c9fb2a7ab49c50b0f2c87f5f1006aa33397ef17715a75164458b7ed2'
             or task.verifier.environment is None or not re.fullmatch(r'sha256:[0-9a-f]{64}', task.verifier.environment.docker_image or '')
             or task.verifier.environment.network_mode != NetworkMode.NO_NETWORK
             or any(resolve_step_verifier_mode(task,step) != VerifierEnvironmentMode.SEPARATE for step in steps)
-            or [step.verifier.env.get('PLANAR_CLEAN_PHASE') for step in steps] != ['worker','revision']
+            or [step.verifier.env.get('PLANAR_CLEAN_PHASE') for step in steps] != ['worker',last_step]
             or task.artifacts != ['/workspace/home']
             or config['agents'][0].get('resume_trajectory') is not False
             or config['agents'][0].get('load_trajectory') is not None
@@ -211,10 +212,11 @@ def plan(case_name='plugin-smoke', *, candidate_root=None, case_root=None, trial
         'budgets_seconds': {'agent': task.agent.timeout_sec, 'verifier': task.verifier.timeout_sec, 'job': trial_deadline, 'grace': 15},
         'cleanup_owner': 'SmokeCodex and watchdog process group; recovery marker until confirmed',
         'last_observed_event': 'preflight plan', 'verdict': 'pending'}
-    if case_name == 'clean-revision':
+    if case_name in ('clean-revision','clean-work-review'):
         prerequisites['execution_gate'] = 'requires independent review, matching expiry and one-use gate before authentication'
         prerequisites['budgets_seconds']['step_agent'] = [400,400]
-        prerequisites['fixture'] = 'clean projected fixture and host-owned controlled state fault'
+        prerequisites['fixture'] = ('clean projected fixture with no state fault' if case_name=='clean-work-review' else 'clean projected fixture and host-owned controlled state fault')
+        if case_name=='clean-work-review': prerequisites['account_scope_id']=str(reviews_root().resolve()/'planar-account-admission-v1')
     if case_name == 'fresh-interrupted-review':
         prerequisites['execution_gate'] = 'requires independent review and matching one-use gate before execution'
         prerequisites['fixture'] = 'portable source-derived fixture; applicability requires independent review'
@@ -257,7 +259,7 @@ def consume_review_once(review_path, consumed_root, *, reviewed_bytes=None):
 def execute(auth_path, review_path, case_name='plugin-smoke', *, candidate_root=None, case_root=None, trial_deadline=1500, execution_id=None, effort='medium', absolute_deadline=None, emit=True, schema2_context=None, source_packet=None):
     kwargs={'candidate_root':candidate_root,'case_root':case_root,'trial_deadline':trial_deadline,'execution_id':execution_id,
             'effort':effort,'absolute_deadline':absolute_deadline,'emit':emit,'schema2_context':schema2_context,'source_packet':source_packet}
-    if case_name != 'retained-a-fresh-b':
+    if case_name not in ('retained-a-fresh-b','clean-work-review'):
         return _execute_inner(auth_path,review_path,case_name,**kwargs)
     # Reuse the shared account lock and pending-record namespace, held across
     # the whole trial. Structural results stay pending until a bound raw audit.
@@ -276,7 +278,8 @@ def execute(auth_path, review_path, case_name='plugin-smoke', *, candidate_root=
 
 def _execute_inner(auth_path, review_path, case_name='plugin-smoke', *, candidate_root=None, case_root=None, trial_deadline=1500, execution_id=None, effort='medium', absolute_deadline=None, emit=True, schema2_context=None, source_packet=None, _retained_records=None):
     retained=case_name=='retained-a-fresh-b'
-    if retained and _retained_records is None: raise ValueError('retained account admission missing')
+    clean_work=case_name=='clean-work-review'
+    if (retained or clean_work) and _retained_records is None: raise ValueError('retained account admission missing')
     if not retained and source_packet is not None: raise ValueError('source packet is retained-case only')
     def remaining():
         if absolute_deadline is None:
@@ -315,7 +318,7 @@ def _execute_inner(auth_path, review_path, case_name='plugin-smoke', *, candidat
                 'case_sha256': snapshot['case_sha256'], 'image_id': snapshot['image_id']}
     if not portable and any(gate.get(key) != value for key, value in required.items()):
         raise ValueError('diagnostic review is missing, stale, or not approved')
-    if case_name == 'clean-revision':
+    if case_name in ('clean-revision','clean-work-review'):
         if not absolute_deadline or gate.get('absolute_deadline') != absolute_deadline:
             raise ValueError('clean revision requires the matching finite gate expiry')
         try:
@@ -324,11 +327,14 @@ def _execute_inner(auth_path, review_path, case_name='plugin-smoke', *, candidat
                 raise ValueError()
         except (TypeError, ValueError):
             raise ValueError('clean revision gate expiry is invalid or expired') from None
+    if clean_work:
+        if not execution_id or gate.get('execution_id')!=execution_id or gate.get('account_scope_id')!=str(_retained_records.parent): raise ValueError('clean-work gate identity or account scope mismatch')
+        if (datetime.fromisoformat(absolute_deadline)-datetime.now(timezone.utc)).total_seconds()<1050: raise ValueError('clean-work gate lacks whole-job budget')
     image_id = reservation['image_id'] if portable else gate.get('image_id')
     if not isinstance(image_id, str) or len(image_id) != 71 or not image_id.startswith('sha256:') or image_id != Task(case).config.environment.docker_image:
         raise ValueError('diagnostic review lacks the pinned image identity')
     verifier_image = None
-    if case_name in ('clean-revision', 'native-lineage-portable', 'retained-a-fresh-b'):
+    if case_name in ('clean-revision', 'clean-work-review', 'native-lineage-portable', 'retained-a-fresh-b'):
         verifier_image = reservation['verifier_image_id'] if portable else gate.get('verifier_image_id')
         if (not isinstance(verifier_image, str) or not re.fullmatch(r'sha256:[0-9a-f]{64}', verifier_image)
             or (not portable and verifier_image != Task(case).config.verifier.environment.docker_image)):
@@ -379,10 +385,19 @@ def _execute_inner(auth_path, review_path, case_name='plugin-smoke', *, candidat
         dirfd=os.open(_retained_records,os.O_RDONLY|os.O_DIRECTORY)
         try: os.fsync(dirfd)
         finally: os.close(dirfd)
-    if case_name == 'clean-revision':
+    if case_name in ('clean-revision','clean-work-review'):
         # The selected multi-step case consumes its reviewed one-use gate before
         # resolving or reading the authentication file.
-        consume_review_once(review, reviews_root() / 'harbor-t044-consumed')
+        consume_review_once(review, reviews_root() / 'harbor-t044-consumed', reviewed_bytes=gate_bytes if clean_work else None)
+        if clean_work:
+            marker=_retained_records/(execution_id+'.start.json')
+            fd=os.open(marker,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+            with os.fdopen(fd,'w') as output:
+                json.dump({'execution_id':execution_id,'case':case_name,'gate_sha256':gate_hash,'status':'awaiting-independent-bound-raw-audit'},output,sort_keys=True); output.write('\n'); output.flush(); os.fsync(output.fileno())
+            directory=os.open(_retained_records,os.O_RDONLY|os.O_DIRECTORY)
+            try: os.fsync(directory)
+            finally: os.close(directory)
+            if review.read_bytes()!=gate_bytes: raise ValueError('reviewed gate changed before auth')
     if portable:
         schema2_execution.verify_activated(schema2_context['root'],schema2_context['identity'],schema2_context['reservation_id'],review,preparation_evidence=schema2_context['preparation_evidence'])
     if retained and review.read_bytes() != gate_bytes: raise ValueError('reviewed gate changed before auth')
@@ -398,7 +413,7 @@ def _execute_inner(auth_path, review_path, case_name='plugin-smoke', *, candidat
         raise ValueError('subscription file authentication is unavailable') from None
     del auth
     remaining()
-    if case_name not in ('clean-revision', 'native-lineage-portable', 'retained-a-fresh-b'):
+    if case_name not in ('clean-revision', 'clean-work-review', 'native-lineage-portable', 'retained-a-fresh-b'):
         consume_review_once(review, reviews_root() / 'harbor-t044-consumed')
     run_id = execution_id or 'planar-t044-' + uuid.uuid4().hex
     evidence = jobs_root() / run_id

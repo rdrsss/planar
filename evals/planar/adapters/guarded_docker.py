@@ -27,7 +27,7 @@ class GuardedDocker(DockerEnvironment):
         if not re.fullmatch(r'planar-t044-(?:noauth-)?[0-9a-f]{32}', run_id):
             raise ValueError('invalid launcher execution identity')
         case_name = os.environ.get('PLANAR_T044_CASE', 'plugin-smoke')
-        if case_name not in ('plugin-smoke', 'native-lineage-smoke', 'native-lineage-current', 'fresh-interrupted-review', 'clean-revision', 'native-lineage-portable', 'retained-a-fresh-b'):
+        if case_name not in ('plugin-smoke', 'native-lineage-smoke', 'native-lineage-current', 'fresh-interrupted-review', 'clean-revision', 'clean-work-review', 'native-lineage-portable', 'retained-a-fresh-b'):
             raise ValueError('unsupported diagnostic case')
         if case_name == 'retained-a-fresh-b':
             if os.environ.get('PLANAR_T045_NOAUTH_CONTROL') == '1':
@@ -45,9 +45,9 @@ class GuardedDocker(DockerEnvironment):
             raise ValueError('environment session identity is required')
         self._static_verifier = '__verifier__' in raw_session
         self._verifier_step = None
-        if self._static_verifier and case_name == 'clean-revision':
-            match = re.search(r'__verifier__(worker|revision)$', raw_session)
-            if match is None: raise ValueError('invalid clean verifier step identity')
+        if self._static_verifier and case_name in ('clean-revision','clean-work-review'):
+            match = re.search(r'__verifier__(worker|revision|review)$', raw_session)
+            if match is None or match.group(1) not in (('worker','review') if case_name=='clean-work-review' else ('worker','revision')): raise ValueError('invalid clean verifier step identity')
             self._verifier_step = match.group(1)
         if self._static_verifier:
             snapshot = os.environ.get('PLANAR_T044_CASE_SNAPSHOT')
@@ -122,7 +122,7 @@ class GuardedDocker(DockerEnvironment):
             result = subprocess.run(['docker', 'inspect', '--format', '{{.HostConfig.NetworkMode}}', cid], capture_output=True, text=True, check=True, timeout=15)
             if result.stdout.strip() != 'none':
                 raise RuntimeError('verifier container is not network-disabled')
-            if self._case_name in ('clean-revision', 'native-lineage-portable', 'retained-a-fresh-b'):
+            if self._case_name in ('clean-revision', 'clean-work-review', 'native-lineage-portable', 'retained-a-fresh-b'):
                 expected = os.environ.get('PLANAR_T045_VERIFIER_IMAGE_ID')
                 noauth = os.environ.get('PLANAR_T045_NOAUTH_CONTROL') == '1'
                 if noauth and any(os.environ.get(key) for key in ('CODEX_AUTH_JSON_PATH','CODEX_FORCE_AUTH_JSON','OPENAI_API_KEY','CODEX_API_KEY')):
@@ -141,14 +141,14 @@ class GuardedDocker(DockerEnvironment):
             (evidence / name).write_text(json.dumps(record))
 
     async def _run_docker_compose_command(self, command, check=True, timeout_sec=None, stdin_data=None, on_output=None):
-        if self._static_verifier and self._case_name in ('native-lineage-portable','retained-a-fresh-b'):
+        if self._static_verifier and self._case_name in ('native-lineage-portable','retained-a-fresh-b','clean-work-review'):
             if command and command[0] in ('build', 'pull'):
                 raise ValueError('portable verifier cannot build or pull at runtime')
             if command and command[0] == 'up':
                 if any(arg in ('--build', '--pull') or arg.startswith('--pull=') for arg in command[1:]):
                     raise ValueError('portable verifier has conflicting compose flags')
                 command = [*command, '--no-build', '--pull', 'never']
-                path = self._evidence_root / 'verifier-compose-up.json'
+                path = self._evidence_root / (('verifier-compose-up-'+self._verifier_step+'.json') if self._case_name=='clean-work-review' else 'verifier-compose-up.json')
                 fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
                 with os.fdopen(fd, 'w') as output:
                     json.dump({'execution_id': self._evidence_root.name, 'command': command}, output)
@@ -195,11 +195,11 @@ class GuardedDocker(DockerEnvironment):
                 destination=self._evidence_root/'retained-b/logs/revision'
                 if destination.exists() or destination.is_symlink(): raise ValueError('target logs already collected')
                 write_tree(destination,logs)
-            if self._case_name == 'clean-revision':
+            if self._case_name in ('clean-revision','clean-work-review'):
                 clean = self._evidence_root/'clean-revision'
                 active = json.loads((clean/'active.json').read_text())
                 step = active.get('step')
-                if step not in ('worker', 'revision'): raise ValueError('invalid clean step')
+                if step not in ('worker', 'revision', 'review'): raise ValueError('invalid clean step')
                 destination = clean/'logs'/step
                 if destination.exists() or destination.is_symlink(): raise ValueError('clean step logs already collected')
                 write_tree(destination, logs)
@@ -235,14 +235,14 @@ class GuardedDocker(DockerEnvironment):
                 if item.is_dir(): item.chmod(0o755)
                 elif item.is_file(): item.chmod(0o644)
                 else: raise ValueError('special retained verifier input')
-        elif source_dir == '/workspace/home' and not self._static_verifier and self._case_name == 'clean-revision':
+        elif source_dir == '/workspace/home' and not self._static_verifier and self._case_name in ('clean-revision','clean-work-review'):
             from clean_revision_support import load_case_module
             case = Path(os.environ.get('PLANAR_T044_CASE_SNAPSHOT') or Path(__file__).resolve().parents[1]/'cases/clean-revision')
             capture = load_case_module(case, 'capture')
             clean = self._evidence_root/'clean-revision'
             active = json.loads((clean/'active.json').read_text())
             step = active.get('step')
-            if step not in ('worker', 'revision'): raise ValueError('invalid clean step')
+            if step not in ('worker', 'revision', 'review'): raise ValueError('invalid clean step')
             identity = json.loads((clean/'container.json').read_text())
             cid = await self._platform._resolve_service_container('main')
             actual = subprocess.run(['docker','inspect','--format','{{.Id}}',cid], check=True, capture_output=True, text=True, timeout=15).stdout.strip()
@@ -255,6 +255,11 @@ class GuardedDocker(DockerEnvironment):
             host = Path(target_dir)/'_planar_host'
             if host.exists() or host.is_symlink(): raise ValueError('host evidence destination exists')
             shutil.copytree(clean, host, symlinks=True, ignore=shutil.ignore_patterns('rejected-home.tar','rejected-home.json'))
+            if self._case_name == 'clean-work-review':
+                from candidate import inventory
+                candidate=Path(os.environ['PLANAR_T044_CANDIDATE_SNAPSHOT'])
+                if inventory(candidate)!=json.loads((case/'candidate.json').read_text()): raise ValueError('clean-work candidate changed before verifier handoff')
+                shutil.copytree(candidate,host/'candidate',symlinks=True)
             # Only this exported verifier copy is made readable by the separate
             # container user; the host-owned originals stay private.
             for item in (host, *host.rglob('*')):

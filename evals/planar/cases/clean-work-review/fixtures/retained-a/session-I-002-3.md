@@ -1,0 +1,5 @@
+Task: T-001; attempt: 1; step: worker-done; role: worker; invocation: I-002; parent: I-001; predecessor: none
+Host: codex; host version: unavailable (not exposed); timestamp: 2026-11-17T02:16:32.394692+00:00; phase: completed
+Packet: worker-packet-1.md; result: worker-report-1.md, SHA-256 bef7880e8ada251d0876e251101da8566cd9f2899a3a671fcf223c0d4a3961bb, status: done; base: 08bacc341a31f32c14a1695b5b2de5c44b3a3e56
+Profile: profiles/revision-fault.yaml; digest: ea05cae38488f1e509db44eacb82dc057e9ce1018652e2abc315b793c09650f7; schema: 2; binding stages.implement.execution.codex; configured_model: gpt-6.1-terra; configured_effort: medium; observed_model: unavailable; observed_effort: unavailable; observation_source: not exposed.
+Driver session ID, native thread ID, host agent ID: unavailable (not exposed); collaboration agent name: /root/worker_t001, source: dispatch response. Child completion observed from collaboration final response. Transcript locator: unavailable; scope: unavailable; checked: 2026-11-17T02:16:32.394692+00:00.

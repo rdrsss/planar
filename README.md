@@ -103,7 +103,8 @@ require `HOST=codex` or `HOST=claude`). The explicit `install-codex`,
 available; see the installation notes above before changing a host configuration.
 
 `make evals-setup` installs the locked dependencies with uv. `make evals-test`
-and `make evals` run model-free tests. `make evals-plan` preflights the default
+and `make evals` run model-free tests, including the registered no-fault
+clean-work-review case. Its synthetic controls do not establish a live pass. `make evals-plan` preflights the default
 `fresh-interrupted-review` case; set `CASE` to select another supported case.
 Preflight refuses a mismatched historical frozen candidate; it does not
 refreeze or approve it.

@@ -1,0 +1,198 @@
+{
+  "base": "08bacc341a31f32c14a1695b5b2de5c44b3a3e56",
+  "derivation": {
+    "historical_packet_compliance": "not claimed",
+    "kind": "synthetic-current-packet",
+    "source_portable_sha256": "faf43bd16e85a4e17f0d4a33a39017402dd7c18d0bb8c19486cdf96fc2667e27",
+    "version": "v2-clean-review-boundary"
+  },
+  "files": {
+    "home/profiles/revision-fault.yaml": {
+      "portable_sha256": "ea05cae38488f1e509db44eacb82dc057e9ce1018652e2abc315b793c09650f7",
+      "source_sha256": "ea05cae38488f1e509db44eacb82dc057e9ce1018652e2abc315b793c09650f7",
+      "transformations": []
+    },
+    "home/projects/revision-fault/context.md": {
+      "portable_sha256": "dd11b5675394f3ca47580ac13565b5ba8864c3baa9a24ab4e0d38d2a72cc10a3",
+      "source_sha256": "a877b7bf877f2d94911a821a22bf8705d63e00c019fe04ae9169169b6de8e0fd",
+      "transformations": [
+        "Removed controlled fault statement and described straight-through work/review exercise."
+      ]
+    },
+    "home/projects/revision-fault/ids.md": {
+      "portable_sha256": "3058e14eab74bbc4c4ea107b1551c355a675a89b8b9d5d4f1e04d50514dcc536",
+      "source_sha256": "3058e14eab74bbc4c4ea107b1551c355a675a89b8b9d5d4f1e04d50514dcc536",
+      "transformations": []
+    },
+    "home/projects/revision-fault/layout.md": {
+      "portable_sha256": "2f50dc3199977f72ab99a2d15a6e4ac6ef712f69fd191e5735852c0305827533",
+      "source_sha256": "2f50dc3199977f72ab99a2d15a6e4ac6ef712f69fd191e5735852c0305827533",
+      "transformations": []
+    },
+    "home/projects/revision-fault/prd.md": {
+      "portable_sha256": "7c310ac22d158a333d4f08188ddbc7108d47158e2ba9b8ca0f7ab9bd61f42f80",
+      "source_sha256": "7c310ac22d158a333d4f08188ddbc7108d47158e2ba9b8ca0f7ab9bd61f42f80",
+      "transformations": []
+    },
+    "home/projects/revision-fault/project.yaml": {
+      "portable_sha256": "ad17cbced88e0ce5f2a4a0c5639e079ed9ea4924cbe60875f467c819aff486d9",
+      "source_sha256": "81350723105bf55294f9c63948235f6cc1f32bbc09597c905ad8e577f7082af9",
+      "transformations": [
+        {
+          "occurrences": 1,
+          "replacement": "/workspace/repository"
+        }
+      ]
+    },
+    "home/projects/revision-fault/reviews/spec-check-1.md": {
+      "portable_sha256": "797428cb1005c93682c886ac09a91c6d821e0f0f26d24e020dfa0129e5d8f9e9",
+      "source_sha256": "797428cb1005c93682c886ac09a91c6d821e0f0f26d24e020dfa0129e5d8f9e9",
+      "transformations": []
+    },
+    "home/projects/revision-fault/tasks.md": {
+      "portable_sha256": "1bb41dfe92b8afee371a18a9a1ddeb3ef38a1e9c5cb56bd7708f90c216fddb6a",
+      "source_sha256": "1bb41dfe92b8afee371a18a9a1ddeb3ef38a1e9c5cb56bd7708f90c216fddb6a",
+      "transformations": []
+    },
+    "home/projects/revision-fault/tasks/T-001/checks-1.md": {
+      "portable_sha256": "17a283ad78f4fb1c4af1aa2e658fc09b2e6baf57054b81cc1e8cc2605add4252",
+      "source_sha256": "17a283ad78f4fb1c4af1aa2e658fc09b2e6baf57054b81cc1e8cc2605add4252",
+      "transformations": []
+    },
+    "home/projects/revision-fault/tasks/T-001/dispatch-configuration.md": {
+      "portable_sha256": "16d836c5a55cdb554e6ccd5a8394fa1075b2ae6e093eab7c125f36a6160a57da",
+      "source_sha256": "16d836c5a55cdb554e6ccd5a8394fa1075b2ae6e093eab7c125f36a6160a57da",
+      "transformations": []
+    },
+    "home/projects/revision-fault/tasks/T-001/dispatch-prompt.md": {
+      "portable_sha256": "cffbafd0a255270c6f857e269d0123fa00a2d45cfd2dd266969efdded2642d60",
+      "source_sha256": "900e1a8b8abd980f85b16e1eef7c158fef59fa3b7c4b2efda2edbd1d89b1ec68",
+      "transformations": [
+        {
+          "occurrences": 1,
+          "replacement": "/historical/planar-plugin"
+        },
+        {
+          "occurrences": 1,
+          "replacement": "/historical/worker-packet-1.md"
+        },
+        {
+          "occurrences": 1,
+          "replacement": "/workspace/repository"
+        }
+      ]
+    },
+    "home/projects/revision-fault/tasks/T-001/record.md": {
+      "portable_sha256": "c29bc2d0510d1de74f6d5ef476d60075d843ea4fddd4c40dcad9826752c65fc4",
+      "source_sha256": "c29bc2d0510d1de74f6d5ef476d60075d843ea4fddd4c40dcad9826752c65fc4",
+      "transformations": []
+    },
+    "home/projects/revision-fault/tasks/T-001/reviewer-configuration.md": {
+      "portable_sha256": "16d836c5a55cdb554e6ccd5a8394fa1075b2ae6e093eab7c125f36a6160a57da",
+      "source_sha256": "16d836c5a55cdb554e6ccd5a8394fa1075b2ae6e093eab7c125f36a6160a57da",
+      "transformations": []
+    },
+    "home/projects/revision-fault/tasks/T-001/reviewer-packet-1.md": {
+      "portable_sha256": "e96fb3cd953e93c8f204a6f7bed7e2ed582f94fe594a311bfa710b9862ad7bbd",
+      "source_sha256": "faf43bd16e85a4e17f0d4a33a39017402dd7c18d0bb8c19486cdf96fc2667e27",
+      "transformations": [
+        {
+          "occurrences": 1,
+          "operation": "synthetic insert full checks definition from worker-packet-1.md before Change"
+        }
+      ],
+      "v1_portable_sha256": "faf43bd16e85a4e17f0d4a33a39017402dd7c18d0bb8c19486cdf96fc2667e27"
+    },
+    "home/projects/revision-fault/tasks/T-001/reviewer-role-snapshot.md": {
+      "portable_sha256": "c02e76e9ef458fdb9ff3fb90e4d5c3285fcd35f57327153601fcc0d97de567b9",
+      "source_sha256": "c02e76e9ef458fdb9ff3fb90e4d5c3285fcd35f57327153601fcc0d97de567b9",
+      "transformations": []
+    },
+    "home/projects/revision-fault/tasks/T-001/session-checks-1-1.md": {
+      "portable_sha256": "8288a0d2f3abba7c29c8a422f4bebe6bc790eea2a8a7503c16a05cf7c7ab196f",
+      "source_sha256": "8288a0d2f3abba7c29c8a422f4bebe6bc790eea2a8a7503c16a05cf7c7ab196f",
+      "transformations": []
+    },
+    "home/projects/revision-fault/tasks/T-001/session-checks-1-2.md": {
+      "portable_sha256": "718e1f413fae2189932ddc03872915adca39cde5b7f0d9440a6b5f6a2883bb36",
+      "source_sha256": "718e1f413fae2189932ddc03872915adca39cde5b7f0d9440a6b5f6a2883bb36",
+      "transformations": []
+    },
+    "home/projects/revision-fault/tasks/T-001/session-packet-1-1.md": {
+      "portable_sha256": "349b6acf30229c68985b289f886ddc7d447e7a6f7969c3708f6fff2872a1d70c",
+      "source_sha256": "349b6acf30229c68985b289f886ddc7d447e7a6f7969c3708f6fff2872a1d70c",
+      "transformations": []
+    },
+    "home/projects/revision-fault/tasks/T-001/session-review-packet-1-1.md": {
+      "portable_sha256": "a7c6dda51f774a38b4cec820ef4d5330f56511c809af03bb3635c3f0909a9126",
+      "source_sha256": "a7c6dda51f774a38b4cec820ef4d5330f56511c809af03bb3635c3f0909a9126",
+      "transformations": []
+    },
+    "home/projects/revision-fault/tasks/T-001/session-reviewer-1-1.md": {
+      "portable_sha256": "2c6d3ebdfb737a988f34977e3f13547a39009427930fc6eedc85c04337ff4115",
+      "source_sha256": "2c6d3ebdfb737a988f34977e3f13547a39009427930fc6eedc85c04337ff4115",
+      "transformations": []
+    },
+    "home/projects/revision-fault/tasks/T-001/session-reviewer-1-2.md": {
+      "portable_sha256": "7ba9bc6d596651cbd307383e30cd52dc42ec40b75460e1b8bca309fefd0d47c0",
+      "source_sha256": "7ba9bc6d596651cbd307383e30cd52dc42ec40b75460e1b8bca309fefd0d47c0",
+      "transformations": []
+    },
+    "home/projects/revision-fault/tasks/T-001/session-worker-1-1.md": {
+      "portable_sha256": "5ea17c1505c83c9950376d4f57b307b1cd8612cf6e1f233311d724fcc2db3a47",
+      "source_sha256": "5ea17c1505c83c9950376d4f57b307b1cd8612cf6e1f233311d724fcc2db3a47",
+      "transformations": []
+    },
+    "home/projects/revision-fault/tasks/T-001/session-worker-1-2.md": {
+      "portable_sha256": "0e5dae9a7dbd7962c913dfd0079eb2ae86ca6d6598aa78a4117ba53306bdbdc5",
+      "source_sha256": "0e5dae9a7dbd7962c913dfd0079eb2ae86ca6d6598aa78a4117ba53306bdbdc5",
+      "transformations": []
+    },
+    "home/projects/revision-fault/tasks/T-001/worker-packet-1.md": {
+      "portable_sha256": "5bfb3f23fe8bd5bac926eaa835b10c73adc4d26e7dfb425cd280bf55126bef20",
+      "source_sha256": "5bfb3f23fe8bd5bac926eaa835b10c73adc4d26e7dfb425cd280bf55126bef20",
+      "transformations": []
+    },
+    "home/projects/revision-fault/tasks/T-001/worker-report-1.md": {
+      "portable_sha256": "b6cb8a07093e3a37e72a19b10841abb1fe0efcfcfb2b0c2b6c6be7cca0df4a2b",
+      "source_sha256": "b6cb8a07093e3a37e72a19b10841abb1fe0efcfcfb2b0c2b6c6be7cca0df4a2b",
+      "transformations": []
+    },
+    "home/projects/revision-fault/tasks/T-001/worker-role-snapshot.md": {
+      "portable_sha256": "65b74c11e6a096a1e558c8197e8e2400386cdfe034697c19e7f046a2f7d1fcce",
+      "source_sha256": "65b74c11e6a096a1e558c8197e8e2400386cdfe034697c19e7f046a2f7d1fcce",
+      "transformations": []
+    },
+    "home/projects/revision-fault/tech-spec.md": {
+      "portable_sha256": "88c116dbb0e7dae6852591ff063bb6aa94f122cd3dff57be7c41c685b1e73346",
+      "source_sha256": "88c116dbb0e7dae6852591ff063bb6aa94f122cd3dff57be7c41c685b1e73346",
+      "transformations": []
+    },
+    "home/projects/revision-fault/testing-spec.md": {
+      "portable_sha256": "0e341e9b824facd4608b5b35f62bc72fdfb1f4cb17f037d8aa7c685e5e34cfd9",
+      "source_sha256": "0e341e9b824facd4608b5b35f62bc72fdfb1f4cb17f037d8aa7c685e5e34cfd9",
+      "transformations": []
+    },
+    "home/settings.yaml": {
+      "portable_sha256": "ba14c0ca63aa7c4c59afee8bbdaea30462fd075158d92a433bc91f60ee13dea5",
+      "source_sha256": "ba14c0ca63aa7c4c59afee8bbdaea30462fd075158d92a433bc91f60ee13dea5",
+      "transformations": []
+    },
+    "repository/README.md": {
+      "portable_sha256": "af8644ad9b58b80ad2008e202b3b8c53f8ebc7d2763f1c803750bc03412badfd",
+      "source_sha256": "af8644ad9b58b80ad2008e202b3b8c53f8ebc7d2763f1c803750bc03412badfd",
+      "transformations": []
+    },
+    "repository/RESULT.txt": {
+      "portable_sha256": "53c234e5e8472b6ac51c1ae1cab3fe06fad053beb8ebfd8977b010655bfdd3c3",
+      "source_sha256": "53c234e5e8472b6ac51c1ae1cab3fe06fad053beb8ebfd8977b010655bfdd3c3",
+      "transformations": []
+    },
+    "repository/STATE.txt": {
+      "portable_sha256": "c9fda0b30e09c73dd79b29bc6212c386bd50a7a5182498ad0bc2aedb0feb7957",
+      "source_sha256": "c9fda0b30e09c73dd79b29bc6212c386bd50a7a5182498ad0bc2aedb0feb7957",
+      "transformations": []
+    }
+  },
+  "schema": 2
+}

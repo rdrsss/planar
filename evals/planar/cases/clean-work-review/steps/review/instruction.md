@@ -1,0 +1,3 @@
+Use the installed Planar package with the isolated approved project at `/workspace/home/projects/revision-fault`, profile `revision-fault`, and `PLANAR_HOME=/workspace/home`. Operator confirmation: the previous A driver and all its children have stopped; individual thread close was unsupported. Continue T-001 from its durable records using the normal workflow, then stop after task approval and final required checks, or at the first real blocker. Keep all work within this isolated workspace.
+
+The launcher selected this fresh session with model `gpt-6.1-terra` and reasoning effort `medium` in its fixed job configuration. This is the configured selection; backend model and effort are not independently observed.

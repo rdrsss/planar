@@ -5,7 +5,7 @@ import sys
 
 
 def load_case_module(case, name):
-    if name not in ('capture', 'step_identity', 'handoff'):
+    if name not in ('capture', 'step_identity', 'handoff', 'no_fault'):
         raise ValueError('unsupported clean-revision module')
     root = Path(case).resolve(strict=True)
     path = root/(name+'.py')

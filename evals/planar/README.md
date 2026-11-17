@@ -3,7 +3,7 @@
 ## Case and experiment status
 
 Run `make evals-test` from the repository root for the model-free adapter,
-recovery, revision, retained-A/fresh-B and experiment-control suites. Docker/native integration
+recovery, revision, clean-work-review, retained-A/fresh-B and experiment-control suites. Docker/native integration
 controls are separate; synthetic reports and rollouts do not prove a model
 performed the workflow. Live execution needs the exact matching independent
 one-use gate and confirmed cleanup.
@@ -15,7 +15,8 @@ one-use gate and confirmed cleanup.
 | `cases/native-lineage-current` | Separate frozen successor with one independently audited online reward 1 for its bounded lineage/artifact contract. Its name does not select an arbitrary current package. |
 | `cases/fresh-interrupted-review` | Recovery fixture, independent verifier and retained-export assessments; these do not establish every recovery scenario or a final-byte live pass. |
 | `cases/clean-revision` | Two fresh native parents in a persistent workspace, controlled post-worker STATE fault and separate verifiers. Actual trials have stopped at A with reward 0; corrected, versioned retained-A assessments do not establish B, repair or revision success. |
-| `cases/retained-a-fresh-b` | Separate source-bound continuation case. Real no-auth Harbor/Docker restore, sole fault and network-none verifier handoff are observed with synthetic target logs. No real B has run. Structural-positive remains incomplete/reward 0 pending independent raw audit. |
+| `cases/clean-work-review` | Registered no-fault work and independent review case. Its synthetic no-auth control exercises host integration and failure gating; structural success remains incomplete/reward 0 pending independent bound raw audit. No live pass is established. |
+| `cases/retained-a-fresh-b` | Separate source-bound continuation case. Real no-auth Harbor/Docker restore, sole fault and network-none verifier handoff are observed with synthetic target logs. A real B stopped early; another timed out after partial work including request-changes review. The timeout remains incomplete/reward 0. Structural-positive remains incomplete/reward 0 pending independent raw audit. |
 | `cases/native-lineage-portable` | Opt-in schema-2 template/materializer with explicit inventory/execution data. The template's unbound placeholders are invalid inputs, not a runnable case. |
 | `experiments/cli.py` | Schema-1 controls and separately gated Codex execution; experimental schema-2 planning, image preparation, exact reservation/gate, execution, reconciliation and reporting routes. Schema-2 source/control review is complete; a gated native run remains unproven. |
 
@@ -174,6 +175,26 @@ do not generate approval or refreeze inputs during a run. Keep original online
 rewards and every versioned retained assessment separately. The
 [case README](cases/clean-revision/README.md) describes capture and verifier
 requirements.
+
+### Clean work review
+
+`clean-work-review` uses two fresh drivers with a worker and reviewer. The host
+checks the stopped worker boundary and records equal product digests without
+injecting a fault; the worker verifier must pass before review starts. A
+structurally positive review remains incomplete with reward 0 until an
+independent bound raw audit establishes the packet and delivery chronology.
+See the [case contract and limits](cases/clean-work-review/README.md).
+
+The opt-in native no-auth control uses synthetic worker data and deliberately
+omits review and approval. It exercises host integration and failure gating,
+not model behavior. No live pass is established. Like clean-revision, planning
+requires frozen candidate and case snapshots, a 1,050-second deadline and
+medium effort via the direct launcher; supply the reserved `--execution-id`
+(`planar-t044-` followed by 32 lowercase hex digits) and finite future
+`--absolute-deadline` for the reviewed execution as well. The Make wrapper
+does not supply these inputs. Live execution is blocked pending reviewed
+disposition of the shared account admission; it also requires explicit
+authorization and an independently reviewed, matching one-use gate.
 
 ### Experimental deterministic controls
 

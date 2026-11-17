@@ -50,6 +50,7 @@ def shared_pending(records):
         resolved=start.with_name(start.name.replace('.start.json','.resolved.json'))
         try:
             data=json.loads(start.read_text())
+            if data.get('case') == 'clean-work-review': return False  # no reviewed release contract yet
             if data.get('case') != 'retained-a-fresh-b': return closed.exists() or resolved.exists()
             if closed.exists() or closed.is_symlink() or resolved.is_symlink() or not resolved.is_file(): return False
             import retained_b_release_schema
