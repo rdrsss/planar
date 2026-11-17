@@ -69,7 +69,7 @@ experiment acceptance. Later bounded work is distinguished above.
 The project's `reviews/harbor-t044-native-audit-20261116.md` and
 `reviews/harbor-t044-regrade-final-review-20261116.md` detail the evidence and
 its limits. Repository unit controls are run from the repository root with
-`uv run --project evals --locked python -m unittest discover -s evals/planar/adapters -p 'test_*.py'`.
+`make evals-test`.
 Project-local no-auth Docker integration controls and their prerequisites are
 documented in `reviews/tools/harbor-t044/README.md` relative to the project
 directory; they do not travel in a repository-only clone.
@@ -91,7 +91,8 @@ unverified or pending; native events are agent-writable.
 Attempt to print the frozen, no-auth launch plan with:
 
 ```sh
-uv run --project evals --locked python evals/planar/adapters/launch.py --case native-lineage-smoke
+PLANAR_EVALS_PROJECT_DIR="/path/to/selected/project" \
+  uv run --project evals --locked python evals/planar/adapters/launch.py --case native-lineage-smoke
 ```
 
 The launcher refuses before printing a plan if the current plugin differs from
@@ -117,15 +118,17 @@ For live execution, prepare the one-use project-local review gate from the
 current plan, then run:
 
 ```sh
-uv run --project evals --locked python evals/planar/adapters/launch.py --case native-lineage-smoke --execute --auth-file <subscription-file> --review-file <review-json>
+PLANAR_EVALS_PROJECT_DIR="/path/to/selected/project" \
+  uv run --project evals --locked python evals/planar/adapters/launch.py --case native-lineage-smoke --execute --auth-file "/path/to/subscription-file" --review-file "/path/to/review-json"
 ```
 
  The launcher checks
 the gate, pinned local Docker image and recovery state before accessing the
 subscription file; it uses one attempt, an isolated container home and a
-network-isolated verifier. It retains execution and cleanup records under the
-project reviews directory. Its printed pending diagnostic is not the verifier
-verdict; inspect the trial's verifier status and reward. Never put credentials
+network-isolated verifier. It retains new execution and cleanup records under
+the selected output root, which defaults to the selected project’s
+`scratch/scratch-evals`. Historical records stay at their recorded roots. Its
+printed pending diagnostic is not the verifier verdict; inspect the trial's verifier status and reward. Never put credentials
 in this repository.
 
 ### T-053 preflight and historical replay
@@ -211,8 +214,7 @@ agent and a test-only fake environment; verification is disabled, so every
 execution is incomplete rather than a plugin pass. A native START hook records
 actual Harbor job and trial IDs before environment setup. Raw jobs are retained.
 The absolute job deadline includes time paused between continuations. Run the
-controls with `evals/.venv/bin/python -m unittest discover -s
-evals/planar/experiments -v`. CLI help is available with
+controls as part of `make evals-test`. CLI help is available with
 `evals/.venv/bin/python evals/planar/experiments/cli.py --help`.
 
 The experimental Codex path requires a separate matching one-use review gate
@@ -261,7 +263,8 @@ inputs. With all placeholder paths and identities replaced, secret-free
 planning is:
 
 ```sh
-PLANAR_EVALS_OUTPUT_ROOT=/path/to/reviews \
+PLANAR_EVALS_PROJECT_DIR="/path/to/selected/project" \
+PLANAR_EVALS_OUTPUT_ROOT="/path/to/owned/output" \
 uv run --project evals --locked python evals/planar/adapters/launch.py \
   --case retained-a-fresh-b \
   --snapshot-candidate /path/to/reviews/source-candidate \
@@ -295,14 +298,18 @@ child read after dispatch does not prove a pre-dispatch write.
 
 Admission stays pending until explicit reviewed release. The case-specific
 operator tool supports the structurally positive, audit-pending incomplete
-outcome with confirmed terminal cleanup and no exact-label resources:
+outcome with confirmed terminal cleanup and no exact-label resources. For a
+historical job recorded under an override output root, use its exact original
+root and `override-jobs` layout:
 
 ```sh
-PLANAR_EVALS_OUTPUT_ROOT=/path/to/reviews \
+PLANAR_EVALS_PROJECT_DIR="/path/to/selected/project" \
+PLANAR_EVALS_LAYOUT_KIND=override-jobs \
+PLANAR_EVALS_OUTPUT_ROOT="/path/to/recorded/output" \
 uv run --project evals --locked python evals/planar/adapters/retained_b_resolve.py \
-  /path/to/reviews/jobs/planar-t044-EXECUTION_ID \
+  /path/to/recorded/output/jobs/planar-t044-EXECUTION_ID \
   /path/to/reviews/retained-case /path/to/reviews/source-candidate \
-  /path/to/reviews/independent-release.json
+  /path/to/recorded/output/independent-release.json
 ```
 
 The independently prepared release JSON binds execution, consumed gate,
@@ -325,9 +332,14 @@ candidate and case-instance inputs; a reservation alone does not establish
 that a native job started. Old opaque schema-2 records remain offline-only
 and cannot be upgraded in place or made runnable by adding a hash.
 
-New plans explicitly using `runnable_contract: planar-schema2-runnable-v1`
-can use the experimental runnable routes below. Inspect their exact arguments
-with the locked environment:
+New runnable plans explicitly use
+`runnable_contract: planar-schema2-runnable-context-v2` and require the
+selected `PLANAR_EVALS_PROJECT_DIR` and, when applicable, the explicit
+`PLANAR_EVALS_OUTPUT_ROOT`. The frozen context binds the project, settings
+and output authority. Runnable v1 records remain historical evidence for
+exact-root verification and disposition; new v1 reservation or dispatch is
+refused. New v2 plans can use the experimental runnable routes below. Inspect
+their exact arguments with the locked environment:
 
 ```sh
 uv run --project evals --locked python evals/planar/experiments/cli.py --help
@@ -340,10 +352,10 @@ uv run --project evals --locked python evals/planar/experiments/cli.py --help
 | `check-runnable-v2` | Compare an independently supplied exact gate without consuming it or authorizing a dispatch. |
 | `execute-runnable-v2` | Recheck under existing account/controller locks, consume one exact reviewed gate before authentication and run the guarded launcher once. Requires auth file, gate and preparation evidence. |
 | `reconcile-runnable-v2` | Assess retained native/cleanup evidence for an existing attempt without replaying authentication or starting another job. Missing or contradictory evidence stays blocked. |
-| `resolve-account-stop-v2` | Record an explicit reasoned resolution after matching the retained gate, account stop and confirmed cleanup. It preserves original stop/results and does not itself retry. |
+| `resolve-account-stop-v2` | V2 account disposition currently fails closed pending independently reviewed authority; do not treat it as a released account or retry. |
 
-The source and model-free controls are independently reviewed. Actual no-auth
-Harbor/Docker evidence proves separate pinned verifier selection, network
+The prior source snapshot and model-free controls were independently reviewed.
+Actual no-auth Harbor/Docker evidence proves separate pinned verifier selection, network
 `none`, Compose no-build/no-pull and cleanup; its Nop result is an
 infrastructure nonpass, not a behavior pass. A gated schema-2 native model run
 is still unproven. Source, candidate, configuration or documentation changes

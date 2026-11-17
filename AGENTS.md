@@ -48,8 +48,9 @@ The user instruction prevails.
 
 The `evals/` workspace is outside the installed plugin. Use `make evals-setup`
 for locked dependencies, `make evals-test` or `make evals` for model-free tests,
-and `make evals-plan` for preflight (override `CASE` when needed). Live
-`make evals-run` requires explicit authorization and a matching existing review
+and `make evals-plan` for preflight (set `EVALS_PROJECT_DIR` to the selected
+project and override `CASE` when needed). Live `make evals-run` requires the
+same project selection, explicit authorization and a matching existing review
 gate; preserve the gate and recovery checks. See [evaluation guidance](evals/README.md)
 for output roots, gate preparation and recovery. Keep secrets and ignored
 outputs out of commits and preserve the engine-free design.

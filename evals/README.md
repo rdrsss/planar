@@ -32,7 +32,8 @@ belong in this directory.
 From the repository root, `make evals-setup` installs the locked dependencies,
 `make evals-test` (or `make evals`) runs the adapter, recovery-case,
 clean-revision, clean-work-review, retained-A/fresh-B and model-free experiment-control tests,
-and `make evals-plan` preflights `CASE=fresh-interrupted-review` by default.
+and `make evals-plan EVALS_PROJECT_DIR="/path/to/selected/project"` preflights
+`CASE=fresh-interrupted-review` by default.
 `make evals-test` uses a disposable Planar project and runs the portable
 model-free suite. It reports how many retained-evidence tests are selected
 separately; it fails on unexpected skips. Synthetic checks cover general
@@ -65,7 +66,7 @@ Make case wrapper does not supply those arguments.
 A live diagnostic requires a matching independent gate and explicit paths:
 
 ```sh
-make evals-run AUTH_FILE='/path/to/auth.json' REVIEW_FILE='/path/to/review.json'
+make evals-run EVALS_PROJECT_DIR='/path/to/selected/project' AUTH_FILE='/path/to/auth.json' REVIEW_FILE='/path/to/review.json'
 ```
 
 The launcher enforces the existing gate and returns its diagnostic exit status.
@@ -90,13 +91,13 @@ These commands do not use a model or authentication:
 ```sh
 uv sync --project evals --locked
 uv run --project evals --locked harbor --version
-uv run --project evals --locked python -m unittest discover -s evals/planar/adapters -p 'test_*.py' -v
+make evals-test
 python3 evals/planar/adapters/candidate.py plugins/planar --compare evals/planar/cases/plugin-smoke/candidate.json
-uv run --project evals --locked python evals/planar/adapters/launch.py
+PLANAR_EVALS_PROJECT_DIR="/path/to/selected/project" uv run --project evals --locked python evals/planar/adapters/launch.py
 ```
 
 The comparison and launch-plan commands refuse when the current plugin differs
-from the historical frozen candidate; they start no subprocess. A current launch
+from the historical frozen candidate; they start no model or diagnostic job. A current launch
 needs a separately reviewed freeze and gate. For historical snapshot replay, see
 [Planar evaluations](planar/README.md#t-053-preflight-and-historical-replay). Project-local no-auth Docker integration controls and their
 prerequisites are documented in `reviews/tools/harbor-t044/README.md` relative

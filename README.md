@@ -104,15 +104,17 @@ available; see the installation notes above before changing a host configuration
 
 `make evals-setup` installs the locked dependencies with uv. `make evals-test`
 and `make evals` run model-free tests, including the registered no-fault
-clean-work-review case. Its synthetic controls do not establish a live pass. `make evals-plan` preflights the default
-`fresh-interrupted-review` case; set `CASE` to select another supported case.
+clean-work-review case. Its synthetic controls do not establish a live pass.
+`make evals-plan` preflights the default `fresh-interrupted-review` case; set `EVALS_PROJECT_DIR` to the selected Planar
+project directory and set `CASE` to select another supported case.
 Preflight refuses a mismatched historical frozen candidate; it does not
 refreeze or approve it.
 
 A live `make evals-run` requires explicit authorization and an existing matching
-independent review gate, supplied through `AUTH_FILE` and `REVIEW_FILE`. Jobs
-and consumed-review records use ignored `evals/results` by default; set
-`EVALS_OUTPUT_ROOT` to choose another root. Place the review file under the
+independent review gate, supplied through `AUTH_FILE` and `REVIEW_FILE`, and the
+selected `EVALS_PROJECT_DIR`. New jobs and consumed-review records default to
+that project’s `scratch/scratch-evals`; set `EVALS_OUTPUT_ROOT` to choose an
+explicit owned output root. Place the review file under the
 selected root and use that same root for manual recovery. See the
 [evaluation workspace](evals/README.md) and [Planar evaluation notes](evals/planar/README.md)
 for gate preparation, recovery and diagnostic limits. These diagnostics do not
